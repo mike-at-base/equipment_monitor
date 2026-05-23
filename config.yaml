@@ -74,51 +74,54 @@ plcs:
           - { index: 1, name: Home, is_production: false }
 
       # ── ST34000  Spacer Load ─────────────────────────────────────────────
-      # NOTE: seq indices for MAG Run need OPC UA browse confirmation — disabled
       - station: ST34000
         display_name: "Spacer Load"
         em_db_path: "ST34000_Station_DB.mainEquipmentModule"
         em_label: main
-        enabled: false
+        enabled: true
         sequences:
-          - { index: 2, name: Run, is_production: true }
+          - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
 
       - station: ST34000
         display_name: "Spacer Load RB01"
         em_db_path: "ST34000_RB01_DB.robotEquipmentModule"
         em_label: RB01
-        enabled: false
+        enabled: true
         sequences:
           - { index: 1, name: Home,        is_production: false }
           - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Run,         is_production: true  }
 
       - station: ST34000
         display_name: "Spacer Load RB02"
         em_db_path: "ST34000_RB02_DB.robotEquipmentModule"
         em_label: RB02
-        enabled: false
+        enabled: true
         sequences:
           - { index: 1, name: Home,        is_production: false }
           - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Run,         is_production: true  }
 
       # ── ST35000  End Cap Load ────────────────────────────────────────────
-      # NOTE: MAG sequence index needs confirmation — disabled
       - station: ST35000
         display_name: "End Cap Load"
         em_db_path: "ST35000_Station_DB.mainEquipmentModule"
         em_label: main
-        enabled: false
+        enabled: true
         sequences:
           - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
 
       - station: ST35000
         display_name: "End Cap Load Robot"
         em_db_path: "ST35000_RB01_DB.robotEquipmentModule"
         em_label: RB01
-        enabled: false
+        enabled: true
         sequences:
           - { index: 1, name: Home,        is_production: false }
           - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Run,         is_production: true  }
 
       # ── ST36000  Dial Unload ─────────────────────────────────────────────
       - station: ST36000
