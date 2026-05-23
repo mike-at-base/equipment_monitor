@@ -201,8 +201,25 @@ input[type="checkbox"] {
   color: var(--bp-text);
   border-color: var(--bp-border) !important;
 }
+/* Override Dash DataTable's --hover variable — Dash sets #fdfdfd (near-white)
+   on the table element; need !important on the variable AND direct td rule. */
+.dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table {
+  --hover: rgba(178, 221, 121, 0.12) !important;
+  --text-color: var(--bp-text);
+  --faded-text: var(--bp-muted);
+  --background-color-ellipses: var(--bp-surface);
+  --accent: var(--bp-livewire);
+}
+/* Target tr and td directly for full coverage */
+.dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner tr:hover {
+  background-color: rgba(178, 221, 121, 0.12) !important;
+}
 .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner tr:hover td {
-  background-color: rgba(178,221,121,.05) !important;
+  background-color: rgba(178, 221, 121, 0.12) !important;
+  color: var(--bp-text) !important;
+}
+.dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner tr:hover td .dash-cell-value {
+  background-color: rgba(178, 221, 121, 0.12) !important;
 }
 .dash-table-container .dash-filter input,
 .dash-table-container .dash-filter {
