@@ -132,7 +132,7 @@ def _connection_banner(plc_name: str) -> html.Div:
     if connected and not stale:
         css_mod  = "conn-ok"
         dot_css  = "conn-dot conn-dot-ok"
-        label    = f"{plc_name}  —  connected  ·  {node_count} nodes  ·  {age_str}"
+        label    = f"{plc_name}  —  connected  ·  {node_count} nodes"
     elif connected and stale:
         css_mod  = "conn-stale"
         dot_css  = "conn-dot conn-dot-stale"
