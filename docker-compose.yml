@@ -1,6 +1,7 @@
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
+    container_name: equipment-monitor-db
     environment:
       POSTGRES_PASSWORD: monitor
       POSTGRES_DB: equipment

@@ -35,7 +35,7 @@ cd "$INSTALL_DIR"
 docker compose up -d
 
 echo "      Waiting for database to accept connections..."
-until docker exec equipment-monitor-timescaledb-1 \
+until docker exec equipment-monitor-db \
     pg_isready -U monitor -d equipment &>/dev/null; do
     sleep 1
     printf '.'
