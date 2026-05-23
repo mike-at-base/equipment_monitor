@@ -1,0 +1,221 @@
+plcs:
+  - name: CELL1
+    opc_endpoint: "opc.tcp://10.200.2.134:4840"
+    enabled: true
+    equipment_modules:
+
+      # ── ST10000  Cell Pallet Unload ──────────────────────────────────────
+      - station: ST10000
+        display_name: "Cell Pallet Unload"
+        em_db_path: "ST10000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
+
+      - station: ST10000
+        display_name: "Pallet Unload Robot"
+        em_db_path: "ST10000_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Run,         is_production: true  }
+
+      # ── ST31000  Cell Load 1 ─────────────────────────────────────────────
+      - station: ST31000
+        display_name: "Cell Load 1"
+        em_db_path: "ST31000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
+
+      - station: ST31000
+        display_name: "Cell Load 1 Robot"
+        em_db_path: "ST31000_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Run,         is_production: true  }
+
+      # ── ST32000  Cell Load 2 ─────────────────────────────────────────────
+      - station: ST32000
+        display_name: "Cell Load 2"
+        em_db_path: "ST32000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
+
+      - station: ST32000
+        display_name: "Cell Load 2 Robot"
+        em_db_path: "ST32000_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Run,         is_production: true  }
+
+      # ── ST33000  Cell Electrical Test ────────────────────────────────────
+      - station: ST33000
+        display_name: "Cell Electrical Test"
+        em_db_path: "ST33000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+
+      # ── ST34000  Spacer Load ─────────────────────────────────────────────
+      # NOTE: seq indices for MAG Run need OPC UA browse confirmation — disabled
+      - station: ST34000
+        display_name: "Spacer Load"
+        em_db_path: "ST34000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: false
+        sequences:
+          - { index: 2, name: Run, is_production: true }
+
+      - station: ST34000
+        display_name: "Spacer Load RB01"
+        em_db_path: "ST34000_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: false
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+
+      - station: ST34000
+        display_name: "Spacer Load RB02"
+        em_db_path: "ST34000_RB02_DB.robotEquipmentModule"
+        em_label: RB02
+        enabled: false
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+
+      # ── ST35000  End Cap Load ────────────────────────────────────────────
+      # NOTE: MAG sequence index needs confirmation — disabled
+      - station: ST35000
+        display_name: "End Cap Load"
+        em_db_path: "ST35000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: false
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+
+      - station: ST35000
+        display_name: "End Cap Load Robot"
+        em_db_path: "ST35000_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: false
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+
+      # ── ST36000  Dial Unload ─────────────────────────────────────────────
+      - station: ST36000
+        display_name: "Dial Unload"
+        em_db_path: "ST36000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
+
+      - station: ST36000
+        display_name: "Dial Unload Robot"
+        em_db_path: "ST36000_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Run,         is_production: true  }
+
+      # ── ST40001  Band Load 1 ─────────────────────────────────────────────
+      - station: ST40001
+        display_name: "Band Load 1"
+        em_db_path: "ST40001_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
+
+      # ── ST40002  Band Load 2 ─────────────────────────────────────────────
+      - station: ST40002
+        display_name: "Band Load 2"
+        em_db_path: "ST40002_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true  }
+
+      # ── ST12000  Dispense ────────────────────────────────────────────────
+      - station: ST12000
+        display_name: "Dispense"
+        em_db_path: "ST12000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,    is_production: false }
+          - { index: 2, name: Running, is_production: true  }
+
+      - station: ST12000
+        display_name: "Dispense Robot"
+        em_db_path: "ST12000_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Dispense,    is_production: true  }
+
+      # ── ST13000A  Cell Stack Install A ───────────────────────────────────
+      - station: ST13000A
+        display_name: "Cell Stack Install A"
+        em_db_path: "ST13000A_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,    is_production: false }
+          - { index: 2, name: Running, is_production: true  }
+
+      - station: ST13000A
+        display_name: "Cell Stack Install A Robot"
+        em_db_path: "ST13000A_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Running,     is_production: true  }
+
+      # ── ST13000B  Cell Stack Install B ───────────────────────────────────
+      - station: ST13000B
+        display_name: "Cell Stack Install B"
+        em_db_path: "ST13000B_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,    is_production: false }
+          - { index: 2, name: Running, is_production: true  }
+
+      - station: ST13000B
+        display_name: "Cell Stack Install B Robot"
+        em_db_path: "ST13000B_RB01_DB.robotEquipmentModule"
+        em_label: RB01
+        enabled: true
+        sequences:
+          - { index: 1, name: Home,        is_production: false }
+          - { index: 2, name: Maintenance, is_production: false }
+          - { index: 3, name: Running,     is_production: true  }

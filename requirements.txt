@@ -1,0 +1,8 @@
+asyncua==1.1.5
+psycopg2-binary>=2.9
+PyYAML>=6.0
+dash>=2.17
+dash-bootstrap-components>=1.6
+plotly>=5.22
+pandas>=2.1
+python-dateutil>=2.9
