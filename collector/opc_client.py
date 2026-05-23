@@ -20,8 +20,17 @@ from collector.state_tracker import EMStateTracker
 
 log = logging.getLogger(__name__)
 
-PUBLISH_INTERVAL_MS = 100
-RECONNECT_DELAY_S = 10
+PUBLISH_INTERVAL_MS = 500   # S7-1500 revises 100 ms up to 500 ms anyway
+RECONNECT_DELAY_S   = 10
+
+# S7-1500 grants a 30 s session timeout regardless of what is requested.
+# Setting this explicitly prevents asyncua calibrating its renewal timer
+# against the (ignored) requested value of 3600 s.
+SESSION_TIMEOUT_MS  = 30_000
+
+# Per-request timeout.  Default asyncua value (4 s) is too tight when the
+# PLC is busy; 15 s gives the renewal handshake room to complete.
+REQUEST_TIMEOUT_S   = 15
 
 
 def siemens_path(em_db_path: str) -> str:
@@ -107,7 +116,10 @@ class OpcClient:
 
     async def _connect_and_subscribe(self) -> None:
         log.info("[%s] Connecting to %s", self.plc_name, self.endpoint)
-        async with Client(url=self.endpoint) as client:
+        client = Client(url=self.endpoint)
+        client.session_timeout = SESSION_TIMEOUT_MS  # match S7-1500 grant
+        client.timeout         = REQUEST_TIMEOUT_S   # per-request timeout
+        async with client:
             node_map: dict[int, tuple[EMStateTracker, str, int | None]] = {}
             nodes: list[Any] = []
 
@@ -134,9 +146,14 @@ class OpcClient:
             log.info("[%s] Subscribed to %d nodes", self.plc_name, len(nodes))
             await self._heartbeat(connected=True, node_count=len(nodes))
 
-            # Keep connection alive until error
+            # Keep connection alive.  Read ServerState (i=2259) every 10 s as
+            # an explicit keep-alive — belt-and-suspenders alongside the
+            # subscription's publish mechanism.  Session timeout is 30 s so
+            # this keeps well within the window.
+            server_state = client.get_node("i=2259")
             while self._running:
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
+                await server_state.read_value()   # raises on disconnect → reconnect
                 await self._heartbeat(connected=True, node_count=len(nodes))
 
     async def _resolve_em_nodes(
