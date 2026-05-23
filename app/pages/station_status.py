@@ -98,7 +98,10 @@ def _station_card(display_name: str, station: str, ems: list[dict]) -> html.Div:
                 className="station-card-body",
             ),
         ],
+        id={"type": "station-card", "index": station},
+        n_clicks=0,
         className="station-card",
+        title="Click to view details",
     )
 
 
@@ -172,7 +175,9 @@ def render(plc_name: str) -> html.Div:
             className="text-muted p-3",
         )
 
-    # Group by station, preserve station order from the query
+    # Group by station, preserve station order from the query.
+    # query_station_status orders main EM first, so the first row seen for
+    # each station is the main EM — use that display_name for the card header.
     station_order: list[str] = []
     groups: dict[str, list[dict]] = defaultdict(list)
     names:  dict[str, str]        = {}
@@ -181,8 +186,8 @@ def render(plc_name: str) -> html.Div:
         key = row["station"]
         if key not in groups:
             station_order.append(key)
+            names[key] = row["display_name"]   # first row = main EM
         groups[key].append(row)
-        names[key] = row["display_name"]
 
     cards = [
         _station_card(names[s], s, groups[s])
