@@ -328,25 +328,111 @@ h6 {
 .modal-title { color: var(--bp-text) !important; }
 
 /* ── DatePickerRange inside modal ─────────────────────────── */
-.DateRangePickerInput,
-.DateRangePickerInput__withBorder {
-  background-color: var(--bp-elevated);
-  border-color: var(--bp-border);
-  border-radius: 6px;
+/* Dash renders dcc.DatePickerRange with .dash-datepicker (NOT react-dates classes) */
+.dash-datepicker {
+  background-color: var(--bp-elevated) !important;
+  border: 1px solid var(--bp-border) !important;
+  border-radius: 8px !important;
   overflow: hidden;
 }
-.DateInput { background: var(--bp-elevated); }
-.DateInput_input {
-  background-color: var(--bp-elevated);
-  color: var(--bp-text);
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 13px;
+.dash-datepicker-input-wrapper {
+  background-color: var(--bp-elevated) !important;
 }
-.DateInput_input__focused {
-  border-bottom: 2px solid var(--bp-livewire);
-  background-color: var(--bp-elevated);
+.dash-datepicker-input {
+  background-color: transparent !important;
+  color: var(--bp-text) !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+  font-size: 13px !important;
+  border: none !important;
 }
-.DateRangePickerInput_arrow { color: var(--bp-muted); }
+.dash-datepicker-input:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+/* Calendar popup — Dash-native classes (NOT react-dates) */
+.dash-datepicker-content {
+  background-color: var(--bp-elevated) !important;
+  border: 1px solid var(--bp-border) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,.55) !important;
+}
+.dash-datepicker-calendar-wrapper,
+.dash-datepicker-controls,
+.dash-datepicker-calendar-container,
+.dash-datepicker-calendar {
+  background-color: var(--bp-elevated) !important;
+}
+/* Month/year nav arrows — override purple default */
+.dash-datepicker-month-nav button,
+.dash-datepicker-month-nav svg {
+  color: var(--bp-muted) !important;
+  fill: var(--bp-muted) !important;
+  opacity: 1 !important;
+}
+.dash-datepicker-month-nav button:hover {
+  color: var(--bp-livewire) !important;
+  fill: var(--bp-livewire) !important;
+}
+/* Month/year dropdowns */
+.dash-dropdown-wrapper,
+.dash-dropdown {
+  background-color: var(--bp-bg) !important;
+  border: 1px solid var(--bp-border) !important;
+  border-radius: 4px !important;
+  color: var(--bp-text) !important;
+}
+.dash-dropdown-value,
+.dash-dropdown-value-item {
+  color: var(--bp-text) !important;
+}
+/* Year input stepper */
+.dash-input-container,
+.dash-input-element {
+  background-color: var(--bp-bg) !important;
+  color: var(--bp-text) !important;
+  border-color: var(--bp-border) !important;
+}
+.dash-input-stepper {
+  background-color: var(--bp-bg) !important;
+  color: var(--bp-muted) !important;
+  border-color: var(--bp-border) !important;
+}
+/* Calendar month header (Su Mo Tu...) */
+.dash-datepicker-calendar-month-header {
+  color: var(--bp-muted) !important;
+}
+/* Day cells — padding cells (empty) and date cells */
+.dash-datepicker-calendar-padding {
+  color: var(--bp-muted) !important;
+  opacity: 0.4;
+}
+.dash-datepicker-calendar-date-inside {
+  color: var(--bp-text) !important;
+  border-radius: 4px;
+}
+.dash-datepicker-calendar-date-inside:hover {
+  background-color: rgba(178,221,121,.15) !important;
+  color: var(--bp-livewire) !important;
+  cursor: pointer;
+}
+/* Highlighted (today / range fill) — subtle tint */
+.dash-datepicker-calendar-date-highlighted {
+  background-color: rgba(178,221,121,.18) !important;
+  color: var(--bp-livewire) !important;
+  border-radius: 4px !important;
+}
+/* Selected start/end dates — solid Livewire; must come after highlighted to win */
+.dash-datepicker-calendar-date-selected {
+  background-color: var(--bp-livewire) !important;
+  color: var(--bp-grounded) !important;
+  font-weight: 700 !important;
+  border-radius: 4px !important;
+}
+/* Selected takes priority even when highlighted is also present */
+.dash-datepicker-calendar-date-selected.dash-datepicker-calendar-date-highlighted {
+  background-color: var(--bp-livewire) !important;
+  color: var(--bp-grounded) !important;
+}
 
 /* ── Scrollbars ───────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

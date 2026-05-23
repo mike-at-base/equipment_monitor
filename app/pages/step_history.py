@@ -39,6 +39,8 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
                   "step_name", "step_desc", "duration_ms", "was_faulted"]].copy()
     display["ts"] = display["ts"].dt.strftime("%Y-%m-%d %H:%M:%S.%f").str[:-3]
     display["Duration"] = display["duration_ms"].apply(_fmt_ms)
+    # Convert boolean to lowercase string so filter_query string comparison works
+    display["was_faulted"] = display["was_faulted"].map({True: "yes", False: ""})
     display = display.rename(columns={
         "ts": "Timestamp", "station": "Station", "em_label": "EM",
         "seq_name": "Sequence", "step_name": "Step",

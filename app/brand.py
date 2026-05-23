@@ -74,8 +74,8 @@ DT_STYLE_FILTER = {
 
 # Faulted row — clearly visible red tint on dark surface
 FAULTED_COND = {
-    "if": {"filter_query": "{Faulted} eq true"},
-    "backgroundColor": "rgba(197, 24, 8, 0.38)",
+    "if": {"filter_query": '{Faulted} eq "yes"'},
+    "backgroundColor": "rgba(197, 24, 8, 0.45)",
     "color": "#ffccc7",
 }
 
