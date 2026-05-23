@@ -7,6 +7,7 @@ Hover over the scrolling step text to pause it.
 """
 from __future__ import annotations
 
+import datetime
 from collections import defaultdict
 
 from dash import html
@@ -92,6 +93,61 @@ def _station_card(display_name: str, station: str, ems: list[dict]) -> html.Div:
     )
 
 
+def _connection_banner(plc_name: str) -> html.Div:
+    """Small status bar showing collector ↔ PLC connectivity."""
+    try:
+        hb_df = q.get_collector_status()
+        row   = hb_df[hb_df["plc_name"] == plc_name]
+    except Exception:
+        row = None
+
+    if row is None or (hasattr(row, "empty") and row.empty):
+        return html.Div(
+            [html.Span("○", className="conn-dot conn-dot-unknown"),
+             f"  {plc_name}  —  collector not seen"],
+            className="conn-banner conn-unknown",
+        )
+
+    r          = row.iloc[0]
+    connected  = bool(r["connected"])
+    node_count = int(r["node_count"] or 0)
+    last_seen  = r["last_seen"]
+
+    # Compute age — last_seen is timezone-aware from TimescaleDB
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if hasattr(last_seen, "tzinfo") and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=datetime.timezone.utc)
+    age_s = (now - last_seen).total_seconds()
+
+    if age_s < 60:
+        age_str = f"{int(age_s)}s ago"
+    elif age_s < 3600:
+        age_str = f"{int(age_s / 60)}m ago"
+    else:
+        age_str = f"{int(age_s / 3600)}h ago"
+
+    # Treat as stale if last heartbeat > 30 s old (collector may have died)
+    stale = age_s > 30
+
+    if connected and not stale:
+        css_mod  = "conn-ok"
+        dot_css  = "conn-dot conn-dot-ok"
+        label    = f"{plc_name}  —  connected  ·  {node_count} nodes  ·  {age_str}"
+    elif connected and stale:
+        css_mod  = "conn-stale"
+        dot_css  = "conn-dot conn-dot-stale"
+        label    = f"{plc_name}  —  stale  ·  last seen {age_str}"
+    else:
+        css_mod  = "conn-down"
+        dot_css  = "conn-dot conn-dot-down"
+        label    = f"{plc_name}  —  disconnected  ·  last seen {age_str}"
+
+    return html.Div(
+        [html.Span(className=dot_css), label],
+        className=f"conn-banner {css_mod}",
+    )
+
+
 def render(plc_name: str) -> html.Div:
     if not plc_name:
         return html.Div("No PLC selected.", className="text-muted p-3")
@@ -124,4 +180,7 @@ def render(plc_name: str) -> html.Div:
         for s in station_order
     ]
 
-    return html.Div(cards, className="status-grid")
+    return html.Div([
+        _connection_banner(plc_name),
+        html.Div(cards, className="status-grid"),
+    ])

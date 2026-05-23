@@ -1,3 +1,40 @@
+/* ── Connection banner ───────────────────────────────────────────────────────*/
+
+.conn-banner {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    border-radius: 9999px;
+    padding: 4px 14px 4px 10px;
+    margin-bottom: 14px;
+}
+
+.conn-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* Connected — green */
+.conn-ok                { background: #d6f0b4; color: #1e4d2b; }
+.conn-dot-ok            { background: #1e4d2b; }
+
+/* Stale heartbeat — amber */
+.conn-stale             { background: #fdf1d3; color: #5e4507; }
+.conn-dot-stale         { background: #f7c33c; }
+
+/* Disconnected — red */
+.conn-down              { background: #ffccc7; color: #7a0c04; }
+.conn-dot-down          { background: #c51808; }
+
+/* Never seen */
+.conn-unknown           { background: #f0eeeb; color: #7f7d7a; }
+.conn-dot-unknown       { background: #a9a8a7; }
+
 /* ── Live Status dashboard ─────────────────────────────────────────────────── */
 
 .status-grid {
