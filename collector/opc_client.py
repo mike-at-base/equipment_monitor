@@ -205,13 +205,15 @@ class OpcClient:
         await try_node(f'{base}.status.running',         'running',    None)
         await try_node(f'{base}.status.activeSequence',  'active_seq', None)
 
-        # Subscribe to stepControl[N] for every sequence N on this EM.
-        # The PLC writes step data to stepControl[N] when sequence N is active,
-        # so each slot is independent and all must be monitored.
-        # seq_idx is passed through node_map so the handler tags events correctly
-        # without needing to consult activeSequence at runtime.
+        # Subscribe to stepControl[N-1] for every sequence N on this EM.
+        #
+        # The S7-1500 PLC uses 1-indexed sequence numbers (activeSequence = 1, 2, 3…)
+        # but the stepControl ARRAY is 0-indexed in OPC UA.  Sequence N writes its
+        # step data to stepControl[N-1].  seq_idx (1-based, from config) is kept as
+        # the logical identifier passed through node_map so the handler and
+        # is_active guard stay consistent with activeSequence values.
         for seq_idx in tracker.seq_indices:
-            sc = f'{base}.stepControl[{seq_idx}]'
+            sc = f'{base}.stepControl[{seq_idx - 1}]'
             await try_node(f'{sc}.step',                'step',      seq_idx)
             await try_node(f'{sc}.description',         'step_desc', seq_idx)
             await try_node(f'{sc}.faulted',             'faulted',   seq_idx)
