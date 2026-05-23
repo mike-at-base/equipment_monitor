@@ -157,30 +157,54 @@
     margin-left: auto;
 }
 
-/* Marquee — scrolls step name + description from right to left */
-.step-marquee-outer {
+/* ── Step display — name static, description scrolls only if it overflows ── */
+
+.step-display {
+    margin-top: 3px;
+}
+
+/* Step name — always fully visible, no scroll */
+.step-name {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #292826;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.4;
+}
+
+/* Description container — clips overflow, JS adds marquee-active when needed */
+.step-desc-outer {
     overflow: hidden;
     width: 100%;
-    height: 1.35em;
+    height: 1.25em;
     position: relative;
+    margin-top: 1px;
 }
 
-.step-marquee-inner {
+.step-desc-inner {
     display: inline-block;
     white-space: nowrap;
-    padding-left: 100%;
-    font-size: 0.78rem;
-    color: #54524f;
-    animation: step-marquee 24s linear infinite;
-    will-change: transform;
+    font-size: 0.72rem;
+    color: #7f7d7a;
+    line-height: 1.25em;
+    /* No animation until JS detects overflow */
 }
 
-@keyframes step-marquee {
-    from { transform: translateX(0); }
-    to   { transform: translateX(-100%); }
+/* JS adds this class when scrollWidth > containerWidth */
+.step-desc-inner.marquee-active {
+    animation: desc-scroll 12s ease-in-out infinite;
 }
 
-/* Pause on hover so you can read it */
-.step-marquee-outer:hover .step-marquee-inner {
+/* Pendulum: show start → scroll to reveal end → pause → scroll back */
+@keyframes desc-scroll {
+    0%,  20% { transform: translateX(0); }
+    45%, 55% { transform: translateX(var(--scroll-dist, 0px)); }
+    80%, 100% { transform: translateX(0); }
+}
+
+/* Pause on hover to read */
+.step-desc-outer:hover .step-desc-inner {
     animation-play-state: paused;
 }

@@ -34,18 +34,27 @@ def _state_badge(state: str) -> html.Span:
     )
 
 
-def _marquee(step_name: str | None, step_desc: str | None) -> html.Div:
-    if step_name and step_desc:
-        text = f"{step_name}  —  {step_desc}"
-    elif step_name:
-        text = step_name
-    else:
-        text = "—"
-    return html.Div(
-        html.Span(text, className="step-marquee-inner"),
-        className="step-marquee-outer",
-        title=text,  # tooltip for accessibility
-    )
+def _step_display(step_name: str | None, step_desc: str | None) -> html.Div:
+    """
+    Step name left-aligned and always visible.
+    Description left-aligned below it; marquee only fires (via JS) when
+    the text is wider than the card — otherwise it just sits static.
+    """
+    name_text = step_name.strip() if step_name else "—"
+
+    children: list = [
+        html.Div(name_text, className="step-name", title=name_text),
+    ]
+    if step_desc and step_desc.strip():
+        desc_text = step_desc.strip()
+        children.append(
+            html.Div(
+                html.Span(desc_text, className="step-desc-inner"),
+                className="step-desc-outer",
+                title=desc_text,
+            )
+        )
+    return html.Div(children, className="step-display")
 
 
 def _em_row(em: dict) -> html.Div:
@@ -61,7 +70,7 @@ def _em_row(em: dict) -> html.Div:
     return html.Div(
         [
             html.Div(header_children, className="em-header"),
-            _marquee(em.get("step_name"), em.get("step_desc")),
+            _step_display(em.get("step_name"), em.get("step_desc")),
         ],
         className="em-row",
     )
