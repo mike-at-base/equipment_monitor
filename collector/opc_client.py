@@ -148,6 +148,17 @@ class OpcClient:
             log.info("[%s] Subscribed to %d nodes", self.plc_name, len(nodes))
             await self._heartbeat(connected=True, node_count=len(nodes))
 
+            # Allow the initial subscription burst to settle, then correct
+            # em_current_step for each EM.  The burst fires all subscribed
+            # nodes; notification order is server-determined, so the last
+            # stepControl[N] to arrive may not be from the active sequence.
+            # flush_current_step() re-writes the right step after the dust
+            # settles, using _active_seq (if known) or the first non-STOP seq.
+            await asyncio.sleep(2.0)
+            flush_ts = datetime.datetime.now(datetime.timezone.utc)
+            for tracker in self._trackers.values():
+                tracker.flush_current_step(flush_ts)
+
             # Keep connection alive.  Read ServerState (i=2259) every 10 s as
             # an explicit keep-alive — belt-and-suspenders alongside the
             # subscription's publish mechanism.  Session timeout is 30 s so

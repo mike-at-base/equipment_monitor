@@ -55,6 +55,47 @@ class EMStateTracker:
         self._em_fault:  bool | None = None
         self._running:   bool | None = None
 
+    # ── Startup correction ───────────────────────────────────────────────────
+
+    def flush_current_step(self, ts: datetime.datetime) -> None:
+        """
+        Called ~2 s after subscription startup once the initial burst has
+        settled.  The burst fires all subscribed nodes simultaneously; the
+        last notification written wins, which may be an idle sequence's
+        STEP_STOP even though a different sequence is actively running.
+
+        Priority:
+          1. Known active sequence (non-zero) and its current step.
+          2. First sequence whose step is not STEP_STOP (heuristic when
+             activeSequence = 0 / not yet reported by PLC).
+        """
+        seq  = self._active_seq          # None or 0 when PLC not in a seq
+        step = self._step.get(seq) if seq else None
+        desc = self._step_desc.get(seq) if seq else None
+
+        if not step:
+            # Fallback: find any sequence that isn't parked at STEP_STOP
+            for i in self.seq_indices:
+                s = self._step.get(i)
+                if s and s != "STEP_STOP":
+                    seq, step, desc = i, s, self._step_desc.get(i)
+                    break
+
+        if not step:
+            return
+
+        log.debug("[%s/%s] flush_current_step → seq=%s step=%s",
+                  self.station, self.em_label, seq, step)
+        try:
+            conn = get_pool().getconn()
+            try:
+                q.upsert_current_step(conn, self.em_id, seq, step, desc, ts)
+                conn.commit()
+            finally:
+                get_pool().putconn(conn)
+        except Exception:
+            log.exception("flush_current_step failed em=%d", self.em_id)
+
     # ── Tag callbacks (called from OpcClient subscription handler) ──────────
 
     def on_active_seq_change(self, val: int | None,
