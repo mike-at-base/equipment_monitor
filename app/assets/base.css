@@ -194,8 +194,11 @@ input[type="checkbox"] {
   border-color: var(--bp-border) !important;
 }
 .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner td {
-  background-color: var(--bp-surface) !important;
-  color: var(--bp-text) !important;
+  /* No !important on bg/color — style_data_conditional (inline, higher priority)
+     must be able to override these for conditional row highlighting to work.
+     DT_STYLE_CELL inline styles already set the dark values; these are fallback. */
+  background-color: var(--bp-surface);
+  color: var(--bp-text);
   border-color: var(--bp-border) !important;
 }
 .dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner tr:hover td {
@@ -297,6 +300,53 @@ h6 {
 
 /* ── Containers ───────────────────────────────────────────── */
 .container-fluid, .row { background: transparent !important; }
+
+/* ── Modal (station detail + config) ─────────────────────── */
+.modal-content {
+  background-color: var(--bp-surface) !important;
+  border: 1px solid var(--bp-border) !important;
+  color: var(--bp-text) !important;
+}
+.modal-header {
+  background-color: var(--bp-elevated) !important;
+  border-bottom: 1px solid var(--bp-border) !important;
+}
+.modal-body {
+  background-color: var(--bp-surface) !important;
+}
+.modal-footer {
+  background-color: var(--bp-elevated) !important;
+  border-top: 1px solid var(--bp-border) !important;
+}
+/* Bootstrap close button — invert to white on dark header */
+.modal-header .btn-close {
+  filter: invert(1) grayscale(1) brightness(1.8);
+  opacity: .7;
+}
+.modal-header .btn-close:hover { opacity: 1; }
+/* Modal title inherits brand text color */
+.modal-title { color: var(--bp-text) !important; }
+
+/* ── DatePickerRange inside modal ─────────────────────────── */
+.DateRangePickerInput,
+.DateRangePickerInput__withBorder {
+  background-color: var(--bp-elevated);
+  border-color: var(--bp-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.DateInput { background: var(--bp-elevated); }
+.DateInput_input {
+  background-color: var(--bp-elevated);
+  color: var(--bp-text);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+}
+.DateInput_input__focused {
+  border-bottom: 2px solid var(--bp-livewire);
+  background-color: var(--bp-elevated);
+}
+.DateRangePickerInput_arrow { color: var(--bp-muted); }
 
 /* ── Scrollbars ───────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }

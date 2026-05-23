@@ -48,21 +48,22 @@
 .station-card {
     border-radius: 10px;
     overflow: hidden;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.13);
-    background: #ffffff;
-    border: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.40);
+    background: #2e2b29;     /* ELEVATED surface — lifts off the BG */
+    border: 1px solid #3a3733;
     cursor: pointer;
     transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
 .station-card:hover {
     transform: translateY(-3px);
-    box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.55);
+    border-color: #54524f;
 }
 
 .station-card:active {
     transform: translateY(-1px);
-    box-shadow: 0 3px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 3px 10px rgba(0,0,0,0.40);
 }
 
 /* Dark header — station identity */
@@ -98,7 +99,7 @@
 }
 
 .em-row + .em-row {
-    border-top: 1px solid #d8d7d5;
+    border-top: 1px solid #3a3733;
     margin-top: 6px;
 }
 
@@ -116,9 +117,9 @@
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: #7f7d7a;
-    background: #f0eeeb;
-    border: 1px solid #d8d7d5;
+    color: #9a9794;
+    background: #3a3733;
+    border: 1px solid #54524f;
     border-radius: 9999px;
     padding: 1px 8px;
     line-height: 1.6;
@@ -165,7 +166,7 @@
 .seq-name-tag {
     font-size: 0.66rem;
     font-weight: 500;
-    color: #7f7d7a;
+    color: #9a9794;
     margin-left: auto;
 }
 
@@ -179,7 +180,7 @@
 .step-name {
     font-size: 0.78rem;
     font-weight: 600;
-    color: #292826;
+    color: #f0eeeb;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -199,7 +200,7 @@
     display: inline-block;
     white-space: nowrap;
     font-size: 0.72rem;
-    color: #7f7d7a;
+    color: #9a9794;
     line-height: 1.25em;
     /* No animation until JS detects overflow */
 }

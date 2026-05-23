@@ -87,11 +87,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
         chart = html.Div()
 
     return html.Div([
-        dbc.Row([
-            dbc.Col(html.Small(f"{len(df):,} events", className="text-muted"), width="auto"),
-        ], className="mb-2"),
-        dbc.Row([
-            dbc.Col(table,  md=7),
-            dbc.Col(chart,  md=5),
-        ]),
+        html.Small(f"{len(df):,} events", className="text-muted d-block mb-2"),
+        table,
+        html.Div(chart, className="mt-4"),
     ])

@@ -72,11 +72,11 @@ DT_STYLE_FILTER = {
     "borderColor": BORDER,
 }
 
-# Faulted row — soft red tint on dark bg
+# Faulted row — clearly visible red tint on dark surface
 FAULTED_COND = {
     "if": {"filter_query": "{Faulted} eq true"},
-    "backgroundColor": "rgba(197, 24, 8, 0.12)",
-    "color": "#ff7066",
+    "backgroundColor": "rgba(197, 24, 8, 0.38)",
+    "color": "#ffccc7",
 }
 
 # Availability % colour rules
