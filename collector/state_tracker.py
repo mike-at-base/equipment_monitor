@@ -119,7 +119,8 @@ class EMStateTracker:
                 # sequence is actually running.
                 # When _active_seq is None (not yet received) we allow any
                 # write; on_active_seq_change will correct it once known.
-                is_active = (self._active_seq is None or
+                # 0 means "no sequence active" on S7-1500 — treat same as None
+                is_active = (not self._active_seq or
                              self._active_seq == seq_idx)
                 if step_name and is_active:
                     q.upsert_current_step(

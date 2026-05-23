@@ -75,7 +75,9 @@ class _SubHandler:
             elif role == "ext_msg":
                 tracker._ext_msg[seq_idx] = str(val).strip() if val else None
             elif role == "active_seq":
-                tracker.on_active_seq_change(int(val) if val is not None else None, ts)
+                # S7-1500 returns 0 when no sequence is running; treat as None
+                seq_val = int(val) if val else None
+                tracker.on_active_seq_change(seq_val, ts)
             elif role == "automatic":
                 tracker.on_automatic_change(bool(val), ts)
             elif role == "em_fault":
