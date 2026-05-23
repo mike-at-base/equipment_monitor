@@ -125,9 +125,13 @@ class OpcClient:
             node_map: dict[int, tuple[EMStateTracker, str, int | None]] = {}
             nodes: list[Any] = []
 
+            # avail_nodes: em_id → (auto_node, fault_node, running_node)
+            # kept for periodic re-reads in the keep-alive loop below
+            avail_nodes: dict[int, tuple] = {}
+
             for em_id, tracker in self._trackers.items():
                 em_nodes = await self._resolve_em_nodes(
-                    client, tracker, node_map
+                    client, tracker, node_map, avail_nodes
                 )
                 nodes.extend(em_nodes)
 
@@ -163,17 +167,48 @@ class OpcClient:
             # an explicit keep-alive — belt-and-suspenders alongside the
             # subscription's publish mechanism.  Session timeout is 30 s so
             # this keeps well within the window.
+            #
+            # Every 30 s also re-read the three availability signals directly
+            # to catch notifications that the S7-1500 drops when a signal
+            # bounces faster than its MinimumSamplingInterval (typically 1 s).
             server_state = client.get_node("i=2259")
+            tick = 0
             while self._running:
                 await asyncio.sleep(10)
                 await server_state.read_value()   # raises on disconnect → reconnect
                 await self._heartbeat(connected=True, node_count=len(nodes))
+                tick += 1
+                if tick % 3 == 0:               # every 30 s
+                    await self._resync_availability(avail_nodes)
+
+    async def _resync_availability(
+        self,
+        avail_nodes: dict[int, tuple],
+    ) -> None:
+        """
+        Re-read automatic / fault / running directly from the PLC and push
+        any changed values through the tracker callbacks.  Runs every 30 s to
+        recover from S7-1500 dropped notifications (signal bounces within one
+        MinimumSamplingInterval are delivered inconsistently).
+        """
+        ts = datetime.datetime.now(datetime.timezone.utc)
+        for em_id, (tracker, auto_node, fault_node, run_node) in avail_nodes.items():
+            try:
+                auto    = bool(await auto_node.read_value())
+                fault   = bool(await fault_node.read_value())
+                running = bool(await run_node.read_value())
+                tracker.on_automatic_change(auto,    ts)
+                tracker.on_em_fault_change(fault,    ts)
+                tracker.on_running_change(running,   ts)
+            except Exception:
+                log.debug("resync_availability failed em=%d", em_id)
 
     async def _resolve_em_nodes(
         self,
         client: Client,
         tracker: EMStateTracker,
         node_map: dict,
+        avail_nodes: dict,
     ) -> list:
         """Browse the PLC namespace to resolve NodeIds for one EM."""
         nodes = []
@@ -204,6 +239,14 @@ class OpcClient:
         await try_node(f'{base}.status.alarm.fault',     'em_fault',   None)
         await try_node(f'{base}.status.running',         'running',    None)
         await try_node(f'{base}.status.activeSequence',  'active_seq', None)
+
+        # Save node refs for periodic re-reads (avail signal bounce recovery)
+        avail_nodes[tracker.em_id] = (
+            tracker,
+            make_node(f'{base}.status.mode.automatic'),
+            make_node(f'{base}.status.alarm.fault'),
+            make_node(f'{base}.status.running'),
+        )
 
         # Subscribe to stepControl[N-1] for every sequence N on this EM.
         #
