@@ -59,11 +59,31 @@ class EMStateTracker:
 
     def on_active_seq_change(self, val: int | None,
                              ts: datetime.datetime) -> None:
-        """Track which sequence is currently active (informational)."""
+        """Track which sequence is active and refresh em_current_step to match."""
         if val == self._active_seq:
             return
         self._active_seq = val
         log.debug("[%s/%s] activeSequence -> %s", self.station, self.em_label, val)
+
+        # Immediately update em_current_step with the new active sequence's
+        # current step so the dashboard switches instantly on sequence change.
+        if val is None:
+            return
+        step = self._step.get(val)
+        if not step:
+            return
+        try:
+            conn = get_pool().getconn()
+            try:
+                q.upsert_current_step(
+                    conn, self.em_id, val, step,
+                    self._step_desc.get(val), ts,
+                )
+                conn.commit()
+            finally:
+                get_pool().putconn(conn)
+        except Exception:
+            log.exception("upsert_current_step (seq change) failed em=%d", self.em_id)
 
     def on_step_change(self, seq_idx: int, step_name: str,
                        ts: datetime.datetime) -> None:
@@ -92,10 +112,16 @@ class EMStateTracker:
                         duration_ms=duration_ms,
                         was_faulted=self._faulted.get(seq_idx, False),
                     )
-                # Track the ARRIVING step for the live status dashboard.
-                # step_desc may still be the previous step's value here; it will
-                # be corrected moments later when on_step_desc_change fires.
-                if step_name:
+                # Track the ARRIVING step for the live status dashboard,
+                # but only when this sequence is the active one.  All
+                # stepControl[N] slots fire on subscription startup; without
+                # this guard the last notification wins regardless of which
+                # sequence is actually running.
+                # When _active_seq is None (not yet received) we allow any
+                # write; on_active_seq_change will correct it once known.
+                is_active = (self._active_seq is None or
+                             self._active_seq == seq_idx)
+                if step_name and is_active:
                     q.upsert_current_step(
                         conn, self.em_id, seq_idx, step_name,
                         self._step_desc.get(seq_idx), ts,
@@ -112,10 +138,13 @@ class EMStateTracker:
 
     def on_step_desc_change(self, seq_idx: int, desc: str | None,
                             ts: datetime.datetime) -> None:
-        """Update step description and patch em_current_step if a step is active."""
+        """Update step description and patch em_current_step if active sequence."""
         self._step_desc[seq_idx] = desc
         step = self._step.get(seq_idx)
         if not step:
+            return
+        is_active = (self._active_seq is None or self._active_seq == seq_idx)
+        if not is_active:
             return
         try:
             conn = get_pool().getconn()
