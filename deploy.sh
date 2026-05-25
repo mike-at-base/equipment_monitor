@@ -1,79 +1,93 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# deploy.sh — install Equipment Monitor on a Linux server
+# deploy.sh — install / update Equipment Monitor on a Linux server.
+# The full stack (TimescaleDB + collector + Dash app) runs in containers
+# via docker compose.  Idempotent — re-run after a `git pull` to update.
 #
 # Usage (run from the cloned repo):
 #   chmod +x deploy.sh
 #   ./deploy.sh
 #
 # Prerequisites:
-#   - Python 3.11+  (python3)
-#   - Docker + Docker Compose plugin
-#   - sudo access (for systemd service installation)
-#
-# On re-deploy (updates): pull the repo and re-run. The script is idempotent.
+#   - Docker Engine + Docker Compose plugin (https://docs.docker.com/engine/install/)
+#   - The user running this script in the `docker` group (or use sudo)
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="${PYTHON:-python3}"
-SERVICE_USER="${SERVICE_USER:-$(whoami)}"
 
+echo ""
 echo "=== Equipment Monitor deploy ==="
 echo "    Install dir : $INSTALL_DIR"
-echo "    Python      : $($PYTHON --version)"
-echo "    Service user: $SERVICE_USER"
 echo ""
 
-# ── 1. Python dependencies ────────────────────────────────────────────────────
-echo "[1/4] Installing Python dependencies..."
-"$PYTHON" -m pip install --quiet -r "$INSTALL_DIR/requirements.txt"
-
-# ── 2. TimescaleDB ────────────────────────────────────────────────────────────
-echo "[2/4] Starting TimescaleDB container..."
 cd "$INSTALL_DIR"
-docker compose up -d
 
-echo "      Waiting for database to accept connections..."
-until docker exec equipment-monitor-db \
-    pg_isready -U monitor -d equipment &>/dev/null; do
-    sleep 1
+# ── Pre-flight checks ─────────────────────────────────────────────────────────
+command -v docker >/dev/null 2>&1 || {
+    echo "ERROR: docker not found.  Install Docker Engine first:"
+    echo "       https://docs.docker.com/engine/install/"
+    exit 1
+}
+docker compose version >/dev/null 2>&1 || {
+    echo "ERROR: docker compose plugin not found.  Install it via:"
+    echo "       apt install docker-compose-plugin    (Debian/Ubuntu)"
+    exit 1
+}
+
+# ── 1. Migrate from a previous native-Python deploy, if present ──────────────
+# Older versions of this repo installed equipment-collector.service and
+# equipment-app.service as systemd units that ran `python collector/main.py`
+# and `python app/main.py` directly.  Those would race the new Docker stack
+# for port 8050 and double-write into the DB, so stop and disable them
+# before bringing the containers up.
+if systemctl list-unit-files 2>/dev/null | grep -q '^equipment-'; then
+    echo "[1/3] Detected pre-existing systemd units from a native deploy."
+    echo "      Stopping and disabling so the Docker stack can take over..."
+    sudo systemctl stop    equipment-collector equipment-app 2>/dev/null || true
+    sudo systemctl disable equipment-collector equipment-app 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/equipment-collector.service \
+               /etc/systemd/system/equipment-app.service
+    sudo systemctl daemon-reload
+    echo "      Done."
+else
+    echo "[1/3] No pre-existing native services to clean up."
+fi
+
+# ── 2. Build images + bring up the full stack ────────────────────────────────
+# `up -d --build` rebuilds the image whenever the Dockerfile or any source
+# under the build context has changed.  The compose healthcheck on
+# timescaledb gates the collector and app, and collector/main.py runs
+# init_schema() on first boot so DB tables are created automatically.
+echo "[2/3] Building images and bringing up containers..."
+docker compose up -d --build
+
+# ── 3. Wait for the dashboard to respond ─────────────────────────────────────
+echo "[3/3] Waiting for the dashboard to come up..."
+for i in $(seq 1 60); do
+    if curl -fsS -o /dev/null http://localhost:8050; then
+        echo "      Ready."
+        break
+    fi
+    sleep 2
     printf '.'
 done
-echo " ready."
+echo ""
 
-# ── 3. Database schema ────────────────────────────────────────────────────────
-echo "[3/4] Initialising database schema..."
-cd "$INSTALL_DIR"
-"$PYTHON" db/schema.py
+# ── Summary ──────────────────────────────────────────────────────────────────
+IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost)"
 
-# ── 4. Systemd services ───────────────────────────────────────────────────────
-echo "[4/4] Installing systemd services..."
-PYTHON_BIN="$(which "$PYTHON")"
-UNIT_DIR=/etc/systemd/system
-
-for svc in equipment-collector equipment-app; do
-    sed \
-        -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-        -e "s|{{PYTHON}}|$PYTHON_BIN|g"       \
-        -e "s|{{USER}}|$SERVICE_USER|g"        \
-        "$INSTALL_DIR/systemd/$svc.service"    \
-    | sudo tee "$UNIT_DIR/$svc.service" > /dev/null
-    echo "      Wrote $UNIT_DIR/$svc.service"
-done
-
-sudo systemctl daemon-reload
-sudo systemctl enable equipment-collector equipment-app
-sudo systemctl restart equipment-collector equipment-app
-
-# ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Deploy complete ==="
 echo ""
-echo "    Dashboard : http://$(hostname -I | awk '{print $1}'):8050"
+echo "    Dashboard  : http://${IP}:8050"
 echo ""
-echo "    Status    : sudo systemctl status equipment-collector equipment-app"
-echo "    App logs  : journalctl -u equipment-app -f"
-echo "    Collector : journalctl -u equipment-collector -f"
+echo "    Status     : docker compose ps"
+echo "    App logs   : docker compose logs -f app"
+echo "    Collector  : docker compose logs -f collector"
+echo "    DB logs    : docker compose logs -f timescaledb"
+echo "    Restart    : docker compose restart"
+echo "    Update     : git pull && ./deploy.sh"
+echo "    Stop all   : docker compose down        # data persists"
+echo "    Wipe DB    : docker compose down -v     # loses all data"
 echo ""
-echo "    To update : git pull && ./deploy.sh"

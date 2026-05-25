@@ -1,100 +1,80 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# deploy.ps1 — install Equipment Monitor on a Windows machine
+# deploy.ps1 — install / update Equipment Monitor on a Windows machine.
+# The full stack (TimescaleDB + collector + Dash app) runs in containers
+# via Docker Desktop.  Idempotent — re-run after a `git pull` to update.
 #
-# Usage (run from the cloned repo, as the user who will run the services):
+# Usage (run from the cloned repo, as the user who will run Docker Desktop):
 #   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # once, if needed
 #   .\deploy.ps1
 #
 # Prerequisites:
-#   - Python 3.11+  (in PATH)
-#   - Docker Desktop (running, with "Start Docker Desktop when you log in" enabled)
-#
-# Services run as Windows Task Scheduler tasks that start at login and
-# auto-restart on failure — no extra service manager needed.
-#
-# On re-deploy (updates): git pull, then re-run this script.
+#   - Docker Desktop (running, with "Start Docker Desktop when you log in"
+#     enabled if you want auto-start)
 # ─────────────────────────────────────────────────────────────────────────────
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
 $INSTALL_DIR = $PSScriptRoot
-$PYTHON      = (Get-Command python -ErrorAction Stop).Source
 
 Write-Host ""
 Write-Host "=== Equipment Monitor deploy (Windows) ===" -ForegroundColor Cyan
 Write-Host "    Install dir : $INSTALL_DIR"
-Write-Host "    Python      : $PYTHON"
 Write-Host ""
 
-# ── 1. Python dependencies ────────────────────────────────────────────────────
-Write-Host "[1/4] Installing Python dependencies..." -ForegroundColor Yellow
-& $PYTHON -m pip install --quiet -r "$INSTALL_DIR\requirements.txt"
-if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-
-# ── 2. TimescaleDB ────────────────────────────────────────────────────────────
-Write-Host "[2/4] Starting TimescaleDB container..." -ForegroundColor Yellow
 Push-Location $INSTALL_DIR
-docker compose up -d
-if ($LASTEXITCODE -ne 0) { throw "docker compose up failed — is Docker Desktop running?" }
 
-Write-Host "      Waiting for database to accept connections..."
-$tries = 0
-do {
-    Start-Sleep -Seconds 2
-    $tries++
-    docker exec equipment-monitor-db pg_isready -U monitor -d equipment 2>$null | Out-Null
-    if ($tries -gt 30) { throw "Database did not become ready after 60 s" }
-} until ($LASTEXITCODE -eq 0)
-Write-Host "      Ready."
-Pop-Location
-
-# ── 3. Database schema ────────────────────────────────────────────────────────
-Write-Host "[3/4] Initialising database schema..." -ForegroundColor Yellow
-Push-Location $INSTALL_DIR
-& $PYTHON db/schema.py
-if ($LASTEXITCODE -ne 0) { throw "Schema init failed" }
-Pop-Location
-
-# ── 4. Task Scheduler tasks ───────────────────────────────────────────────────
-Write-Host "[4/4] Registering startup tasks in Task Scheduler..." -ForegroundColor Yellow
-
-$settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit   ([TimeSpan]::Zero) `
-    -RestartCount         99                 `
-    -RestartInterval      (New-TimeSpan -Minutes 1) `
-    -StartWhenAvailable
-
-$tasks = @(
-    @{ Name = "EquipmentMonitor-Collector"; Arg = "collector/main.py" },
-    @{ Name = "EquipmentMonitor-App";       Arg = "app/main.py"       }
-)
-
-foreach ($t in $tasks) {
-    $action = New-ScheduledTaskAction `
-        -Execute          $PYTHON        `
-        -Argument         $t.Arg         `
-        -WorkingDirectory $INSTALL_DIR
-
-    # AtLogOn trigger — fires when this user logs in.
-    # Docker Desktop also requires a logged-in user, so this is the right trigger.
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-
-    Register-ScheduledTask `
-        -TaskName   $t.Name   `
-        -Action     $action   `
-        -Trigger    $trigger  `
-        -Settings   $settings `
-        -RunLevel   Highest   `
-        -Force | Out-Null
-
-    # Kill any existing instance and start fresh
-    Stop-ScheduledTask  -TaskName $t.Name -ErrorAction SilentlyContinue
-    Start-ScheduledTask -TaskName $t.Name
-
-    Write-Host "      $($t.Name) — registered and started"
+# ── Pre-flight checks ────────────────────────────────────────────────────────
+try {
+    docker compose version | Out-Null
+} catch {
+    throw "Docker / docker compose not found.  Install Docker Desktop first."
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# ── 1. Migrate from a previous native-Python deploy, if present ──────────────
+# Older versions of this repo registered EquipmentMonitor-Collector and
+# EquipmentMonitor-App as Task Scheduler tasks that ran `python collector/main.py`
+# and `python app/main.py` directly.  They would race the Docker stack for
+# port 8050, so stop and unregister them before bringing the containers up.
+$existing = Get-ScheduledTask -TaskName "EquipmentMonitor-*" -ErrorAction SilentlyContinue
+if ($existing) {
+    Write-Host "[1/3] Detected pre-existing scheduled tasks from a native deploy." -ForegroundColor Yellow
+    Write-Host "      Stopping and unregistering so the Docker stack can take over..."
+    foreach ($t in $existing) {
+        try { Stop-ScheduledTask  -TaskName $t.TaskName -ErrorAction Stop } catch { }
+        try { Unregister-ScheduledTask -TaskName $t.TaskName -Confirm:$false -ErrorAction Stop } catch { }
+        Write-Host "      Removed $($t.TaskName)"
+    }
+} else {
+    Write-Host "[1/3] No pre-existing native tasks to clean up." -ForegroundColor Yellow
+}
+
+# ── 2. Build images + bring up the full stack ────────────────────────────────
+Write-Host "[2/3] Building images and bringing up containers..." -ForegroundColor Yellow
+docker compose up -d --build
+if ($LASTEXITCODE -ne 0) {
+    throw "docker compose up failed — is Docker Desktop running?"
+}
+
+# ── 3. Wait for the dashboard to respond ─────────────────────────────────────
+Write-Host "[3/3] Waiting for the dashboard to come up..." -ForegroundColor Yellow
+$ready = $false
+for ($i = 0; $i -lt 60; $i++) {
+    try {
+        $r = Invoke-WebRequest -Uri "http://localhost:8050" -UseBasicParsing -TimeoutSec 2
+        if ($r.StatusCode -eq 200) { $ready = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 2
+    Write-Host "." -NoNewline
+}
+Write-Host ""
+if (-not $ready) {
+    Write-Warning "Dashboard did not respond within 2 minutes.  Check logs:"
+    Write-Warning "    docker compose logs -f app"
+}
+
+Pop-Location
+
+# ── Summary ──────────────────────────────────────────────────────────────────
 $ip = (Get-NetIPAddress -AddressFamily IPv4 |
        Where-Object { $_.IPAddress -notmatch '^127\.' -and $_.PrefixOrigin -ne 'WellKnown' } |
        Select-Object -First 1).IPAddress
@@ -102,18 +82,14 @@ $ip = (Get-NetIPAddress -AddressFamily IPv4 |
 Write-Host ""
 Write-Host "=== Deploy complete ===" -ForegroundColor Green
 Write-Host ""
-Write-Host "    Dashboard : http://${ip}:8050" -ForegroundColor White
+Write-Host "    Dashboard  : http://${ip}:8050" -ForegroundColor White
 Write-Host ""
-Write-Host "    Check status:"
-Write-Host "      Get-ScheduledTask -TaskName 'EquipmentMonitor-*' | Select TaskName,State"
-Write-Host ""
-Write-Host "    View logs (Task Scheduler writes to Event Log):"
-Write-Host "      Get-WinEvent -LogName 'Microsoft-Windows-TaskScheduler/Operational' -MaxEvents 20"
-Write-Host ""
-Write-Host "    Stop/start a service:"
-Write-Host "      Stop-ScheduledTask  -TaskName 'EquipmentMonitor-Collector'"
-Write-Host "      Start-ScheduledTask -TaskName 'EquipmentMonitor-Collector'"
-Write-Host ""
-Write-Host "    To update:"
-Write-Host "      git pull; .\deploy.ps1"
+Write-Host "    Status     : docker compose ps"
+Write-Host "    App logs   : docker compose logs -f app"
+Write-Host "    Collector  : docker compose logs -f collector"
+Write-Host "    DB logs    : docker compose logs -f timescaledb"
+Write-Host "    Restart    : docker compose restart"
+Write-Host "    Update     : git pull; .\deploy.ps1"
+Write-Host "    Stop all   : docker compose down       # data persists"
+Write-Host "    Wipe DB    : docker compose down -v    # loses all data"
 Write-Host ""
