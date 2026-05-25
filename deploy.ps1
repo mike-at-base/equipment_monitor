@@ -1,7 +1,7 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# deploy.ps1 — install / update Equipment Monitor on a Windows machine.
+# -----------------------------------------------------------------------------
+# deploy.ps1 -- install / update Equipment Monitor on a Windows machine.
 # The full stack (TimescaleDB + collector + Dash app) runs in containers
-# via Docker Desktop.  Idempotent — re-run after a `git pull` to update.
+# via Docker Desktop.  Idempotent -- re-run after a `git pull` to update.
 #
 # Usage (run from the cloned repo, as the user who will run Docker Desktop):
 #   Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # once, if needed
@@ -10,7 +10,7 @@
 # Prerequisites:
 #   - Docker Desktop (running, with "Start Docker Desktop when you log in"
 #     enabled if you want auto-start)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
@@ -23,18 +23,18 @@ Write-Host ""
 
 Push-Location $INSTALL_DIR
 
-# ── Pre-flight checks ────────────────────────────────────────────────────────
+# ---- Pre-flight checks ------------------------------------------------------
 try {
     docker compose version | Out-Null
 } catch {
     throw "Docker / docker compose not found.  Install Docker Desktop first."
 }
 
-# ── 1. Migrate from a previous native-Python deploy, if present ──────────────
+# ---- 1. Migrate from a previous native-Python deploy, if present ------------
 # Older versions of this repo registered EquipmentMonitor-Collector and
-# EquipmentMonitor-App as Task Scheduler tasks that ran `python collector/main.py`
-# and `python app/main.py` directly.  They would race the Docker stack for
-# port 8050, so stop and unregister them before bringing the containers up.
+# EquipmentMonitor-App as Task Scheduler tasks that ran the Python entry
+# points directly.  They would race the Docker stack for port 8050, so
+# stop and unregister them before bringing the containers up.
 $existing = Get-ScheduledTask -TaskName "EquipmentMonitor-*" -ErrorAction SilentlyContinue
 if ($existing) {
     Write-Host "[1/3] Detected pre-existing scheduled tasks from a native deploy." -ForegroundColor Yellow
@@ -48,14 +48,14 @@ if ($existing) {
     Write-Host "[1/3] No pre-existing native tasks to clean up." -ForegroundColor Yellow
 }
 
-# ── 2. Build images + bring up the full stack ────────────────────────────────
+# ---- 2. Build images + bring up the full stack ------------------------------
 Write-Host "[2/3] Building images and bringing up containers..." -ForegroundColor Yellow
 docker compose up -d --build
 if ($LASTEXITCODE -ne 0) {
-    throw "docker compose up failed — is Docker Desktop running?"
+    throw "docker compose up failed. Is Docker Desktop running?"
 }
 
-# ── 3. Wait for the dashboard to respond ─────────────────────────────────────
+# ---- 3. Wait for the dashboard to respond -----------------------------------
 Write-Host "[3/3] Waiting for the dashboard to come up..." -ForegroundColor Yellow
 $ready = $false
 for ($i = 0; $i -lt 60; $i++) {
@@ -74,7 +74,7 @@ if (-not $ready) {
 
 Pop-Location
 
-# ── Summary ──────────────────────────────────────────────────────────────────
+# ---- Summary ----------------------------------------------------------------
 $ip = (Get-NetIPAddress -AddressFamily IPv4 |
        Where-Object { $_.IPAddress -notmatch '^127\.' -and $_.PrefixOrigin -ne 'WellKnown' } |
        Select-Object -First 1).IPAddress
