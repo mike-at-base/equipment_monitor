@@ -32,9 +32,14 @@ services:
       timeout:  5s
       retries:  10
 
+  # ONE service builds the shared image; the other just references it by
+  # tag.  Putting `build:` on both services makes `docker compose up --build`
+  # try to produce two outputs that target the same image tag in parallel,
+  # which BuildKit rejects with: "image already exists".
   collector:
-    build: .
-    image:           equipment-monitor
+    build:
+      context: .
+    image:           equipment-monitor:latest
     container_name:  equipment-monitor-collector
     environment:
       # DATABASE_URL is read by db/connection.py.  Inside the compose
@@ -47,12 +52,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
     # collector/main.py auto-runs init_schema() on startup, so the
-    # em_down_event hypertable is created on first boot — no manual step.
+    # em_down_event hypertable is created on first boot, no manual step.
     command: ["python", "-u", "collector/main.py"]
 
   app:
-    build: .
-    image:           equipment-monitor   # reuses the collector's build
+    # No `build:` directive on purpose -- this service runs the image that
+    # the `collector` service builds.  `docker compose up --build` rebuilds
+    # the collector (and therefore the image); the app picks up the new
+    # image automatically because it's the same tag.  `pull_policy: never`
+    # prevents Compose from trying to pull from a remote registry if it
+    # can't find the image locally for some reason.
+    image:           equipment-monitor:latest
+    pull_policy:     never
     container_name:  equipment-monitor-app
     environment:
       DATABASE_URL: "host=timescaledb port=5432 dbname=equipment user=monitor password=monitor"
@@ -66,6 +77,11 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+      collector:
+        # `service_started` means "wait until the collector container has
+        # been created" -- enough to guarantee its image build finished
+        # before the app tries to start using the same tag.
+        condition: service_started
     restart: unless-stopped
     command: ["python", "-u", "app/main.py"]
 
