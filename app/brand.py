@@ -23,6 +23,28 @@ MUTED     = "#9a9794"   # secondary / muted text
 # Chart colorway — Livewire leads, then green variant, then blues/oranges
 COLORWAY = [LIVEWIRE, "#5db87e", "#048ee5", "#ed6c30", RED, MUTED]
 
+# ── Time formats — 12-hour clock used throughout the app ─────────────────────
+# Python strftime (Windows-safe; %I always pads to 2 digits, which reads cleanly
+# in tables alongside the date).  Use these constants instead of inline format
+# strings so the whole app stays consistent.
+TIME_FMT_TABLE = "%Y-%m-%d %I:%M:%S %p"   # full table cell:  2026-05-23 02:30:45 PM
+TIME_FMT_SHORT = "%I:%M:%S %p"            # compact cell:     02:30:45 PM
+TIME_FMT_MIN   = "%I:%M %p"               # to-the-minute:    02:30 PM
+
+# Plotly tickformatstops — d3 format strings.  Applied globally via the
+# base_power template so every date axis switches automatically between
+# sub-second, time, and date labels using a 12-hour clock at the time levels.
+PLOTLY_TICKFORMATSTOPS = [
+    dict(dtickrange=[None, 1000],        value="%I:%M:%S.%L %p"),
+    dict(dtickrange=[1000, 60000],       value="%I:%M:%S %p"),
+    dict(dtickrange=[60000, 3600000],    value="%I:%M %p"),
+    dict(dtickrange=[3600000, 86400000], value="%I %p"),
+    dict(dtickrange=[86400000, "M1"],    value="%b %-d"),
+    dict(dtickrange=["M1", "M12"],       value="%b '%y"),
+    dict(dtickrange=["M12", None],       value="%Y"),
+]
+PLOTLY_HOVERFORMAT = "%Y-%m-%d %I:%M:%S %p"
+
 # ── Plotly dark template ──────────────────────────────────────────────────────
 pio.templates["base_power"] = go.layout.Template(
     layout=go.Layout(
@@ -34,6 +56,9 @@ pio.templates["base_power"] = go.layout.Template(
             gridcolor=BORDER, linecolor=BORDER,
             zerolinecolor=BORDER, tickcolor=BORDER,
             tickfont_color=MUTED,
+            # 12-hour clock for any date-typed axis (ignored on non-date axes)
+            tickformatstops=PLOTLY_TICKFORMATSTOPS,
+            hoverformat=PLOTLY_HOVERFORMAT,
         ),
         yaxis=dict(
             gridcolor=BORDER, linecolor=BORDER,

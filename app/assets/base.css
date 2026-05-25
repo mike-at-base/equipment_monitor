@@ -451,6 +451,103 @@ h6 {
   color: var(--bp-grounded) !important;
 }
 
+/* ── dcc.Slider (Dash 4.x uses dash-slider-* / Radix UI) ──── */
+/* Dash 4 ships a Radix-based slider with light-theme defaults: white track,
+   blue range, white-on-light-border thumb, dark-on-white tooltip.  Override
+   every visible piece to brand colours so the slider reads against the dark
+   surface.  NOTE: class names are dash-slider-* (NOT rc-slider-*). */
+
+.dash-slider-wrapper {
+  padding: 6px 0 28px 0;   /* room for mark labels below the rail */
+}
+
+/* Unfilled track ("rail" in rc-slider terms) */
+.dash-slider-track {
+  background-color: var(--bp-border) !important;   /* visible against bg */
+  height: 6px !important;
+  border-radius: 9999px !important;
+}
+
+/* Filled portion of the track */
+.dash-slider-range {
+  background-color: var(--bp-livewire) !important;
+  height: 6px !important;
+  border-radius: 9999px !important;
+}
+
+/* Handle (thumb) — Livewire fill with dark BG ring to separate from track */
+.dash-slider-thumb,
+.dash-slider-thumb-1 {
+  background-color: var(--bp-livewire) !important;
+  border: 2px solid var(--bp-bg) !important;
+  width: 16px !important;
+  height: 16px !important;
+  border-radius: 9999px !important;
+  outline: none !important;
+  box-shadow: 0 0 0 1px var(--bp-livewire),
+              0 2px 6px rgba(0,0,0,.45) !important;
+  cursor: grab;
+}
+.dash-slider-thumb:hover,
+.dash-slider-thumb:focus,
+.dash-slider-thumb:focus-visible,
+.dash-slider-thumb[data-state="active"] {
+  background-color: #c6ec8c !important;            /* brightened Livewire */
+  border-color: var(--bp-bg) !important;
+  box-shadow: 0 0 0 1px #c6ec8c,
+              0 0 0 6px rgba(178,221,121,.20) !important;
+  cursor: grabbing;
+}
+
+/* Mark dots inside the selection (Livewire) */
+.dash-slider-dot {
+  background-color: var(--bp-livewire) !important;
+  border-color: var(--bp-livewire) !important;
+  width: 8px !important;
+  height: 8px !important;
+  border-radius: 9999px !important;
+}
+/* Mark dots outside the selection (subtle) */
+.dash-slider-dot-outside-selection {
+  background-color: var(--bp-elevated) !important;
+  border: 1px solid var(--bp-border) !important;
+}
+
+/* Mark text labels — full text colour inside selection, muted outside */
+.dash-slider-mark {
+  color: var(--bp-text) !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+.dash-slider-mark-outside-selection {
+  color: var(--bp-muted) !important;
+}
+.dash-slider-mark:hover {
+  color: var(--bp-livewire) !important;
+  cursor: pointer;
+}
+
+/* Tooltip ("≤ N s" bubble that floats with the handle) — the unstyled
+   default renders as a white box, which is the "white square with
+   unreadable text" reported on the dark theme. */
+.dash-slider-tooltip {
+  background-color: var(--bp-elevated) !important;
+  color: var(--bp-text) !important;
+  border: 1px solid var(--bp-border) !important;
+  border-radius: 6px !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 3px 8px !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4) !important;
+  z-index: 1080;                                    /* above dbc.Modal */
+  white-space: nowrap;
+}
+.dash-slider-tooltip.always-visible {
+  /* always_visible=true variant — same styling, already covered above */
+}
+
 /* ── Scrollbars ───────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bp-bg); }

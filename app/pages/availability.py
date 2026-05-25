@@ -22,7 +22,11 @@ import plotly.graph_objects as go
 from dash import dash_table, dcc, html
 
 import db.queries as q
-from app.brand import AVAIL_PCT_COND, DT_STYLE_CELL, DT_STYLE_HEADER, DT_STYLE_TABLE
+from app.brand import (
+    AVAIL_PCT_COND, BORDER, CONDUIT, ELEVATED, LIVEWIRE, MUTED,
+    DT_STYLE_CELL, DT_STYLE_FILTER, DT_STYLE_HEADER, DT_STYLE_TABLE,
+    TIME_FMT_TABLE, TIME_FMT_SHORT,
+)
 
 # ── SEMI E10 visual config ────────────────────────────────────────────────────
 
@@ -109,7 +113,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
             b["base"].append(t0.timestamp() * 1000)
             b["hover"].append(
                 f"{STATE_LABEL.get(state, state)}<br>"
-                f"{t0.strftime('%H:%M:%S')} – {t1.strftime('%H:%M:%S')}"
+                f"{t0.strftime(TIME_FMT_SHORT)} – {t1.strftime(TIME_FMT_SHORT)}"
             )
 
         fig = go.Figure()
@@ -154,9 +158,202 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
         )
         gantt_section = dcc.Graph(figure=fig, config={"displayModeBar": False})
 
+    # ── Down events / fault reasons ───────────────────────────────────────────
+    down_section = _render_down_events(em_ids, start, end)
+
     return html.Div([
         html.H6("Availability Summary — SEMI E10", className="mb-2"),
+        _build_state_legend(),
         summary_section,
         html.H6("Timeline", className="mt-4 mb-2"),
         gantt_section,
+        html.H6("Down Events & Fault Reasons", className="mt-4 mb-2"),
+        down_section,
+    ])
+
+
+# ── State definitions reference card ──────────────────────────────────────────
+# Always-visible explanation of the four SEMI E10 states and the availability
+# formula.  This lives next to the summary table so anyone opening the modal
+# can see how each state is derived from the raw PLC signals (automatic,
+# running, fault) without having to ask.
+
+def _state_chip(name: str, color: str, signal_logic: str) -> html.Div:
+    """One row: colour swatch + state name + the raw-signal logic that defines it."""
+    return html.Div([
+        html.Span(style={
+            "display":         "inline-block",
+            "width":           "10px",
+            "height":          "10px",
+            "borderRadius":    "9999px",
+            "backgroundColor": color,
+            "marginRight":     "8px",
+            "verticalAlign":   "middle",
+        }),
+        html.Strong(name, className="me-2"),
+        html.Span(signal_logic, className="text-muted small"),
+    ], className="mb-1")
+
+
+def _build_state_legend() -> dbc.Card:
+    return dbc.Card(
+        dbc.CardBody(
+            [
+                dbc.Row([
+                    dbc.Col([
+                        _state_chip(
+                            "Productive",
+                            STATE_COLOR["productive"],
+                            "automatic, running, no fault",
+                        ),
+                        _state_chip(
+                            "Standby",
+                            STATE_COLOR["standby"],
+                            "automatic, not running, no fault",
+                        ),
+                    ], md=6),
+                    dbc.Col([
+                        _state_chip(
+                            "Faulted (down)",
+                            STATE_COLOR["unscheduled_down"],
+                            "fault active in any mode",
+                        ),
+                        _state_chip(
+                            "Manual / Off",
+                            STATE_COLOR["manual"],
+                            "not in automatic, no fault — excluded from %",
+                        ),
+                    ], md=6),
+                ]),
+                html.Hr(className="my-2", style={"borderColor": BORDER}),
+                html.Div(
+                    [
+                        html.Strong("Availability % = "),
+                        "(Productive + Standby) ÷ "
+                        "(Productive + Standby + Faulted) × 100",
+                    ],
+                    className="small mb-1",
+                ),
+                html.Div(
+                    [
+                        "Manual time is treated as ",
+                        html.Em("Non-Scheduled Time"),
+                        " under SEMI E10 and is excluded from both the "
+                        "numerator and denominator.",
+                    ],
+                    className="text-muted small",
+                ),
+            ],
+            className="py-2 px-3",
+        ),
+        className="mb-3",
+        style={"backgroundColor": ELEVATED, "borderColor": BORDER},
+    )
+
+
+# ── Down events table ─────────────────────────────────────────────────────────
+
+_REASON_BADGE_COLOR = {
+    "step_fault": "#c51808",   # Red  — faulted step
+    "interlock":  "#f7c33c",   # Goldenrod — safety interlock
+    "manual":     "#3a3733",   # Charcoal — operator manual
+    "unknown":    "#9a9794",   # Muted
+}
+
+_REASON_LABEL = {
+    "step_fault": "Step fault",
+    "interlock":  "Interlock",
+    "manual":     "Manual",
+    "unknown":    "Unknown",
+}
+
+
+def _fmt_duration(ms) -> str:
+    if ms is None or pd.isna(ms):
+        return "ongoing"
+    ms = int(ms)
+    if ms < 60_000:
+        return f"{ms / 1000:.0f} s"
+    if ms < 3_600_000:
+        return f"{ms / 60_000:.1f} min"
+    return f"{ms / 3_600_000:.1f} h"
+
+
+def _render_down_events(
+    em_ids: list[int],
+    start: datetime.datetime,
+    end: datetime.datetime,
+) -> html.Div:
+    df = q.query_down_events(em_ids, start, end)
+
+    if df.empty:
+        return html.Div("No down events in selected range.", className="text-muted")
+
+    disp = df.copy()
+    disp["Start"]    = disp["start_ts"].dt.strftime(TIME_FMT_TABLE)
+    disp["End"]      = disp["end_ts"].apply(
+        lambda v: v.strftime(TIME_FMT_TABLE) if pd.notna(v) else "— ongoing —"
+    )
+    disp["Duration"] = disp["duration_ms"].apply(_fmt_duration)
+    disp["Station"]  = disp["station"]
+    disp["EM"]       = disp["em_label"]
+    disp["Type"]     = disp["reason_type"].map(_REASON_LABEL).fillna(disp["reason_type"])
+    disp["Step"]     = disp["step_name"].fillna("")
+    # Primary reason: use reason_desc; fall back to fault_msg if desc is blank
+    disp["Reason"]   = disp.apply(
+        lambda r: r["reason_desc"] or r["fault_msg"] or "",
+        axis=1,
+    )
+
+    cols_display = ["Start", "End", "Duration", "Station", "EM", "Type", "Step", "Reason"]
+    disp = disp[cols_display]
+
+    # Colour-code rows by reason type
+    type_cond = []
+    for rt, colour in _REASON_BADGE_COLOR.items():
+        # Lighten the background to ~25 % opacity for table rows
+        r, g, b = (
+            int(colour[1:3], 16),
+            int(colour[3:5], 16),
+            int(colour[5:7], 16),
+        )
+        type_cond.append({
+            "if": {"filter_query": f'{{Type}} eq "{_REASON_LABEL.get(rt, rt)}"'},
+            "backgroundColor": f"rgba({r},{g},{b},0.18)",
+        })
+
+    # Ongoing rows get a brighter accent on the End cell
+    ongoing_cond = [
+        {
+            "if": {
+                "filter_query": '{End} contains "ongoing"',
+                "column_id": "End",
+            },
+            "color": LIVEWIRE,
+            "fontWeight": "600",
+        }
+    ]
+
+    table = dash_table.DataTable(
+        data=disp.to_dict("records"),
+        columns=[{"name": c, "id": c} for c in cols_display],
+        page_size=20,
+        sort_action="native",
+        filter_action="native",
+        style_table=DT_STYLE_TABLE,
+        style_cell={**DT_STYLE_CELL, "maxWidth": "340px", "whiteSpace": "normal",
+                    "wordBreak": "break-word"},
+        style_cell_conditional=[
+            {"if": {"column_id": "Reason"}, "minWidth": "240px", "maxWidth": "420px"},
+            {"if": {"column_id": "Duration"}, "width": "80px"},
+            {"if": {"column_id": "Type"}, "width": "90px"},
+        ],
+        style_header=DT_STYLE_HEADER,
+        style_filter=DT_STYLE_FILTER,
+        style_data_conditional=type_cond + ongoing_cond,
+    )
+
+    return html.Div([
+        html.Small(f"{len(df):,} events", className="text-muted d-block mb-2"),
+        table,
     ])

@@ -1,6 +1,34 @@
 """
 OPC UA client for one PLC.  Uses asyncua subscriptions (push-based, not polling).
-Publish interval = 100 ms; sampling interval = 100 ms per item.
+
+Subscription strategy — subscribe to TRIGGERS, read STRUCTS on demand
+─────────────────────────────────────────────────────────────────────
+The collector subscribes only to the small set of nodes that drive state
+changes (~4 EM-level + 4 per sequence ≈ 16 nodes per EM).  When a fault rises
+or the EM goes manual, the down event opens with a placeholder reason and an
+async on-demand read of the relevant PLC struct fills in the actual condition
+descriptions:
+
+  • Step fault rising edge → read ``stepControl[N-1].activeStepBranch``
+    (whole array, one round-trip).  asyncua deserialises the struct and we
+    walk every enabled branch's ``permissive.condition[]`` to find the ones
+    with ``ok = False`` — those descriptions are the root cause.
+
+  • EM goes manual / EM-level fault → read ``interlock`` (whole struct, one
+    round-trip).  Same idea, applied to EM-level interlock conditions.
+
+This adapts automatically to whatever ``SEQUENCE_MAX_STEP_BRANCHES`` /
+permissive array size the PLC library exposes — no hard-coded constants to
+keep in sync, no thousands of "probe" subscriptions during startup.
+
+Note on data types
+──────────────────
+``client.load_data_type_definitions()`` fetches the PLC's custom UDTs and
+generates Python classes so struct reads deserialise into objects with the
+right attributes.  Without it, ``read_value()`` on a struct node returns raw
+ExtensionObject bytes that we can't parse.  If type loading fails the
+collector still works for state tracking — only reason enrichment is lost,
+and placeholders remain.
 
 ⚠  S7-1500 MinimumSamplingInterval defaults to 1000 ms in TIA Portal.
    Ask the PLC engineer to lower it to 10–100 ms to capture fast steps.
@@ -32,6 +60,10 @@ SESSION_TIMEOUT_MS  = 30_000
 # PLC is busy; 15 s gives the renewal handshake room to complete.
 REQUEST_TIMEOUT_S   = 15
 
+# Max number of failed-condition descriptions to concatenate into one reason
+# string.  Anything past this gets truncated with "(+N more)".
+_MAX_REASON_CONDITIONS = 5
+
 
 def siemens_path(em_db_path: str) -> str:
     """
@@ -48,13 +80,127 @@ def siemens_path(em_db_path: str) -> str:
     return f'"{em_db_path[:dot]}"{em_db_path[dot:]}'
 
 
-class _SubHandler:
-    """Duck-typed asyncua subscription handler (asyncua 1.1.x removed SubHandler base)."""
+# ── Struct parsing helpers ───────────────────────────────────────────────────
+#
+# asyncua's UDT loader generates Python classes whose attribute names usually
+# match the PLC field names exactly.  Casing can differ across UDT generators
+# (some uppercase the first letter), so _safe_attr tries a few variants to
+# stay tolerant.
 
-    def __init__(self, node_map: dict[int, tuple[EMStateTracker, str, int | None]]) -> None:
-        # node_map: node_id_int → (tracker, tag_role, seq_index_or_None)
-        # tag_role: 'step' | 'step_desc' | 'faulted' | 'ext_msg'  — seq_idx = N (sequence index)
-        #           'active_seq' | 'automatic' | 'em_fault' | 'running'  — seq_idx = None
+
+def _safe_attr(obj: Any, *names: str) -> Any:
+    """Return the first attribute on ``obj`` that exists from the given names."""
+    for n in names:
+        if hasattr(obj, n):
+            return getattr(obj, n)
+    return None
+
+
+def _parse_conditions(permissive: Any) -> list[dict]:
+    """
+    Walk a ``typePermissiveControlInterface`` value and return its conditions
+    as a list of ``{'ok': bool, 'description': str}``.
+    """
+    if permissive is None:
+        return []
+    cond_arr = _safe_attr(permissive, 'condition', 'Condition')
+    if not cond_arr:
+        return []
+    out: list[dict] = []
+    for c in cond_arr:
+        if c is None:
+            continue
+        ok   = _safe_attr(c, 'ok', 'Ok', 'OK')
+        desc = _safe_attr(c, 'description', 'Description')
+        out.append({
+            'ok': bool(ok) if ok is not None else True,
+            'description': (str(desc).strip() if desc else ''),
+        })
+    return out
+
+
+def _parse_step_branches(branches_value: Any) -> list[dict]:
+    """
+    Walk an ``activeStepBranch`` array (list of ``typeStepBranch``) and return
+    ``[{'enabled': bool, 'conditions': [...]}]``.
+    """
+    if branches_value is None or not isinstance(branches_value, (list, tuple)):
+        return []
+    out: list[dict] = []
+    for b in branches_value:
+        if b is None:
+            continue
+        enabled = _safe_attr(b, 'enabled', 'Enabled')
+        permissive = _safe_attr(b, 'permissive', 'Permissive')
+        out.append({
+            'enabled': bool(enabled) if enabled is not None else True,
+            'conditions': _parse_conditions(permissive),
+        })
+    return out
+
+
+def _dedupe_in_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for s in items:
+        if s and s not in seen:
+            seen.add(s)
+            result.append(s)
+    return result
+
+
+def _join_reason(descs: list[str], prefix: str | None = None) -> str | None:
+    """Concatenate failed-condition descriptions into one reason string."""
+    descs = _dedupe_in_order(descs)
+    if not descs:
+        return None
+    reason = "; ".join(descs[:_MAX_REASON_CONDITIONS])
+    if len(descs) > _MAX_REASON_CONDITIONS:
+        reason += f" (+{len(descs) - _MAX_REASON_CONDITIONS} more)"
+    if prefix:
+        reason = f"{prefix} — {reason}"
+    return reason
+
+
+def _build_step_fault_reason(branches: list[dict],
+                              ext_msg: str | None = None) -> str | None:
+    """
+    Collect failed-condition descriptions across every enabled branch.
+    Returns None if no failed conditions are visible (caller keeps placeholder).
+    """
+    descs: list[str] = []
+    for b in branches:
+        if not b.get('enabled', True):
+            continue
+        for c in b.get('conditions', []):
+            if not c['ok'] and c['description']:
+                descs.append(c['description'])
+    return _join_reason(descs, prefix=ext_msg)
+
+
+def _build_interlock_reason(conditions: list[dict]) -> str | None:
+    descs = [c['description'] for c in conditions
+             if not c['ok'] and c['description']]
+    return _join_reason(descs)
+
+
+# ── Subscription handler ─────────────────────────────────────────────────────
+
+class _SubHandler:
+    """
+    Duck-typed asyncua subscription handler (asyncua 1.1.x removed SubHandler
+    base).  Routes value-change notifications to the right EMStateTracker
+    callback.
+
+    Roles in node_map:
+      • 'step' | 'step_desc' | 'faulted' | 'ext_msg'         payload = seq_idx
+      • 'active_seq' | 'automatic' | 'em_fault' | 'running'  payload = None
+
+    Condition state is read on demand by OpcClient when down events open, so
+    condition tags are deliberately NOT subscribed here.
+    """
+
+    def __init__(self, node_map: dict[int, tuple]) -> None:
         self._map = node_map
 
     def datachange_notification(self, node, val, data) -> None:
@@ -63,17 +209,17 @@ class _SubHandler:
             entry = self._map.get(nid)
             if entry is None:
                 return
-            tracker, role, seq_idx = entry
+            tracker, role, payload = entry
             ts = data.monitored_item.Value.SourceTimestamp or datetime.datetime.now(datetime.timezone.utc)
 
             if role == "step":
-                tracker.on_step_change(seq_idx, str(val) if val else "", ts)
+                tracker.on_step_change(payload, str(val) if val else "", ts)
             elif role == "step_desc":
-                tracker.on_step_desc_change(seq_idx, str(val).strip() if val else None, ts)
+                tracker.on_step_desc_change(payload, str(val).strip() if val else None, ts)
             elif role == "faulted":
-                tracker.on_fault_change(seq_idx, bool(val), ts)
+                tracker.on_fault_change(payload, bool(val), ts)
             elif role == "ext_msg":
-                tracker._ext_msg[seq_idx] = str(val).strip() if val else None
+                tracker._ext_msg[payload] = str(val).strip() if val else None
             elif role == "active_seq":
                 # S7-1500 returns 0 when no sequence is running; treat as None
                 seq_val = int(val) if val else None
@@ -88,6 +234,8 @@ class _SubHandler:
             log.exception("datachange_notification error")
 
 
+# ── OPC client ───────────────────────────────────────────────────────────────
+
 class OpcClient:
     """Manages one asyncua connection + subscriptions for a single PLC."""
 
@@ -98,6 +246,12 @@ class OpcClient:
         # em_id → tracker
         self._trackers = trackers
         self._running = True
+
+        # Struct-node refs cached for on-demand reads (populated in
+        # _resolve_em_nodes).  Shape, keyed by em_id:
+        #   {'interlock':     <Node>,
+        #    'step_branches': {seq_idx: <Node>, ...}}
+        self._struct_nodes: dict[int, dict] = {}
 
     async def run(self) -> None:
         while self._running:
@@ -122,12 +276,33 @@ class OpcClient:
         client.session_timeout = SESSION_TIMEOUT_MS  # match S7-1500 grant
         client.timeout         = REQUEST_TIMEOUT_S   # per-request timeout
         async with client:
-            node_map: dict[int, tuple[EMStateTracker, str, int | None]] = {}
+            # Load the PLC's custom UDT definitions so subsequent struct reads
+            # (activeStepBranch, interlock) deserialise into objects with the
+            # right attributes.  Without this, struct reads return raw bytes
+            # and reason enrichment cannot work.  Failure is non-fatal —
+            # state tracking still functions, only the reason text stays at
+            # its placeholder.
+            try:
+                await client.load_data_type_definitions()
+                log.info("[%s] Loaded custom data type definitions",
+                         self.plc_name)
+            except Exception:
+                log.warning("[%s] load_data_type_definitions failed — fault "
+                            "reason enrichment will be limited",
+                            self.plc_name, exc_info=True)
+
+            self._struct_nodes.clear()
+            node_map: dict[int, tuple[EMStateTracker, str, Any]] = {}
             nodes: list[Any] = []
 
-            # avail_nodes: em_id → (auto_node, fault_node, running_node)
+            # avail_nodes: em_id → (tracker, auto_node, fault_node, running_node)
             # kept for periodic re-reads in the keep-alive loop below
             avail_nodes: dict[int, tuple] = {}
+
+            # Wire the down-event-opened callback so reason enrichment runs
+            # automatically whenever a tracker opens an event.
+            for tracker in self._trackers.values():
+                tracker.on_down_event_opened = self._schedule_reason_enrichment
 
             for em_id, tracker in self._trackers.items():
                 em_nodes = await self._resolve_em_nodes(
@@ -210,7 +385,18 @@ class OpcClient:
         node_map: dict,
         avail_nodes: dict,
     ) -> list:
-        """Browse the PLC namespace to resolve NodeIds for one EM."""
+        """
+        Resolve subscription NodeIds for one EM AND cache the struct-node refs
+        we'll read on demand when down events open.
+
+        Subscriptions (~16 per EM) cover only signals that drive state changes:
+          • EM-level: automatic, em_fault, running, activeSequence
+          • Per-sequence: step, description, faulted, externalFaultMessage
+
+        Struct refs (no subscription, read on demand):
+          • interlock                          — for EM-level / manual events
+          • stepControl[N-1].activeStepBranch  — for step-fault events
+        """
         nodes = []
         ns = 3  # Siemens S7 OPC UA namespace index
 
@@ -220,12 +406,12 @@ class OpcClient:
         raw_path = tracker.em_db_path if hasattr(tracker, "em_db_path") else ""
         db_path  = siemens_path(raw_path)
 
-        async def try_node(path: str, role: str, seq_idx: int | None) -> bool:
+        async def try_node(path: str, role: str, payload: Any) -> bool:
             try:
                 node = make_node(path)
                 await node.read_data_value()  # verify it exists
                 nid = node.nodeid.Identifier
-                node_map[nid] = (tracker, role, seq_idx)
+                node_map[nid] = (tracker, role, payload)
                 nodes.append(node)
                 return True
             except Exception:
@@ -234,7 +420,7 @@ class OpcClient:
 
         base = db_path
 
-        # EM-level tags
+        # ── EM-level subscriptions (4 trigger nodes) ──────────────────────────
         await try_node(f'{base}.status.mode.automatic',  'automatic',  None)
         await try_node(f'{base}.status.alarm.fault',     'em_fault',   None)
         await try_node(f'{base}.status.running',         'running',    None)
@@ -248,12 +434,12 @@ class OpcClient:
             make_node(f'{base}.status.running'),
         )
 
-        # Subscribe to stepControl[N-1] for every sequence N on this EM.
+        # ── Per-sequence step subscriptions (4 trigger nodes per sequence) ────
         #
         # The S7-1500 PLC uses 1-indexed sequence numbers (activeSequence = 1, 2, 3…)
         # but the stepControl ARRAY is 0-indexed in OPC UA.  Sequence N writes its
-        # step data to stepControl[N-1].  seq_idx (1-based, from config) is kept as
-        # the logical identifier passed through node_map so the handler and
+        # step data to stepControl[N-1].  seq_idx (1-based, from config) is kept
+        # as the logical identifier passed through node_map so the handler and
         # is_active guard stay consistent with activeSequence values.
         for seq_idx in tracker.seq_indices:
             sc = f'{base}.stepControl[{seq_idx - 1}]'
@@ -262,7 +448,108 @@ class OpcClient:
             await try_node(f'{sc}.faulted',             'faulted',   seq_idx)
             await try_node(f'{sc}.externalFaultMessage','ext_msg',   seq_idx)
 
+        # ── Struct refs for on-demand reads (no subscription) ────────────────
+        # Reading the whole struct in one round-trip when a down event opens
+        # adapts automatically to whatever branch / condition count the PLC
+        # library exposes.  No constants to keep in sync.
+        self._struct_nodes[tracker.em_id] = {
+            'interlock':     make_node(f'{base}.interlock'),
+            'step_branches': {
+                seq_idx: make_node(
+                    f'{base}.stepControl[{seq_idx - 1}].activeStepBranch'
+                )
+                for seq_idx in tracker.seq_indices
+            },
+        }
+
         return nodes
+
+    # ── On-demand reason enrichment ──────────────────────────────────────────
+
+    def _schedule_reason_enrichment(
+        self, em_id: int, reason_type: str, seq_idx: int | None,
+    ) -> None:
+        """
+        Called by EMStateTracker when a down event opens (sync, from the
+        subscription handler running inside the asyncua event loop).
+        Schedules an async PLC struct read so the placeholder reason text
+        gets replaced with descriptions of the conditions actually failing.
+        """
+        tracker = self._trackers.get(em_id)
+        if tracker is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.debug("no running event loop — skipping reason enrichment "
+                      "em=%d type=%s", em_id, reason_type)
+            return
+
+        if reason_type == "step_fault" and seq_idx is not None:
+            loop.create_task(self._enrich_step_fault_reason(tracker, seq_idx))
+        elif reason_type == "interlock":
+            loop.create_task(self._enrich_interlock_reason(tracker))
+        # 'manual' / unknown — no enrichment
+
+    async def _enrich_step_fault_reason(
+        self, tracker: EMStateTracker, seq_idx: int,
+    ) -> None:
+        """
+        Read ``stepControl[N-1].activeStepBranch`` (one struct, one round-trip)
+        and update the open down event's reason with the failed-condition
+        descriptions.  No-op if the event has already closed.
+        """
+        struct = self._struct_nodes.get(tracker.em_id)
+        if not struct:
+            return
+        branch_node = struct.get('step_branches', {}).get(seq_idx)
+        if branch_node is None:
+            return
+
+        try:
+            raw = await branch_node.read_value()
+        except Exception:
+            log.debug("read activeStepBranch failed em=%d seq=%d",
+                      tracker.em_id, seq_idx, exc_info=True)
+            return
+
+        branches = _parse_step_branches(raw)
+        reason = _build_step_fault_reason(
+            branches,
+            ext_msg=tracker._ext_msg.get(seq_idx),
+        )
+        if reason:
+            tracker.update_down_event_reason(reason)
+
+    async def _enrich_interlock_reason(self, tracker: EMStateTracker) -> None:
+        """
+        Read ``interlock`` (one struct, one round-trip) and update the open
+        down event's reason.  If no interlock condition is failing, this was
+        an operator-initiated manual stop — rewrite reason to "Manual mode"
+        and demote reason_type accordingly.
+        """
+        struct = self._struct_nodes.get(tracker.em_id)
+        if not struct:
+            return
+        interlock_node = struct.get('interlock')
+        if interlock_node is None:
+            return
+
+        try:
+            raw = await interlock_node.read_value()
+        except Exception:
+            log.debug("read interlock failed em=%d", tracker.em_id, exc_info=True)
+            return
+
+        conditions = _parse_conditions(raw)
+        reason = _build_interlock_reason(conditions)
+        if reason:
+            tracker.update_down_event_reason(reason)
+        else:
+            # No failed interlock conditions — operator-initiated manual stop.
+            # Demote reason_type to 'manual' so the dashboard colour matches
+            # and the row stops counting against interlock fault metrics.
+            tracker.update_down_event_reason("Manual mode", reason_type="manual")
 
     async def _heartbeat(self, connected: bool, node_count: int = 0) -> None:
         try:

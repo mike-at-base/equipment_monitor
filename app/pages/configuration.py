@@ -10,6 +10,7 @@ import yaml
 from dash import dcc, html
 
 import db.queries as q
+from app.brand import TIME_FMT_TABLE
 from db.connection import Conn as _Conn
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "config.yaml")
@@ -39,7 +40,7 @@ def render() -> html.Div:
             for _, r in status_df.iterrows():
                 badge_color = "success" if r["connected"] else "danger"
                 badge_text  = "Connected" if r["connected"] else "Disconnected"
-                last = r["last_seen"].strftime("%Y-%m-%d %H:%M:%S") if r["last_seen"] else "—"
+                last = r["last_seen"].strftime(TIME_FMT_TABLE) if r["last_seen"] else "—"
                 rows.append(
                     html.Tr([
                         html.Td(r["plc_name"]),

@@ -89,18 +89,40 @@ CREATE TABLE IF NOT EXISTS em_current_step (
     step_desc  TEXT,
     updated_at TIMESTAMPTZ NOT NULL
 );
+
+-- ── Down event tracking — sticky root-cause unavailability record ─────────────
+-- One open row per EM while unavailable; closed when productive/standby resumes.
+-- Reason is locked at the first cause (step fault or interlock); secondary events
+-- (door open, mode changes) do NOT overwrite it — they are excluded from this table.
+--
+-- reason_type: 'step_fault' | 'interlock' | 'manual' | 'unknown'
+-- reason_desc: human-readable concat of failed permissive/interlock descriptions
+
+CREATE TABLE IF NOT EXISTS em_down_event (
+    start_ts    TIMESTAMPTZ NOT NULL,
+    em_id       INT NOT NULL,
+    end_ts      TIMESTAMPTZ,
+    duration_ms INT,
+    reason_type TEXT NOT NULL,
+    reason_desc TEXT,
+    seq_index   SMALLINT,
+    step_name   TEXT,
+    fault_msg   TEXT
+);
 """
 
 HYPERTABLES = [
     ("step_event",          "ts"),
     ("fault_event",         "fault_start"),
     ("em_availability_raw", "ts"),
+    ("em_down_event",       "start_ts"),
 ]
 
 INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_step_em_seq_ts   ON step_event          (em_id, seq_index, ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_fault_em_seq     ON fault_event         (em_id, seq_index, fault_start DESC)",
     "CREATE INDEX IF NOT EXISTS idx_avail_raw_em_ts  ON em_availability_raw (em_id, ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_down_em_start    ON em_down_event       (em_id, start_ts DESC)",
 ]
 
 
@@ -109,6 +131,7 @@ def init_schema():
         cur = conn.cursor()
         # Migration: drop old binary availability table if upgrading from previous schema
         cur.execute("DROP TABLE IF EXISTS availability_event CASCADE")
+        # em_down_event was added in the SEMI E10 redesign — no destructive migration needed
         cur.execute(DDL)
         for table, col in HYPERTABLES:
             try:

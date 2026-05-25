@@ -181,6 +181,73 @@ def upsert_current_step(conn, em_id: int, seq_index: int,
     )
 
 
+def open_down_event(conn, em_id: int, start_ts: datetime.datetime,
+                    reason_type: str, reason_desc: str | None,
+                    seq_index: int | None, step_name: str | None,
+                    fault_msg: str | None) -> None:
+    """Open a new down event.  end_ts is NULL until the machine recovers."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO em_down_event
+          (start_ts, em_id, reason_type, reason_desc, seq_index, step_name, fault_msg)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (start_ts, em_id, reason_type, reason_desc, seq_index, step_name, fault_msg),
+    )
+
+
+def close_down_event(conn, em_id: int, start_ts: datetime.datetime,
+                     end_ts: datetime.datetime) -> None:
+    """Close an open down event identified by (em_id, start_ts)."""
+    dur_ms = int((end_ts - start_ts).total_seconds() * 1000)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE em_down_event
+           SET end_ts = %s, duration_ms = %s
+         WHERE em_id = %s AND start_ts = %s AND end_ts IS NULL
+        """,
+        (end_ts, dur_ms, em_id, start_ts),
+    )
+
+
+def update_down_event_reason(conn, em_id: int, start_ts: datetime.datetime,
+                             reason_desc: str,
+                             reason_type: str | None = None) -> None:
+    """
+    Patch the reason fields on the currently-open down event.  Used by the
+    OpcClient after an async on-demand struct read enriches the placeholder.
+    If ``reason_type`` is provided, it is updated alongside the description
+    (e.g. demoting 'interlock' → 'manual' when no interlock condition was
+    actually failing).  No-op if the event has already been closed.
+    """
+    cur = conn.cursor()
+    if reason_type is not None:
+        cur.execute(
+            """
+            UPDATE em_down_event
+               SET reason_desc = %s,
+                   reason_type = %s
+             WHERE em_id    = %s
+               AND start_ts = %s
+               AND end_ts IS NULL
+            """,
+            (reason_desc, reason_type, em_id, start_ts),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE em_down_event
+               SET reason_desc = %s
+             WHERE em_id    = %s
+               AND start_ts = %s
+               AND end_ts IS NULL
+            """,
+            (reason_desc, em_id, start_ts),
+        )
+
+
 def update_heartbeat(conn, plc_name: str, connected: bool,
                      node_count: int = 0) -> None:
     cur = conn.cursor()
@@ -198,6 +265,35 @@ def update_heartbeat(conn, plc_name: str, connected: bool,
 
 
 # ── App reads ────────────────────────────────────────────────────────────────
+
+def query_down_events(em_ids: list[int],
+                      start: datetime.datetime,
+                      end: datetime.datetime,
+                      limit: int = 500) -> pd.DataFrame:
+    """
+    Return down events that overlap [start, end].
+    Includes open events (end_ts IS NULL) so live faults appear immediately.
+    """
+    with Conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT d.start_ts, d.end_ts, d.duration_ms,
+                   e.station, e.display_name, e.em_label,
+                   d.reason_type, d.reason_desc, d.step_name, d.fault_msg
+            FROM em_down_event d
+            JOIN config_em e ON e.id = d.em_id
+            WHERE d.em_id = ANY(%s)
+              AND d.start_ts < %s
+              AND (d.end_ts IS NULL OR d.end_ts > %s)
+            ORDER BY d.start_ts DESC
+            LIMIT %s
+            """,
+            (em_ids, end, start, limit),
+        )
+        cols = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=cols)
+
 
 def get_all_plcs() -> list[dict]:
     with Conn() as conn:

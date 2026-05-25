@@ -11,6 +11,7 @@ import sys
 
 import dash
 import dash_bootstrap_components as dbc
+import pandas as pd
 from dash import ALL, Input, Output, State, callback, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
@@ -201,6 +202,27 @@ def toggle_config_modal(n):
     if n:
         return True, configuration.render()
     raise PreventUpdate
+
+
+@callback(
+    Output("step-dur-chart", "figure"),
+    Input("step-dur-slider", "value"),
+    State("step-dur-data",   "data"),
+    prevent_initial_call=True,
+)
+def update_step_duration_chart(max_seconds, store_data):
+    """
+    Recompute the Average Step Duration bar chart whenever the outlier slider
+    moves.  ``max_seconds`` is the inclusive cutoff in seconds — samples
+    longer than this are excluded before the per-step mean is computed.
+    """
+    if not store_data:
+        raise PreventUpdate
+    prod_df = pd.DataFrame(store_data)
+    max_ms = (max_seconds or 0) * 1000
+    return step_history.build_step_duration_figure(
+        prod_df, max_duration_ms=max_ms,
+    )
 
 
 @callback(

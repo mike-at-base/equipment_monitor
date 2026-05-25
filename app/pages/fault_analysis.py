@@ -12,7 +12,10 @@ import plotly.graph_objects as go
 from dash import dash_table, dcc, html
 
 import db.queries as q
-from app.brand import DT_STYLE_CELL, DT_STYLE_FILTER, DT_STYLE_HEADER, DT_STYLE_TABLE
+from app.brand import (
+    DT_STYLE_CELL, DT_STYLE_FILTER, DT_STYLE_HEADER, DT_STYLE_TABLE,
+    TIME_FMT_TABLE,
+)
 
 
 def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) -> html.Div:
@@ -92,7 +95,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
         disp = events_df.copy()
         for col in ["fault_start", "fault_end"]:
             if col in disp.columns:
-                disp[col] = pd.to_datetime(disp[col]).dt.strftime("%Y-%m-%d %H:%M:%S")
+                disp[col] = pd.to_datetime(disp[col]).dt.strftime(TIME_FMT_TABLE)
         disp["duration"] = disp["duration_ms"].apply(
             lambda ms: f"{int(ms/1000)}s" if pd.notna(ms) else "active"
         )
