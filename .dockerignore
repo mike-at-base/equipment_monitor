@@ -1,0 +1,41 @@
+# Repo metadata
+.git
+.gitignore
+.github
+
+# Python cruft
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.venv
+venv
+
+# Logs
+*.log
+logs/
+
+# Local-only deploy artefacts (systemd / shell-based deploys are an
+# alternative to the Docker stack — not needed inside the image)
+deploy.sh
+deploy.ps1
+systemd/
+
+# Docker-related files don't need to be inside the image
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Editor / OS junk
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Misc dev scripts that aren't part of the runtime
+browse_seq.py

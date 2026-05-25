@@ -1,16 +1,73 @@
+# Equipment Monitor — full stack.
+# Three services on a single internal network (created automatically):
+#
+#   timescaledb   PostgreSQL + TimescaleDB.  Port 5432 exposed for psql /
+#                 external tooling; collector + app reach it by hostname.
+#   collector     OPC UA → DB writer.  No exposed port.
+#   app           Dash dashboard.  Port 8050 published to the host.
+#
+# config.yaml is bind-mounted into the collector and app containers so the
+# operator can edit it on the host (or via the app's Config tab) without
+# rebuilding the image.
+
 services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: equipment-monitor-db
     environment:
       POSTGRES_PASSWORD: monitor
-      POSTGRES_DB: equipment
-      POSTGRES_USER: monitor
+      POSTGRES_DB:       equipment
+      POSTGRES_USER:     monitor
     ports:
       - "5432:5432"
     volumes:
       - ts_data:/var/lib/postgresql/data
     restart: unless-stopped
+    # Healthcheck lets the collector and app wait for the DB to accept
+    # connections before they start — `service_started` isn't enough
+    # because Postgres may still be initialising when the container is up.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d equipment"]
+      interval: 5s
+      timeout:  5s
+      retries:  10
+
+  collector:
+    build: .
+    image:           equipment-monitor
+    container_name:  equipment-monitor-collector
+    environment:
+      # DATABASE_URL is read by db/connection.py.  Inside the compose
+      # network we use the service-name as hostname.
+      DATABASE_URL: "host=timescaledb port=5432 dbname=equipment user=monitor password=monitor"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+    # collector/main.py auto-runs init_schema() on startup, so the
+    # em_down_event hypertable is created on first boot — no manual step.
+    command: ["python", "-u", "collector/main.py"]
+
+  app:
+    build: .
+    image:           equipment-monitor   # reuses the collector's build
+    container_name:  equipment-monitor-app
+    environment:
+      DATABASE_URL: "host=timescaledb port=5432 dbname=equipment user=monitor password=monitor"
+      # Set DASH_DEBUG=true to enable hot-reload + verbose errors (dev only;
+      # leaves the Werkzeug dev server reachable, do not expose publicly).
+      DASH_DEBUG:   "false"
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["python", "-u", "app/main.py"]
 
 volumes:
   ts_data:

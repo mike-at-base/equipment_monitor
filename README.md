@@ -2,39 +2,64 @@
 
 OPC UA data collector + Plotly Dash dashboard for Siemens S7-1500 equipment modules.
 
-## Quick Start
+## Quick Start (Docker — recommended)
 
-### 1. Start TimescaleDB
-```
-docker compose up -d
-```
+The full stack runs in three containers: TimescaleDB, the collector, and the Dash app.
 
-### 2. Install Python dependencies
 ```
-pip install -r requirements.txt
+docker compose up -d --build
 ```
 
-### 3. Initialise the database schema
+That's the entire deploy.  Open **http://localhost:8050** in a browser.
+
+The collector runs `init_schema()` on first boot, so the database is set up automatically.  `config.yaml` is bind-mounted into both the collector and the app, so edits on the host take effect after a container restart:
+
 ```
-python db/schema.py
+# Common operations
+docker compose ps                       # see what's running
+docker compose logs -f collector        # tail collector output
+docker compose logs -f app              # tail app output
+docker compose restart collector        # apply config.yaml changes
+docker compose down                     # stop everything (data persists)
+docker compose down -v                  # stop AND wipe the DB volume
 ```
 
-### 4. Verify OPC UA node paths (optional dry run)
+### Dry-run inside the container
 ```
-python collector/main.py --dry-run
-```
-This browses the PLC namespace and prints every resolved node without writing any data.
-
-### 5. Start the collector (separate terminal)
-```
-python collector/main.py
+docker compose run --rm collector python -u collector/main.py --dry-run
 ```
 
-### 6. Start the Dash app (separate terminal)
-```
-python app/main.py
-```
-Open **http://localhost:8050** in a browser.
+---
+
+## Running outside Docker (native Python)
+
+If you'd rather run the collector / app directly (e.g. for hot-reload development):
+
+1. **Start TimescaleDB only**
+   ```
+   docker compose up -d timescaledb
+   ```
+2. **Install Python dependencies**
+   ```
+   pip install -r requirements.txt
+   ```
+3. **Initialise the database schema** (collector does this too, but you can run it first)
+   ```
+   python db/schema.py
+   ```
+4. **(Optional) verify OPC UA node paths**
+   ```
+   python collector/main.py --dry-run
+   ```
+5. **Start the collector** (separate terminal)
+   ```
+   python collector/main.py
+   ```
+6. **Start the Dash app** (separate terminal)
+   ```
+   python app/main.py
+   ```
+   Open **http://localhost:8050** in a browser.
 
 ---
 
@@ -80,4 +105,5 @@ To capture fast steps, ask the PLC engineer to lower it in TIA Portal:
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | `host=localhost port=5432 dbname=equipment user=monitor password=monitor` | PostgreSQL DSN |
+| `DATABASE_URL` | `host=localhost port=5432 dbname=equipment user=monitor password=monitor` | PostgreSQL DSN.  Compose sets this to `host=timescaledb …` inside the container network. |
+| `DASH_DEBUG` | `true` for native Python, `false` in Docker | Enables Dash's dev server (hot-reload + verbose errors).  Leave off in production — the dev server is not hardened against external traffic. |

@@ -251,4 +251,9 @@ def save_yaml(n_clicks, content):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=8050)
+    # DASH_DEBUG=true enables Dash's dev server (hot-reload, verbose errors).
+    # Defaults to True so `python app/main.py` for local development still
+    # hot-reloads.  docker-compose.yml sets DASH_DEBUG=false so containers
+    # never expose the dev server.
+    debug = os.environ.get("DASH_DEBUG", "true").lower() in ("true", "1", "yes")
+    app.run(debug=debug, host="0.0.0.0", port=8050)
