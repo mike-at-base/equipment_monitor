@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS config_sequence (
     seq_index     SMALLINT NOT NULL,
     seq_name      TEXT NOT NULL,
     is_production BOOL DEFAULT FALSE,
+    cycle_start_step TEXT DEFAULT 'SEQUENCE_INITIAL_STEP',
     UNIQUE (em_id, seq_index)
 );
 
@@ -133,6 +134,12 @@ def init_schema():
         cur.execute("DROP TABLE IF EXISTS availability_event CASCADE")
         # em_down_event was added in the SEMI E10 redesign — no destructive migration needed
         cur.execute(DDL)
+        # Migration: add cycle-start step setting for configurable cycle metrics.
+        cur.execute(
+            "ALTER TABLE config_sequence "
+            "ADD COLUMN IF NOT EXISTS cycle_start_step TEXT "
+            "DEFAULT 'SEQUENCE_INITIAL_STEP'"
+        )
         for table, col in HYPERTABLES:
             try:
                 cur.execute(

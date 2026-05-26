@@ -14,7 +14,9 @@ Manual time is excluded from the denominator (SEMI E10 Non-Scheduled Time).
 from __future__ import annotations
 
 import datetime
+import os
 from collections import defaultdict
+from zoneinfo import ZoneInfo
 
 import dash_bootstrap_components as dbc
 import pandas as pd
@@ -45,12 +47,32 @@ STATE_LABEL = {
 STATE_ORDER = ["productive", "standby", "unscheduled_down", "manual"]
 
 
+def _plant_tz() -> datetime.tzinfo:
+    tz_name = os.environ.get("APP_TIMEZONE", "America/Chicago")
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return datetime.timezone.utc
+
+
+def _to_plant_time(ts, tz: datetime.tzinfo):
+    if ts is None or pd.isna(ts):
+        return ts
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(tz)
+
+
 def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) -> html.Div:
     if not em_ids:
         return html.Div("Select at least one station.", className="text-muted p-3")
 
     summary_df  = q.query_state_summary(em_ids, start, end)
     timeline_df = q.query_state_timeline(em_ids, start, end)
+    plant_tz = _plant_tz()
+    start_local = _to_plant_time(start, plant_tz)
+    end_local = _to_plant_time(end, plant_tz)
 
     # ── Summary table ─────────────────────────────────────────────────────────
     if summary_df.empty:
@@ -106,6 +128,8 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
             y_lbl = y_map.get(row["em_id"], str(row["em_id"]))
             t0 = row["ts"]      if pd.notna(row["ts"])      else start
             t1 = row["next_ts"] if pd.notna(row["next_ts"]) else end
+            t0_local = _to_plant_time(t0, plant_tz)
+            t1_local = _to_plant_time(t1, plant_tz)
             dur_ms = (t1 - t0).total_seconds() * 1000
             b = buckets.get(state, buckets["manual"])
             b["x"].append(dur_ms)
@@ -113,7 +137,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
             b["base"].append(t0.timestamp() * 1000)
             b["hover"].append(
                 f"{STATE_LABEL.get(state, state)}<br>"
-                f"{t0.strftime(TIME_FMT_SHORT)} – {t1.strftime(TIME_FMT_SHORT)}"
+                f"{t0_local.strftime(TIME_FMT_SHORT)} – {t1_local.strftime(TIME_FMT_SHORT)}"
             )
 
         fig = go.Figure()
@@ -148,7 +172,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
             barmode="overlay",
             xaxis=dict(
                 type="date",
-                range=[start, end],
+                range=[start_local, end_local],
                 title=None,
             ),
             yaxis=dict(autorange="reversed"),
@@ -285,14 +309,23 @@ def _render_down_events(
     end: datetime.datetime,
 ) -> html.Div:
     df = q.query_down_events(em_ids, start, end)
+    plant_tz = _plant_tz()
 
     if df.empty:
         return html.Div("No down events in selected range.", className="text-muted")
 
     disp = df.copy()
-    disp["Start"]    = disp["start_ts"].dt.strftime(TIME_FMT_TABLE)
+    disp["Start"]    = disp["start_ts"].apply(
+        lambda v: (
+            _to_plant_time(v, plant_tz).strftime(TIME_FMT_TABLE)
+            if pd.notna(v) else ""
+        )
+    )
     disp["End"]      = disp["end_ts"].apply(
-        lambda v: v.strftime(TIME_FMT_TABLE) if pd.notna(v) else "— ongoing —"
+        lambda v: (
+            _to_plant_time(v, plant_tz).strftime(TIME_FMT_TABLE)
+            if pd.notna(v) else "ongoing"
+        )
     )
     disp["Duration"] = disp["duration_ms"].apply(_fmt_duration)
     disp["Station"]  = disp["station"]

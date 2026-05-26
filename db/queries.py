@@ -52,19 +52,21 @@ def upsert_em(plc_id: int, station: str, display_name: str,
 
 
 def upsert_sequence(em_id: int, seq_index: int,
-                    seq_name: str, is_production: bool) -> None:
+                    seq_name: str, is_production: bool,
+                    cycle_start_step: str = "SEQUENCE_INITIAL_STEP") -> None:
     with Conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO config_sequence
-              (em_id, seq_index, seq_name, is_production)
-            VALUES (%s, %s, %s, %s)
+              (em_id, seq_index, seq_name, is_production, cycle_start_step)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (em_id, seq_index) DO UPDATE
               SET seq_name      = EXCLUDED.seq_name,
-                  is_production = EXCLUDED.is_production
+                  is_production = EXCLUDED.is_production,
+                  cycle_start_step = EXCLUDED.cycle_start_step
             """,
-            (em_id, seq_index, seq_name, is_production),
+            (em_id, seq_index, seq_name, is_production, cycle_start_step),
         )
 
 
@@ -100,7 +102,8 @@ def get_sequences_for_em(em_id: int) -> list[dict]:
     with Conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT seq_index, seq_name, is_production FROM config_sequence WHERE em_id=%s ORDER BY seq_index",
+            "SELECT seq_index, seq_name, is_production, cycle_start_step "
+            "FROM config_sequence WHERE em_id=%s ORDER BY seq_index",
             (em_id,),
         )
         cols = [d[0] for d in cur.description]
@@ -147,6 +150,28 @@ def close_fault(conn, fault_id: int, fault_end: datetime.datetime,
         "UPDATE fault_event SET fault_end=%s, duration_ms=%s WHERE id=%s",
         (fault_end, duration_ms, fault_id),
     )
+
+
+def get_open_fault(conn, em_id: int, seq_index: int) -> dict | None:
+    """Return the latest open fault row for one EM/sequence, if any."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, fault_start, step_name, step_desc, ext_fault_msg
+        FROM fault_event
+        WHERE em_id = %s
+          AND seq_index = %s
+          AND fault_end IS NULL
+        ORDER BY fault_start DESC
+        LIMIT 1
+        """,
+        (em_id, seq_index),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
 
 
 def insert_availability_raw(conn, em_id: int, ts: datetime.datetime,
@@ -212,6 +237,27 @@ def close_down_event(conn, em_id: int, start_ts: datetime.datetime,
     )
 
 
+def get_open_down_event(conn, em_id: int) -> dict | None:
+    """Return the latest open down-event row for one EM, if any."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT start_ts, reason_type, reason_desc, seq_index, step_name, fault_msg
+        FROM em_down_event
+        WHERE em_id = %s
+          AND end_ts IS NULL
+        ORDER BY start_ts DESC
+        LIMIT 1
+        """,
+        (em_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
 def update_down_event_reason(conn, em_id: int, start_ts: datetime.datetime,
                              reason_desc: str,
                              reason_type: str | None = None) -> None:
@@ -246,6 +292,29 @@ def update_down_event_reason(conn, em_id: int, start_ts: datetime.datetime,
             """,
             (reason_desc, em_id, start_ts),
         )
+
+
+def update_down_event_context(conn, em_id: int, start_ts: datetime.datetime,
+                              seq_index: int | None, step_name: str | None,
+                              fault_msg: str | None) -> None:
+    """
+    Patch sequence context on an open down event.
+    Used when a generic EM-fault event opens first and the sequence-level
+    fault edge arrives shortly after.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE em_down_event
+           SET seq_index = %s,
+               step_name = %s,
+               fault_msg = %s
+         WHERE em_id    = %s
+           AND start_ts = %s
+           AND end_ts IS NULL
+        """,
+        (seq_index, step_name, fault_msg, em_id, start_ts),
+    )
 
 
 def update_heartbeat(conn, plc_name: str, connected: bool,
@@ -370,23 +439,36 @@ def query_step_history(em_ids: list[int], seq_indices: list[int] | None,
 
 
 def query_cycle_times(em_id: int, seq_index: int,
+                      cycle_start_step: str,
                       start: datetime.datetime, end: datetime.datetime) -> pd.DataFrame:
     with Conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
+            WITH ordered AS (
+                SELECT ts,
+                       LEAD(step_name) OVER (ORDER BY ts) AS arriving_step
+                FROM step_event
+                WHERE em_id = %s
+                  AND seq_index = %s
+            ),
+            cycle_starts AS (
+                -- step_event stores DEPARTING steps at transition time.
+                -- The ARRIVING step at ts is represented by the next row's
+                -- departing step (LEAD(step_name)).
+                -- Start-to-start cycle time = delta between consecutive
+                -- transitions where the arriving step is INITIAL_STEP.
+                SELECT ts
+                FROM ordered
+                WHERE arriving_step = %s
+            )
             SELECT ts,
-                   EXTRACT(EPOCH FROM
-                       ts - LAG(ts) OVER (ORDER BY ts)
-                   ) * 1000 AS cycle_ms
-            FROM step_event
-            WHERE em_id = %s
-              AND seq_index = %s
-              AND step_name = 'SEQUENCE_INITIAL_STEP'
-              AND ts BETWEEN %s AND %s
+                   EXTRACT(EPOCH FROM ts - LAG(ts) OVER (ORDER BY ts)) * 1000 AS cycle_ms
+            FROM cycle_starts
+            WHERE ts BETWEEN %s AND %s
             ORDER BY ts
             """,
-            (em_id, seq_index, start, end),
+            (em_id, seq_index, cycle_start_step, start, end),
         )
         df = pd.DataFrame(cur.fetchall(), columns=["ts", "cycle_ms"])
         return df.dropna(subset=["cycle_ms"])

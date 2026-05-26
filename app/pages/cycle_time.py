@@ -1,12 +1,14 @@
 """
 Cycle Time page.
 
-Cycles are detected by watching for steps returning to SEQUENCE_INITIAL_STEP.
-The time between two consecutive SEQUENCE_INITIAL_STEP arrivals = one cycle.
+Cycle time is start-to-start on the production sequence:
+time between consecutive ARRIVALS to SEQUENCE_INITIAL_STEP.
 """
 from __future__ import annotations
 
 import datetime
+import os
+from zoneinfo import ZoneInfo
 
 import dash_bootstrap_components as dbc
 import numpy as np
@@ -18,12 +20,29 @@ import db.queries as q
 from db.connection import Conn as _Conn
 
 
+def _plant_tz() -> datetime.tzinfo:
+    tz_name = os.environ.get("APP_TIMEZONE", "America/Chicago")
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return datetime.timezone.utc
+
+
+def _to_plant_time(ts, tz: datetime.tzinfo):
+    if ts is None or pd.isna(ts):
+        return ts
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(tz)
+
+
 def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) -> html.Div:
     if not em_ids:
         return html.Div("Select at least one station.", className="text-muted p-3")
 
     # Find production sequences for the selected EMs
-    prod_combos: list[tuple[int, int, str, str]] = []  # (em_id, seq_idx, station, seq_name)
+    prod_combos: list[tuple[int, int, str, str, str]] = []  # (em_id, seq_idx, station, seq_name, cycle_start_step)
     for em_id in em_ids:
         seqs = q.get_sequences_for_em(em_id)
         for s in seqs:
@@ -37,7 +56,13 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
                     row = cur.fetchone()
                 station = row[0] if row else str(em_id)
                 label   = row[1] if row else str(em_id)
-                prod_combos.append((em_id, s["seq_index"], label, s["seq_name"]))
+                prod_combos.append((
+                    em_id,
+                    s["seq_index"],
+                    label,
+                    s["seq_name"],
+                    s.get("cycle_start_step") or "SEQUENCE_INITIAL_STEP",
+                ))
 
     if not prod_combos:
         return html.Div(
@@ -47,14 +72,24 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
         )
 
     tabs = []
-    for em_id, seq_idx, label, seq_name in prod_combos:
-        df = q.query_cycle_times(em_id, seq_idx, start, end)
+    plant_tz = _plant_tz()
+    for em_id, seq_idx, label, seq_name, cycle_start_step in prod_combos:
+        df = q.query_cycle_times(em_id, seq_idx, cycle_start_step, start, end)
         tab_label = f"{label} / {seq_name}"
 
         if df.empty or len(df) < 2:
             content = html.Div(f"Not enough data for {tab_label}.", className="text-muted")
         else:
-            df["cycle_s"] = df["cycle_ms"] / 1000
+            # EXTRACT(EPOCH ...) can arrive as Decimal from psycopg; cast to
+            # float so pandas stats (std/rolling) don't error on mixed types.
+            df["cycle_ms"] = pd.to_numeric(df["cycle_ms"], errors="coerce")
+            df = df.dropna(subset=["cycle_ms"]).copy()
+            if df.empty:
+                content = html.Div(f"Not enough data for {tab_label}.", className="text-muted")
+                tabs.append(dbc.Tab(content, label=tab_label, tab_id=f"ct-{em_id}-{seq_idx}"))
+                continue
+            df["ts"] = df["ts"].apply(lambda v: _to_plant_time(v, plant_tz))
+            df["cycle_s"] = df["cycle_ms"].astype(float) / 1000.0
             # Rolling 10-cycle average
             df["rolling"] = df["cycle_s"].rolling(10, min_periods=1).mean()
 
@@ -78,7 +113,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
                                 annotation_text=f"Mean {mean_s:.1f}s",
                                 annotation_position="bottom right")
             fig_trend.update_layout(
-                title=f"Cycle Time — {tab_label}",
+                title=f"Cycle Time (Start-to-Start on {cycle_start_step}) — {tab_label}",
                 xaxis_title=None, yaxis_title="Cycle time (s)",
                 legend=dict(orientation="h", y=1.02),
                 margin=dict(l=0, r=10, t=50, b=20),

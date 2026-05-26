@@ -72,6 +72,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home, is_production: false }
+          - { index: 2, name: Run,  is_production: true, cycle_start_step: "1-DIAL-20" }
 
       # ── ST34000  Spacer Load ─────────────────────────────────────────────
       - station: ST34000

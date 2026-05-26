@@ -34,7 +34,28 @@ def _state_badge(state: str) -> html.Span:
     )
 
 
-def _step_display(step_name: str | None, step_desc: str | None) -> html.Div:
+def _format_step_elapsed(updated_at: datetime.datetime | None,
+                         now: datetime.datetime) -> str | None:
+    """Human-readable elapsed time since em_current_step.updated_at."""
+    if updated_at is None:
+        return None
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=datetime.timezone.utc)
+    elapsed_s = max(0, int((now - updated_at).total_seconds()))
+    if elapsed_s < 60:
+        return f"{elapsed_s}s"
+    mins, secs = divmod(elapsed_s, 60)
+    if mins < 60:
+        return f"{mins}m {secs:02d}s"
+    hours, mins = divmod(mins, 60)
+    if hours < 24:
+        return f"{hours}h {mins:02d}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def _step_display(step_name: str | None, step_desc: str | None,
+                  step_elapsed: str | None) -> html.Div:
     """
     Step name left-aligned and always visible.
     Description left-aligned below it; marquee only fires (via JS) when
@@ -54,11 +75,16 @@ def _step_display(step_name: str | None, step_desc: str | None) -> html.Div:
                 title=desc_text,
             )
         )
+    if step_elapsed:
+        children.append(
+            html.Div(f"In step: {step_elapsed}", className="text-muted small")
+        )
     return html.Div(children, className="step-display")
 
 
-def _em_row(em: dict) -> html.Div:
+def _em_row(em: dict, now: datetime.datetime) -> html.Div:
     seq_name  = em.get("seq_name") or ""
+    step_elapsed = _format_step_elapsed(em.get("updated_at"), now)
     header_children = [
         html.Span(em["em_label"], className="em-label-pill"),
         _state_badge(em.get("state") or "unknown"),
@@ -70,7 +96,7 @@ def _em_row(em: dict) -> html.Div:
     return html.Div(
         [
             html.Div(header_children, className="em-header"),
-            _step_display(em.get("step_name"), em.get("step_desc")),
+            _step_display(em.get("step_name"), em.get("step_desc"), step_elapsed),
         ],
         className="em-row",
     )
@@ -82,6 +108,7 @@ def _station_card(display_name: str, station: str, ems: list[dict]) -> html.Div:
         ems,
         key=lambda r: (0 if r["em_label"] == "main" else 1, r["em_label"]),
     )
+    now = datetime.datetime.now(datetime.timezone.utc)
     return html.Div(
         [
             # Dark header
@@ -94,7 +121,7 @@ def _station_card(display_name: str, station: str, ems: list[dict]) -> html.Div:
             ),
             # EM rows
             html.Div(
-                [_em_row(em) for em in sorted_ems],
+                [_em_row(em, now) for em in sorted_ems],
                 className="station-card-body",
             ),
         ],

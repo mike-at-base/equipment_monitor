@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import datetime
 import math
+import os
+from zoneinfo import ZoneInfo
 
 import dash_bootstrap_components as dbc
 import pandas as pd
@@ -22,6 +24,23 @@ from app.brand import (
     DT_STYLE_CELL, DT_STYLE_FILTER, DT_STYLE_HEADER, DT_STYLE_TABLE,
     FAULTED_COND, MUTED,
 )
+
+
+def _plant_tz() -> datetime.tzinfo:
+    tz_name = os.environ.get("APP_TIMEZONE", "America/Chicago")
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return datetime.timezone.utc
+
+
+def _to_plant_time(ts, tz: datetime.tzinfo):
+    if ts is None or pd.isna(ts):
+        return ts
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(tz)
 
 
 def _fmt_ms(ms) -> str:
@@ -151,6 +170,8 @@ def render(em_ids: list[int], start: datetime.datetime,
     # ── Table ──────────────────────────────────────────────────────────────
     display = df[["ts", "station", "em_label", "seq_name",
                   "step_name", "step_desc", "duration_ms", "was_faulted"]].copy()
+    plant_tz = _plant_tz()
+    display["ts"] = display["ts"].apply(lambda v: _to_plant_time(v, plant_tz))
     # 12-hour clock with millisecond precision: "2026-05-23 02:30:45.123 PM"
     display["ts"] = (
         display["ts"].dt.strftime("%Y-%m-%d %I:%M:%S.%f").str[:-3]

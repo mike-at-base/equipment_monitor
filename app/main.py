@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 import os
 import sys
+from zoneinfo import ZoneInfo
 
 import dash
 import dash_bootstrap_components as dbc
@@ -54,13 +55,24 @@ app.layout = build_layout(_plc_names() or ["CELL1"])
 def _parse_window(
     start_date, end_date
 ) -> tuple[datetime.datetime, datetime.datetime]:
-    tz = datetime.timezone.utc
+    # DatePickerRange emits date-only values in the operator's local context.
+    # Convert from plant-local day boundaries to UTC for DB queries so evening
+    # local events don't slip into the next UTC day and disappear from charts.
+    tz_name = os.environ.get("APP_TIMEZONE", "America/Chicago")
+    try:
+        local_tz = ZoneInfo(tz_name)
+    except Exception:
+        local_tz = datetime.timezone.utc
     if isinstance(start_date, str):
         start_date = datetime.date.fromisoformat(start_date[:10])
     if isinstance(end_date, str):
         end_date = datetime.date.fromisoformat(end_date[:10])
-    start = datetime.datetime.combine(start_date, datetime.time.min, tzinfo=tz)
-    end   = datetime.datetime.combine(end_date,   datetime.time.max, tzinfo=tz)
+    start = datetime.datetime.combine(
+        start_date, datetime.time.min, tzinfo=local_tz
+    ).astimezone(datetime.timezone.utc)
+    end = datetime.datetime.combine(
+        end_date, datetime.time.max, tzinfo=local_tz
+    ).astimezone(datetime.timezone.utc)
     return start, end
 
 

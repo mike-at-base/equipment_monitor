@@ -90,6 +90,16 @@ plcs:
 Marks the sequence used for **cycle time** and **availability** tracking.
 Each EM should have exactly one production sequence.
 
+### `cycle_start_step` (optional)
+Overrides which step marks cycle-start for start-to-start cycle time.
+Defaults to `SEQUENCE_INITIAL_STEP` when omitted.
+
+Example:
+```yaml
+sequences:
+  - { index: 2, name: Run, is_production: true, cycle_start_step: "100-WORK-START" }
+```
+
 ---
 
 ## OPC UA Sampling Rate

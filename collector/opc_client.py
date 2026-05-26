@@ -96,27 +96,60 @@ def _safe_attr(obj: Any, *names: str) -> Any:
     return None
 
 
-def _parse_conditions(permissive: Any) -> list[dict]:
+def _parse_conditions(source: Any) -> list[dict]:
     """
-    Walk a ``typePermissiveControlInterface`` value and return its conditions
-    as a list of ``{'ok': bool, 'description': str}``.
+    Extract condition rows from PLC UDT objects.
+    Accepts permissive structs directly and also larger wrappers (e.g. interlock
+    structs) that nest condition arrays under permissive/branch fields.
     """
-    if permissive is None:
+    if source is None:
         return []
-    cond_arr = _safe_attr(permissive, 'condition', 'Condition')
-    if not cond_arr:
-        return []
-    out: list[dict] = []
-    for c in cond_arr:
-        if c is None:
-            continue
-        ok   = _safe_attr(c, 'ok', 'Ok', 'OK')
-        desc = _safe_attr(c, 'description', 'Description')
-        out.append({
-            'ok': bool(ok) if ok is not None else True,
-            'description': (str(desc).strip() if desc else ''),
-        })
-    return out
+
+    def _parse_condition_array(cond_arr: Any) -> list[dict]:
+        if not isinstance(cond_arr, (list, tuple)):
+            return []
+        out: list[dict] = []
+        for c in cond_arr:
+            if c is None:
+                continue
+            ok = _safe_attr(c, 'ok', 'Ok', 'OK')
+            desc = _safe_attr(c, 'description', 'Description')
+            out.append({
+                'ok': bool(ok) if ok is not None else True,
+                'description': (str(desc).strip() if desc else ''),
+            })
+        return out
+
+    visited: set[int] = set()
+
+    def _walk(obj: Any, depth: int = 0) -> list[dict]:
+        if obj is None or depth > 4:
+            return []
+        oid = id(obj)
+        if oid in visited:
+            return []
+        visited.add(oid)
+
+        if isinstance(obj, (list, tuple)):
+            out: list[dict] = []
+            for item in obj:
+                out.extend(_walk(item, depth + 1))
+            return out
+
+        direct = _safe_attr(obj, 'condition', 'Condition')
+        parsed = _parse_condition_array(direct)
+        if parsed:
+            return parsed
+
+        out: list[dict] = []
+        for child_name in ('permissive', 'Permissive', 'interlock', 'Interlock',
+                           'branch', 'Branch', 'activeStepBranch', 'ActiveStepBranch'):
+            child = _safe_attr(obj, child_name)
+            if child is not None:
+                out.extend(_walk(child, depth + 1))
+        return out
+
+    return _walk(source)
 
 
 def _parse_step_branches(branches_value: Any) -> list[dict]:
@@ -541,15 +574,26 @@ class OpcClient:
             log.debug("read interlock failed em=%d", tracker.em_id, exc_info=True)
             return
 
+        # If a sequence fault already claimed root-cause ownership, do not let
+        # the interlock enricher overwrite it.
+        if tracker._down_reason_type == "step_fault":
+            return
+
         conditions = _parse_conditions(raw)
         reason = _build_interlock_reason(conditions)
         if reason:
             tracker.update_down_event_reason(reason)
         else:
-            # No failed interlock conditions — operator-initiated manual stop.
-            # Demote reason_type to 'manual' so the dashboard colour matches
-            # and the row stops counting against interlock fault metrics.
-            tracker.update_down_event_reason("Manual mode", reason_type="manual")
+            # Only demote to manual if there is no active EM fault.
+            # If fault is still active but interlock detail parsing yields
+            # nothing, keep it as an interlock-class fault reason.
+            if tracker._em_fault:
+                tracker.update_down_event_reason(
+                    "EM fault active (interlock details unavailable)",
+                    reason_type="interlock",
+                )
+            else:
+                tracker.update_down_event_reason("Manual mode", reason_type="manual")
 
     async def _heartbeat(self, connected: bool, node_count: int = 0) -> None:
         try:
@@ -595,6 +639,9 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                     seq_index=seq["index"],
                     seq_name=seq["name"],
                     is_production=seq.get("is_production", False),
+                    cycle_start_step=seq.get(
+                        "cycle_start_step", "SEQUENCE_INITIAL_STEP"
+                    ),
                 )
 
             if not enabled:

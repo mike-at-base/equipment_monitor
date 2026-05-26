@@ -59,7 +59,9 @@ class EMStateTracker:
         self._step_start: dict[int, datetime.datetime | None] = {i: None  for i in seq_indices}
 
         # Fault state — one entry per sequence index
-        self._faulted:         dict[int, bool]                    = {i: False for i in seq_indices}
+        # Initialise to None so the first fault notification after collector
+        # startup is always processed (important for restart reconciliation).
+        self._faulted:         dict[int, bool | None]             = {i: None  for i in seq_indices}
         self._fault_id:        dict[int, int | None]              = {i: None  for i in seq_indices}
         self._fault_start:     dict[int, datetime.datetime | None] = {i: None for i in seq_indices}
         self._fault_step:      dict[int, str | None]              = {i: None  for i in seq_indices}
@@ -89,6 +91,16 @@ class EMStateTracker:
         # Signature: callable(em_id: int, reason_type: str, seq_idx: int | None)
         self.on_down_event_opened: Callable[[int, str, int | None], None] | None = None
 
+    @staticmethod
+    def _normalize_step_desc(step_name: str | None, desc: str | None) -> str | None:
+        """
+        PLC bug workaround: STEP_STOP can retain the previous step description.
+        Force description to NULL whenever the step is STEP_STOP.
+        """
+        if step_name == "STEP_STOP":
+            return None
+        return desc
+
     # ── Down-event helpers ────────────────────────────────────────────────────
 
     def _try_open_down_event(
@@ -108,18 +120,28 @@ class EMStateTracker:
         if self._down_start_ts is not None:
             return
 
-        self._down_start_ts    = ts
-        self._down_reason_type = reason_type
-        self._down_reason_desc = reason_desc
-        self._down_seq_idx     = seq_idx
-        self._down_step        = step_name
-        self._down_fault_msg   = fault_msg
-
-        log.debug("[%s/%s] down event OPEN  type=%s desc=%s",
-                  self.station, self.em_label, reason_type, reason_desc)
         try:
             conn = get_pool().getconn()
             try:
+                existing = q.get_open_down_event(conn, self.em_id)
+                if existing:
+                    self._down_start_ts = existing["start_ts"]
+                    self._down_reason_type = existing["reason_type"]
+                    self._down_reason_desc = existing["reason_desc"]
+                    self._down_seq_idx = existing["seq_index"]
+                    self._down_step = existing["step_name"]
+                    self._down_fault_msg = existing["fault_msg"]
+                    return
+
+                self._down_start_ts    = ts
+                self._down_reason_type = reason_type
+                self._down_reason_desc = reason_desc
+                self._down_seq_idx     = seq_idx
+                self._down_step        = step_name
+                self._down_fault_msg   = fault_msg
+
+                log.debug("[%s/%s] down event OPEN  type=%s desc=%s",
+                          self.station, self.em_label, reason_type, reason_desc)
                 q.open_down_event(
                     conn, self.em_id, ts,
                     reason_type, reason_desc,
@@ -172,10 +194,28 @@ class EMStateTracker:
 
     def _try_close_down_event(self, ts: datetime.datetime) -> None:
         """Close the current down event (no-op if none is open)."""
-        if self._down_start_ts is None:
-            return
-
         start_ts = self._down_start_ts
+
+        # On restart, memory may not know about an already-open DB row yet.
+        if start_ts is None:
+            try:
+                conn = get_pool().getconn()
+                try:
+                    existing = q.get_open_down_event(conn, self.em_id)
+                    if existing is None:
+                        return
+                    start_ts = existing["start_ts"]
+                    self._down_reason_type = existing["reason_type"]
+                    self._down_reason_desc = existing["reason_desc"]
+                    self._down_seq_idx = existing["seq_index"]
+                    self._down_step = existing["step_name"]
+                    self._down_fault_msg = existing["fault_msg"]
+                finally:
+                    get_pool().putconn(conn)
+            except Exception:
+                log.exception("get_open_down_event failed em=%d", self.em_id)
+                return
+
         log.debug("[%s/%s] down event CLOSE type=%s desc=%s dur=%.0fs",
                   self.station, self.em_label,
                   self._down_reason_type, self._down_reason_desc,
@@ -347,9 +387,11 @@ class EMStateTracker:
                         conn, self.em_id, seq_idx,
                         ts=ts,
                         step_name=prev_step,
-                        step_desc=self._step_desc.get(seq_idx),
+                        step_desc=self._normalize_step_desc(
+                            prev_step, self._step_desc.get(seq_idx),
+                        ),
                         duration_ms=duration_ms,
-                        was_faulted=self._faulted.get(seq_idx, False),
+                        was_faulted=bool(self._faulted.get(seq_idx, False)),
                     )
                 # Track the ARRIVING step for the live status dashboard,
                 # but only when this sequence is the active one.  All
@@ -364,7 +406,10 @@ class EMStateTracker:
                 if step_name and is_active:
                     q.upsert_current_step(
                         conn, self.em_id, seq_idx, step_name,
-                        self._step_desc.get(seq_idx), ts,
+                        self._normalize_step_desc(
+                            step_name, self._step_desc.get(seq_idx),
+                        ),
+                        ts,
                     )
                 conn.commit()
             finally:
@@ -373,14 +418,16 @@ class EMStateTracker:
             log.exception("on_step_change failed em=%d seq=%d",
                           self.em_id, seq_idx)
 
+        if step_name == "STEP_STOP":
+            self._step_desc[seq_idx] = None
         self._step[seq_idx]       = step_name
         self._step_start[seq_idx] = ts
 
     def on_step_desc_change(self, seq_idx: int, desc: str | None,
                             ts: datetime.datetime) -> None:
         """Update step description and patch em_current_step if active sequence."""
-        self._step_desc[seq_idx] = desc
         step = self._step.get(seq_idx)
+        self._step_desc[seq_idx] = self._normalize_step_desc(step, desc)
         if not step:
             return
         is_active = (self._active_seq is None or self._active_seq == seq_idx)
@@ -389,7 +436,10 @@ class EMStateTracker:
         try:
             conn = get_pool().getconn()
             try:
-                q.upsert_current_step(conn, self.em_id, seq_idx, step, desc, ts)
+                q.upsert_current_step(
+                    conn, self.em_id, seq_idx, step,
+                    self._normalize_step_desc(step, desc), ts,
+                )
                 conn.commit()
             finally:
                 get_pool().putconn(conn)
@@ -399,7 +449,7 @@ class EMStateTracker:
 
     def on_fault_change(self, seq_idx: int, faulted: bool,
                         ts: datetime.datetime) -> None:
-        if faulted == self._faulted.get(seq_idx, False):
+        if self._faulted.get(seq_idx) is not None and faulted == self._faulted.get(seq_idx):
             return
         self._faulted[seq_idx] = faulted
 
@@ -420,26 +470,82 @@ class EMStateTracker:
                 step_name=step,
                 fault_msg=ext_msg,
             )
+            # If the EM-level fault edge opened a generic interlock/manual
+            # event first, promote it to step_fault now that we know the
+            # sequence context.
+            if self._down_start_ts is not None and self._down_reason_type in ("interlock", "manual"):
+                self._down_reason_type = "step_fault"
+                self._down_reason_desc = placeholder
+                self._down_seq_idx = seq_idx
+                self._down_step = step
+                self._down_fault_msg = ext_msg
+                try:
+                    conn = get_pool().getconn()
+                    try:
+                        q.update_down_event_reason(
+                            conn, self.em_id, self._down_start_ts,
+                            placeholder, reason_type="step_fault",
+                        )
+                        q.update_down_event_context(
+                            conn, self.em_id, self._down_start_ts,
+                            seq_idx, step, ext_msg,
+                        )
+                        conn.commit()
+                    finally:
+                        get_pool().putconn(conn)
+                except Exception:
+                    log.exception("promote_down_event_to_step_fault failed em=%d seq=%d",
+                                  self.em_id, seq_idx)
+                # Trigger step-fault reason enrichment immediately.  The down
+                # event may have originally opened as interlock/manual before
+                # the sequence fault edge arrived.
+                if self.on_down_event_opened is not None:
+                    try:
+                        self.on_down_event_opened(
+                            self.em_id, "step_fault", seq_idx,
+                        )
+                    except Exception:
+                        log.exception(
+                            "on_down_event_opened (promote step_fault) failed em=%d seq=%d",
+                            self.em_id, seq_idx,
+                        )
 
         try:
             conn = get_pool().getconn()
             try:
                 if faulted:
-                    # Rising edge — open fault record
-                    self._fault_start[seq_idx]     = ts
-                    self._fault_step[seq_idx]      = self._step.get(seq_idx)
-                    self._fault_step_desc[seq_idx] = self._step_desc.get(seq_idx)
-                    fault_id = q.insert_fault_start(
-                        conn, self.em_id, seq_idx,
-                        fault_start=ts,
-                        step_name=self._fault_step[seq_idx],
-                        step_desc=self._fault_step_desc[seq_idx],
-                        ext_msg=self._ext_msg.get(seq_idx),
-                    )
-                    self._fault_id[seq_idx] = fault_id
+                    # Rising edge — if restart happened mid-fault and a row is
+                    # already open, adopt it instead of inserting a duplicate.
+                    existing = q.get_open_fault(conn, self.em_id, seq_idx)
+                    if existing is not None:
+                        self._fault_id[seq_idx] = existing["id"]
+                        self._fault_start[seq_idx] = existing["fault_start"]
+                        self._fault_step[seq_idx] = existing.get("step_name")
+                        self._fault_step_desc[seq_idx] = existing.get("step_desc")
+                    else:
+                        self._fault_start[seq_idx]     = ts
+                        self._fault_step[seq_idx]      = self._step.get(seq_idx)
+                        self._fault_step_desc[seq_idx] = self._step_desc.get(seq_idx)
+                        fault_id = q.insert_fault_start(
+                            conn, self.em_id, seq_idx,
+                            fault_start=ts,
+                            step_name=self._fault_step[seq_idx],
+                        step_desc=self._normalize_step_desc(
+                            self._fault_step[seq_idx],
+                            self._fault_step_desc[seq_idx],
+                        ),
+                            ext_msg=self._ext_msg.get(seq_idx),
+                        )
+                        self._fault_id[seq_idx] = fault_id
                 else:
-                    # Falling edge — close fault record
+                    # Falling edge — close tracked fault, or any open DB row
+                    # left over from before a collector restart.
                     fid = self._fault_id.get(seq_idx)
+                    if fid is None:
+                        existing = q.get_open_fault(conn, self.em_id, seq_idx)
+                        if existing is not None:
+                            fid = existing["id"]
+                            self._fault_start[seq_idx] = existing["fault_start"]
                     if fid is not None:
                         f_start = self._fault_start.get(seq_idx) or ts
                         dur_ms  = int((ts - f_start).total_seconds() * 1000)

@@ -4,6 +4,8 @@ Fault Analysis page — Pareto chart + fault frequency + detail table.
 from __future__ import annotations
 
 import datetime
+import os
+from zoneinfo import ZoneInfo
 
 import dash_bootstrap_components as dbc
 import numpy as np
@@ -18,6 +20,23 @@ from app.brand import (
 )
 
 
+def _plant_tz() -> datetime.tzinfo:
+    tz_name = os.environ.get("APP_TIMEZONE", "America/Chicago")
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return datetime.timezone.utc
+
+
+def _to_plant_time(ts, tz: datetime.tzinfo):
+    if ts is None or pd.isna(ts):
+        return ts
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(tz)
+
+
 def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) -> html.Div:
     if not em_ids:
         return html.Div("Select at least one station.", className="text-muted p-3")
@@ -28,6 +47,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
 
     if pareto_df.empty:
         return html.Div("No fault data for selected filters.", className="text-muted p-3")
+    plant_tz = _plant_tz()
 
     total_faults = int(pareto_df["fault_count"].sum())
 
@@ -68,7 +88,7 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
         yaxis2=dict(title="Cumulative %", overlaying="y", side="right",
                     range=[0, 105], ticksuffix="%"),
         legend=dict(orientation="h", y=1.05),
-        margin=dict(l=0, r=0, t=60, b=120),
+        margin=dict(l=70, r=40, t=60, b=120),
         height=420,
         bargap=0.2,
     )
@@ -76,17 +96,21 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
     # ── Fault frequency (faults / hour) ─────────────────────────────────────
     fig_freq = go.Figure()
     if not freq_df.empty:
+        local_bucket = [
+            _to_plant_time(v, plant_tz).strftime("%Y-%m-%d %I:%M %p")
+            for v in freq_df["bucket"]
+        ]
         fig_freq.add_trace(go.Bar(
-            x=freq_df["bucket"],
+            x=local_bucket,
             y=freq_df["fault_count"],
             name="Faults",
             marker_color="#e67e22",
         ))
     fig_freq.update_layout(
         title="Fault Frequency (per hour)",
-        xaxis_title=None,
-        yaxis_title="Faults",
-        margin=dict(l=0, r=10, t=50, b=20),
+        xaxis_title="Plant Time",
+        yaxis_title="Fault Count",
+        margin=dict(l=70, r=10, t=50, b=50),
         height=260,
     )
 
@@ -95,7 +119,12 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
         disp = events_df.copy()
         for col in ["fault_start", "fault_end"]:
             if col in disp.columns:
-                disp[col] = pd.to_datetime(disp[col]).dt.strftime(TIME_FMT_TABLE)
+                disp[col] = disp[col].apply(
+                    lambda v: (
+                        _to_plant_time(v, plant_tz).strftime(TIME_FMT_TABLE)
+                        if pd.notna(v) else ""
+                    )
+                )
         disp["duration"] = disp["duration_ms"].apply(
             lambda ms: f"{int(ms/1000)}s" if pd.notna(ms) else "active"
         )

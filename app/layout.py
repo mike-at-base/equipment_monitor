@@ -5,6 +5,8 @@ Tabs and sidebar removed — station cards are the navigation entry point.
 from __future__ import annotations
 
 import datetime
+import os
+from zoneinfo import ZoneInfo
 
 import dash_bootstrap_components as dbc
 from dash import dcc, html
@@ -12,9 +14,17 @@ from dash import dcc, html
 TAB_STYLE = {"padding": "6px 14px"}
 
 
+def _app_tz() -> datetime.tzinfo:
+    tz_name = os.environ.get("APP_TIMEZONE", "America/Chicago")
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return datetime.timezone.utc
+
+
 def build_layout(plc_names: list[str]) -> html.Div:
     default_plc = plc_names[0] if plc_names else None
-    now   = datetime.datetime.utcnow()
+    now   = datetime.datetime.now(_app_tz())
     start = now - datetime.timedelta(hours=8)
 
     return html.Div(
