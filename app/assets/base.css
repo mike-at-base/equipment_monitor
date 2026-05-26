@@ -33,14 +33,107 @@ html, body {
   background-color: var(--bp-bg) !important;
 }
 
-/* ── Navbar (Grounded dark section) ───────────────────────── */
-.navbar, .navbar.navbar-dark, nav.navbar {
-  background-color: var(--bp-grounded) !important;
-  border-bottom: 1px solid rgba(0,0,0,.25) !important;
+/* ── Navbar — Maxestro-style header (Base + Equipment Monitor) ──
+   Sticky top bar with the Base SVG logo, a thin divider, an uppercase
+   muted title, and a right-aligned cluster (PLC select + icon buttons).
+   Visual match for the MAXESTRO UI navbar. */
+
+.app-navbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  background: #1f1e1c;                       /* one step above bp-bg */
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--bp-border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  min-height: 56px;
 }
-.navbar-brand, .navbar-brand:hover {
-  color: var(--bp-livewire) !important;
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.app-brand-logo {
+  height: 22px;
+  width: auto;
+  /* SVG fill is hard-coded Conduit (#EDEFF0) in the file */
+}
+.app-brand-divider {
+  display: inline-block;
+  width: 1px;
+  height: 22px;
+  background: var(--bp-border);
+}
+.app-brand-title {
+  color: var(--bp-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Right-aligned controls: PLC select + icon buttons */
+.app-nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;                         /* push to far right */
+}
+
+/* PLC dropdown — slim, dark, fits the navbar */
+.app-plc-select {
+  min-width: 160px;
+}
+.app-plc-select .Select-control,
+.app-plc-select .is-focused:not(.is-open) > .Select-control {
+  background: var(--bp-elevated) !important;
+  border: 1px solid var(--bp-border) !important;
+  color: var(--bp-text) !important;
+  height: 32px !important;
+  min-height: 32px !important;
+}
+.app-plc-select .Select-value-label,
+.app-plc-select .Select-placeholder,
+.app-plc-select .Select-input > input {
+  color: var(--bp-text) !important;
+  line-height: 30px !important;
+}
+
+/* Ghost-style icon buttons — transparent until hover, Livewire on active */
+.app-nav-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--bp-muted);
+  padding: 0.35rem 0.65rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.app-nav-btn:hover {
+  color: var(--bp-text);
+  background: rgba(255, 255, 255, 0.04);
+}
+.app-nav-btn:active,
+.app-nav-btn:focus {
+  color: var(--bp-livewire);
+  background: rgba(178, 221, 121, 0.08);
+  border-color: rgba(178, 221, 121, 0.3);
+  outline: none;
+}
+
+/* Keep legacy Bootstrap `.navbar` rules off other parts of the page
+   (dbc.Modal, dropdowns, etc. don't use them — this is just a guard
+   against any third-party widget bringing in default navbar chrome). */
+.navbar:not(.app-navbar) {
+  background-color: transparent !important;
 }
 
 /* ── Sidebar ──────────────────────────────────────────────── */
