@@ -30,43 +30,53 @@ def build_layout(plc_names: list[str]) -> html.Div:
     return html.Div(
         [
             # ── Header ──────────────────────────────────────────────────────
-            dbc.Navbar(
-                dbc.Container(
-                    [
-                        dbc.NavbarBrand("⚡ Equipment Monitor", className="fw-bold"),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    dcc.Dropdown(
-                                        id="plc-select",
-                                        options=[{"label": n, "value": n} for n in plc_names],
-                                        value=default_plc,
-                                        clearable=False,
-                                        style={"minWidth": "140px"},
-                                    ),
-                                    width="auto",
-                                ),
-                                dbc.Col(
-                                    dbc.Button(
-                                        "↻", id="refresh-btn", color="secondary",
-                                        size="sm", title="Refresh",
-                                    ),
-                                    width="auto",
-                                ),
-                                dbc.Col(
-                                    dbc.Button(
-                                        "⚙", id="config-btn", color="secondary",
-                                        size="sm", title="Configuration",
-                                    ),
-                                    width="auto",
-                                ),
-                            ],
-                            align="center", className="g-2",
-                        ),
-                    ],
-                    fluid=True,
-                ),
-                color="dark", dark=True, className="mb-0",
+            # Maxestro-style nav: Base logo + vertical divider + uppercase
+            # title on the left; PLC selector + icon buttons on the right.
+            # All styling lives in app/assets/base.css under .app-navbar.
+            html.Nav(
+                className="app-navbar",
+                children=[
+                    html.Span(
+                        className="app-brand",
+                        children=[
+                            html.Img(
+                                src="/assets/base_logo.svg",
+                                alt="Base",
+                                className="app-brand-logo",
+                            ),
+                            html.Span(className="app-brand-divider"),
+                            html.Span(
+                                "Equipment Monitor",
+                                className="app-brand-title",
+                            ),
+                        ],
+                    ),
+                    # Right-aligned control cluster
+                    html.Div(
+                        className="app-nav-controls",
+                        children=[
+                            dcc.Dropdown(
+                                id="plc-select",
+                                options=[{"label": n, "value": n} for n in plc_names],
+                                value=default_plc,
+                                clearable=False,
+                                className="app-plc-select",
+                            ),
+                            html.Button(
+                                "↻",
+                                id="refresh-btn",
+                                className="app-nav-btn",
+                                title="Refresh",
+                            ),
+                            html.Button(
+                                "⚙",
+                                id="config-btn",
+                                className="app-nav-btn",
+                                title="Configuration",
+                            ),
+                        ],
+                    ),
+                ],
             ),
 
             # ── Live overview ────────────────────────────────────────────────
