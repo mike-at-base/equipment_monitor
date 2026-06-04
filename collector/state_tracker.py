@@ -39,6 +39,10 @@ from db.connection import get_pool
 log = logging.getLogger(__name__)
 
 INITIAL_STEP = "SEQUENCE_INITIAL_STEP"
+# If description flips very close to a step edge, it's often already the
+# ARRIVING step's description. Keep the prior description for the DEPARTING
+# step event in that case.
+_DESC_EDGE_GUARD_MS = 250
 
 
 class EMStateTracker:
@@ -57,6 +61,9 @@ class EMStateTracker:
         self._step:       dict[int, str | None]               = {i: None  for i in seq_indices}
         self._step_desc:  dict[int, str | None]               = {i: None  for i in seq_indices}
         self._step_start: dict[int, datetime.datetime | None] = {i: None  for i in seq_indices}
+        self._step_desc_ts:      dict[int, datetime.datetime | None] = {i: None for i in seq_indices}
+        self._step_desc_prev:    dict[int, str | None] = {i: None for i in seq_indices}
+        self._step_desc_prev_ts: dict[int, datetime.datetime | None] = {i: None for i in seq_indices}
 
         # Fault state — one entry per sequence index
         # Initialise to None so the first fault notification after collector
@@ -378,6 +385,22 @@ class EMStateTracker:
         if prev_start is not None and prev_step is not None:
             duration_ms = int((ts - prev_start).total_seconds() * 1000)
 
+        departing_desc = self._normalize_step_desc(
+            prev_step, self._step_desc.get(seq_idx),
+        )
+        desc_ts = self._step_desc_ts.get(seq_idx)
+        prev_desc = self._step_desc_prev.get(seq_idx)
+        if (
+            prev_step not in (None, "STEP_STOP")
+            and prev_desc is not None
+            and desc_ts is not None
+            and (0 <= (ts - desc_ts).total_seconds() * 1000 <= _DESC_EDGE_GUARD_MS)
+        ):
+            # Description changed right at the edge; treat that update as
+            # belonging to the ARRIVING step and keep previous description for
+            # the DEPARTING step event row.
+            departing_desc = self._normalize_step_desc(prev_step, prev_desc)
+
         try:
             conn = get_pool().getconn()
             try:
@@ -387,9 +410,7 @@ class EMStateTracker:
                         conn, self.em_id, seq_idx,
                         ts=ts,
                         step_name=prev_step,
-                        step_desc=self._normalize_step_desc(
-                            prev_step, self._step_desc.get(seq_idx),
-                        ),
+                        step_desc=departing_desc,
                         duration_ms=duration_ms,
                         was_faulted=bool(self._faulted.get(seq_idx, False)),
                     )
@@ -427,7 +448,13 @@ class EMStateTracker:
                             ts: datetime.datetime) -> None:
         """Update step description and patch em_current_step if active sequence."""
         step = self._step.get(seq_idx)
-        self._step_desc[seq_idx] = self._normalize_step_desc(step, desc)
+        new_desc = self._normalize_step_desc(step, desc)
+        if new_desc == self._step_desc.get(seq_idx):
+            return
+        self._step_desc_prev[seq_idx] = self._step_desc.get(seq_idx)
+        self._step_desc_prev_ts[seq_idx] = self._step_desc_ts.get(seq_idx)
+        self._step_desc[seq_idx] = new_desc
+        self._step_desc_ts[seq_idx] = ts
         if not step:
             return
         is_active = (self._active_seq is None or self._active_seq == seq_idx)
@@ -438,7 +465,7 @@ class EMStateTracker:
             try:
                 q.upsert_current_step(
                     conn, self.em_id, seq_idx, step,
-                    self._normalize_step_desc(step, desc), ts,
+                    new_desc, ts,
                 )
                 conn.commit()
             finally:

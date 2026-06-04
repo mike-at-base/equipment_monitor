@@ -59,6 +59,8 @@ SESSION_TIMEOUT_MS  = 30_000
 # Per-request timeout.  Default asyncua value (4 s) is too tight when the
 # PLC is busy; 15 s gives the renewal handshake room to complete.
 REQUEST_TIMEOUT_S   = 15
+OPC_CLIENT_NAME     = "equipment-monitor-app"
+OPC_APPLICATION_URI = "urn:equipment-monitor:app"
 
 # Max number of failed-condition descriptions to concatenate into one reason
 # string.  Anything past this gets truncated with "(+N more)".
@@ -89,11 +91,39 @@ def siemens_path(em_db_path: str) -> str:
 
 
 def _safe_attr(obj: Any, *names: str) -> Any:
-    """Return the first attribute on ``obj`` that exists from the given names."""
+    """Return first matching value from attrs or dict keys."""
     for n in names:
+        if isinstance(obj, dict):
+            if n in obj:
+                return obj[n]
+            # Be tolerant to key-case differences from UDT decoding.
+            for k, v in obj.items():
+                if isinstance(k, str) and k.lower() == n.lower():
+                    return v
         if hasattr(obj, n):
             return getattr(obj, n)
     return None
+
+
+def _as_bool(value: Any, default: bool = True) -> bool:
+    """
+    Parse PLC/UADT values to bool safely.
+    Avoid bool("False") == True pitfalls for string payloads.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("false", "0", "no", "off"):
+            return False
+        if v in ("true", "1", "yes", "on"):
+            return True
+        return default
+    return bool(value)
 
 
 def _parse_conditions(source: Any) -> list[dict]:
@@ -115,7 +145,7 @@ def _parse_conditions(source: Any) -> list[dict]:
             ok = _safe_attr(c, 'ok', 'Ok', 'OK')
             desc = _safe_attr(c, 'description', 'Description')
             out.append({
-                'ok': bool(ok) if ok is not None else True,
+                'ok': _as_bool(ok, default=True),
                 'description': (str(desc).strip() if desc else ''),
             })
         return out
@@ -136,17 +166,26 @@ def _parse_conditions(source: Any) -> list[dict]:
                 out.extend(_walk(item, depth + 1))
             return out
 
-        direct = _safe_attr(obj, 'condition', 'Condition')
+        direct = _safe_attr(
+            obj, 'condition', 'Condition', 'conditions', 'Conditions',
+        )
         parsed = _parse_condition_array(direct)
         if parsed:
             return parsed
 
         out: list[dict] = []
         for child_name in ('permissive', 'Permissive', 'interlock', 'Interlock',
-                           'branch', 'Branch', 'activeStepBranch', 'ActiveStepBranch'):
+                           'branch', 'Branch', 'branches', 'Branches',
+                           'activeStepBranch', 'ActiveStepBranch'):
             child = _safe_attr(obj, child_name)
             if child is not None:
                 out.extend(_walk(child, depth + 1))
+
+        # Generic dict fallback: recurse through nested values so that
+        # unfamiliar wrapper field names still get scanned.
+        if isinstance(obj, dict):
+            for v in obj.values():
+                out.extend(_walk(v, depth + 1))
         return out
 
     return _walk(source)
@@ -306,6 +345,10 @@ class OpcClient:
     async def _connect_and_subscribe(self) -> None:
         log.info("[%s] Connecting to %s", self.plc_name, self.endpoint)
         client = Client(url=self.endpoint)
+        # OPC UA application/session identity shown on the PLC server.
+        client.name            = OPC_CLIENT_NAME
+        client.description     = OPC_CLIENT_NAME
+        client.application_uri = OPC_APPLICATION_URI
         client.session_timeout = SESSION_TIMEOUT_MS  # match S7-1500 grant
         client.timeout         = REQUEST_TIMEOUT_S   # per-request timeout
         async with client:

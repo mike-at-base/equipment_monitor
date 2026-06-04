@@ -26,6 +26,8 @@ def build_layout(plc_names: list[str]) -> html.Div:
     default_plc = plc_names[0] if plc_names else None
     now   = datetime.datetime.now(_app_tz())
     start = now - datetime.timedelta(hours=8)
+    start_value = start.strftime("%Y-%m-%dT%H:%M")
+    end_value = now.strftime("%Y-%m-%dT%H:%M")
 
     return html.Div(
         [
@@ -94,18 +96,53 @@ def build_layout(plc_names: list[str]) -> html.Div:
                     ),
                     dbc.ModalBody(
                         [
-                            # Date range toolbar
+                            # Date/time toolbar
                             dbc.Row(
-                                dbc.Col(
-                                    dcc.DatePickerRange(
-                                        id="modal-date-range",
-                                        start_date=start.date(),
-                                        end_date=now.date(),
-                                        display_format="YYYY-MM-DD",
-                                        updatemode="bothdates",
+                                [
+                                    dbc.Col(
+                                        dbc.Input(
+                                            id="modal-start-dt",
+                                            type="datetime-local",
+                                            value=start_value,
+                                        ),
+                                        md=3,
                                     ),
-                                    width="auto",
-                                ),
+                                    dbc.Col(
+                                        dbc.Input(
+                                            id="modal-end-dt",
+                                            type="datetime-local",
+                                            value=end_value,
+                                        ),
+                                        md=3,
+                                    ),
+                                    dbc.Col(
+                                        html.Div(
+                                            [
+                                                dbc.Button(
+                                                    "Last 1h", id="range-1h-btn",
+                                                    color="secondary", size="sm",
+                                                    className="me-1",
+                                                ),
+                                                dbc.Button(
+                                                    "Last 4h", id="range-4h-btn",
+                                                    color="secondary", size="sm",
+                                                    className="me-1",
+                                                ),
+                                                dbc.Button(
+                                                    "Last 8h", id="range-8h-btn",
+                                                    color="secondary", size="sm",
+                                                    className="me-1",
+                                                ),
+                                                dbc.Button(
+                                                    "Last 24h", id="range-24h-btn",
+                                                    color="secondary", size="sm",
+                                                ),
+                                            ],
+                                            className="d-flex align-items-center h-100",
+                                        ),
+                                        md=6,
+                                    ),
+                                ],
                                 className="mb-3",
                             ),
                             # Detail tabs

@@ -32,7 +32,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home, is_production: false }
-          - { index: 2, name: Run,  is_production: true  }
+          - { index: 2, name: Run,  is_production: true, cycle_start_step: "999" }
 
       - station: ST31000
         display_name: "Cell Load 1 Robot"
@@ -52,7 +52,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home, is_production: false }
-          - { index: 2, name: Run,  is_production: true  }
+          - { index: 2, name: Run,  is_production: true, cycle_start_step: "999" }
 
       - station: ST32000
         display_name: "Cell Load 2 Robot"
@@ -82,7 +82,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home, is_production: false }
-          - { index: 2, name: Run,  is_production: true  }
+          - { index: 2, name: Run,  is_production: true, cycle_start_step: "40-DIAL-20" }
 
       - station: ST34000
         display_name: "Spacer Load RB01"
@@ -112,7 +112,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home, is_production: false }
-          - { index: 2, name: Run,  is_production: true  }
+          - { index: 2, name: Run,  is_production: true, cycle_start_step: "30-DIAL-20" }
 
       - station: ST35000
         display_name: "End Cap Load Robot"
@@ -132,7 +132,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home, is_production: false }
-          - { index: 2, name: Run,  is_production: true  }
+          - { index: 2, name: Run,  is_production: true, cycle_start_step: "30-DIAL-20" }
 
       - station: ST36000
         display_name: "Dial Unload Robot"
@@ -172,7 +172,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home,    is_production: false }
-          - { index: 2, name: Running, is_production: true  }
+          - { index: 2, name: Running, is_production: true, cycle_start_step: "20" }
 
       - station: ST12000
         display_name: "Dispense Robot"
@@ -192,7 +192,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home,    is_production: false }
-          - { index: 2, name: Running, is_production: true  }
+          - { index: 2, name: Running, is_production: true, cycle_start_step: "20" }
 
       - station: ST13000A
         display_name: "Cell Stack Install A Robot"
@@ -212,7 +212,7 @@ plcs:
         enabled: true
         sequences:
           - { index: 1, name: Home,    is_production: false }
-          - { index: 2, name: Running, is_production: true  }
+          - { index: 2, name: Running, is_production: true, cycle_start_step: "20" }
 
       - station: ST13000B
         display_name: "Cell Stack Install B Robot"
@@ -223,3 +223,325 @@ plcs:
           - { index: 1, name: Home,        is_production: false }
           - { index: 2, name: Maintenance, is_production: false }
           - { index: 3, name: Running,     is_production: true  }
+
+  - name: INV1
+    opc_endpoint: "opc.tcp://10.200.2.26:4840"
+    enabled: true
+    equipment_modules:
+      # ── Heatsink ────────────────────────────────────────────────────────────
+      - station: ST10000
+        display_name: "Heatsink Load"
+        em_db_path: "ST10000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST11000
+        display_name: "TIM Dispense"
+        em_db_path: "ST11000_Control_DB.awsControlInterface.station.controlInterface.equipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "120" }
+
+      - station: ST12000
+        display_name: "PCBA Load"
+        em_db_path: "ST12000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST13000
+        display_name: "PCBA Press"
+        em_db_path: "ST13000_Control_DB.awsControlInterface.station.controlInterface.equipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "110" }
+
+      - station: ST14000
+        display_name: "PCBA Fasten 1"
+        em_db_path: "ST14000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST14100
+        display_name: "PCBA Fasten 2"
+        em_db_path: "ST14100_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST15000
+        display_name: "Hipot"
+        em_db_path: "ST15000_Control_DB.awsControlInterface.station.controlInterface.equipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "110" }
+
+      - station: ST16000
+        display_name: "Enclosure Blind Mate"
+        em_db_path: "ST16000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      # ── Inverter ────────────────────────────────────────────────────────────
+      - station: ST20000
+        display_name: "Enclosure Lid Load"
+        em_db_path: "ST20000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST21000
+        display_name: "Connector Install"
+        em_db_path: "ST21000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST22000
+        display_name: "Connector Fasten"
+        em_db_path: "ST22000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST30000
+        display_name: "Inverter Flip"
+        em_db_path: "ST30000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST31000
+        display_name: "Functional Test"
+        em_db_path: "ST31000_Control_DB.awsControlInterface.station.controlInterface.equipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "110" }
+
+      - station: ST31100
+        display_name: "Functional Test Buffer"
+        em_db_path: "ST31100_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST32000
+        display_name: "Enclosure Weld Transfer"
+        em_db_path: "ST32000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST32100
+        display_name: "Enclosure Weld Buffer"
+        em_db_path: "ST32100_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST34000
+        display_name: "Aesthetic Clean Up and Port Cover Install"
+        em_db_path: "ST34000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+      - station: ST35000
+        display_name: "Inverter Leak Test"
+        em_db_path: "ST35000_Control_DB.awsControlInterface.station.controlInterface.equipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "110" }
+
+      - station: ST40000
+        display_name: "Packout To Fan Assembly"
+        em_db_path: "ST40000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "20" }
+
+  - name: MOD1
+    opc_endpoint: "opc.tcp://10.200.2.23:4840"
+    enabled: true
+    equipment_modules:
+      - station: ST10000
+        display_name: "ST10000"
+        em_db_path: "ST10000_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST11000
+        display_name: "ST11000"
+        em_db_path: "ST11000_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST20000
+        display_name: "ST20000"
+        em_db_path: "ST20000_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST23000-01
+        display_name: "ST23000-01"
+        em_db_path: "ST23000-01_MWS_DB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST23000-02
+        display_name: "ST23000-02"
+        em_db_path: "ST23000-02_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST24000
+        display_name: "ST24000"
+        em_db_path: "ST24000_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST25000
+        display_name: "ST25000"
+        em_db_path: "ST25000_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST30000
+        display_name: "ST30000"
+        em_db_path: "ST30000_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST33000-01
+        display_name: "ST33000-01"
+        em_db_path: "ST33000-01_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST33000-02
+        display_name: "ST33000-02"
+        em_db_path: "ST33000-02_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST33100-01
+        display_name: "ST33100-01"
+        em_db_path: "ST33100-01_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST33100-02
+        display_name: "ST33100-02"
+        em_db_path: "ST33100-02_MWS_IDB.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST34000-01
+        display_name: "ST34000-01"
+        em_db_path: "ST34000-01_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST34000-02
+        display_name: "ST34000-02"
+        em_db_path: "ST34000-02_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST35000-01
+        display_name: "ST35000-01"
+        em_db_path: "ST35000-01_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST35000-02
+        display_name: "ST35000-02"
+        em_db_path: "ST35000-02_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST36000-01
+        display_name: "ST36000-01"
+        em_db_path: "ST36000-01_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST36000-02
+        display_name: "ST36000-02"
+        em_db_path: "ST36000-02_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST36500
+        display_name: "ST36500"
+        em_db_path: "ST36500_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }
+
+      - station: ST40000
+        display_name: "ST40000"
+        em_db_path: "ST40000_MWS.statEquipmentModuleControl"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Main, is_production: true, cycle_start_step: "100" }

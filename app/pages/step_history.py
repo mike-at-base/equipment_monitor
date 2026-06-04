@@ -98,6 +98,7 @@ def build_step_duration_figure(
         .reset_index()
         .sort_values("duration_ms", ascending=True)
     )
+    avg["step_name"] = avg["step_name"].astype(str)
     # Empty-description fallback so the hover doesn't read "—None—"
     avg["step_desc"] = avg["step_desc"].fillna("").replace("", "—")
 
@@ -138,7 +139,15 @@ def build_step_duration_figure(
         margin=dict(l=10, r=10, t=40, b=20),
         yaxis_title=None,
     )
-    fig.update_yaxes(automargin=True)
+    # Force categorical y-axis even when step names are numeric-like strings
+    # (e.g. "10", "20"), otherwise Plotly may auto-switch to continuous and
+    # show empty numeric gaps between labels.
+    fig.update_yaxes(
+        automargin=True,
+        type="category",
+        categoryorder="array",
+        categoryarray=avg["step_name"].tolist(),
+    )
     return fig
 
 
@@ -178,6 +187,8 @@ def render(em_ids: list[int], start: datetime.datetime,
         + " " + display["ts"].dt.strftime("%p")
     )
     display["Duration"] = display["duration_ms"].apply(_fmt_ms)
+    # Keep raw ms for chart recomputation from DataTable filtered rows.
+    display["duration_ms_raw"] = display["duration_ms"]
     # Convert boolean to lowercase string so filter_query string comparison works
     display["was_faulted"] = display["was_faulted"].map({True: "yes", False: ""})
     display = display.rename(columns={
@@ -191,8 +202,10 @@ def render(em_ids: list[int], start: datetime.datetime,
                         "Step", "Description", "Duration", "Faulted"]]
 
     table = dash_table.DataTable(
+        id="step-history-table",
         data=display.to_dict("records"),
         columns=[{"name": c, "id": c} for c in display.columns],
+        hidden_columns=["duration_ms_raw"],
         page_size=25,
         sort_action="native",
         filter_action="native",
@@ -204,7 +217,12 @@ def render(em_ids: list[int], start: datetime.datetime,
     )
 
     # ── Average step duration chart + outlier slider ────────────────────────
-    prod_df = df[df["duration_ms"].notna() & (df["duration_ms"] > 0)].copy()
+    prod_df = df[
+        df["duration_ms"].notna()
+        & (df["duration_ms"] > 0)
+        & (df["step_name"] != "STEP_STOP")
+        & (df["step_name"] != "STEP_FINAL")
+    ].copy()
 
     if prod_df.empty:
         chart_section = html.Div()
@@ -217,12 +235,6 @@ def render(em_ids: list[int], start: datetime.datetime,
 
         # Initial figure uses the full dataset (slider at max = no filter)
         initial_fig = build_step_duration_figure(prod_df)
-
-        # Only the columns the callback needs go into the client store, so we
-        # don't ship the full row payload (timestamps, descriptions, etc.).
-        store_data = prod_df[
-            ["step_name", "step_desc", "duration_ms"]
-        ].to_dict("records")
 
         slider_row = dbc.Row([
             dbc.Col([
@@ -248,8 +260,6 @@ def render(em_ids: list[int], start: datetime.datetime,
         ], className="mt-4 mb-2 px-2")
 
         chart_section = html.Div([
-            # Store keyed by id so the main.py callback can read it.
-            dcc.Store(id="step-dur-data", data=store_data),
             slider_row,
             dcc.Loading(
                 dcc.Graph(
@@ -262,7 +272,23 @@ def render(em_ids: list[int], start: datetime.datetime,
         ])
 
     return html.Div([
-        html.Small(f"{len(df):,} events", className="text-muted d-block mb-2"),
+        dbc.Row([
+            dbc.Col(
+                html.Small(f"{len(df):,} events", className="text-muted d-block mb-2"),
+                md=6,
+            ),
+            dbc.Col(
+                dbc.Button(
+                    "Export Step History CSV",
+                    id="step-history-export-btn",
+                    color="secondary",
+                    size="sm",
+                    className="float-end mb-2",
+                ),
+                md=6,
+            ),
+        ], className="align-items-center"),
+        dcc.Download(id="step-history-export-download"),
         table,
         chart_section,
     ])

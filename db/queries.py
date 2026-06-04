@@ -201,6 +201,9 @@ def upsert_current_step(conn, em_id: int, seq_index: int,
               step_name  = EXCLUDED.step_name,
               step_desc  = EXCLUDED.step_desc,
               updated_at = EXCLUDED.updated_at
+        WHERE em_current_step.seq_index IS DISTINCT FROM EXCLUDED.seq_index
+           OR em_current_step.step_name IS DISTINCT FROM EXCLUDED.step_name
+           OR em_current_step.step_desc IS DISTINCT FROM EXCLUDED.step_desc
         """,
         (em_id, seq_index, step_name, step_desc, ts),
     )
@@ -410,7 +413,7 @@ def get_ems_for_station(plc_name: str, station: str) -> list[dict]:
 
 def query_step_history(em_ids: list[int], seq_indices: list[int] | None,
                        start: datetime.datetime, end: datetime.datetime,
-                       limit: int = 2000) -> pd.DataFrame:
+                       limit: int | None = 2000) -> pd.DataFrame:
     with Conn() as conn:
         cur = conn.cursor()
         seq_clause = ""
@@ -418,6 +421,7 @@ def query_step_history(em_ids: list[int], seq_indices: list[int] | None,
         if seq_indices:
             seq_clause = "AND s.seq_index = ANY(%s)"
             params.insert(2, seq_indices)
+        limit_clause = "LIMIT %s" if limit is not None else ""
         cur.execute(
             f"""
             SELECT s.ts, e.station, e.em_label, cs.seq_name,
@@ -430,9 +434,9 @@ def query_step_history(em_ids: list[int], seq_indices: list[int] | None,
               AND s.ts BETWEEN %s AND %s
               {seq_clause}
             ORDER BY s.ts DESC
-            LIMIT %s
+            {limit_clause}
             """,
-            params + [limit],
+            params + ([limit] if limit is not None else []),
         )
         cols = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=cols)
@@ -461,17 +465,135 @@ def query_cycle_times(em_id: int, seq_index: int,
                 SELECT ts
                 FROM ordered
                 WHERE arriving_step = %s
+            ),
+            cycles AS (
+                SELECT
+                    LAG(ts) OVER (ORDER BY ts) AS cycle_start_ts,
+                    ts AS cycle_end_ts,
+                    EXTRACT(EPOCH FROM ts - LAG(ts) OVER (ORDER BY ts)) * 1000 AS cycle_ms_raw
+                FROM cycle_starts
+            ),
+            stop_sums AS (
+                SELECT
+                    c.cycle_end_ts,
+                    COALESCE(SUM(s.duration_ms), 0) AS step_stop_ms
+                FROM cycles c
+                LEFT JOIN step_event s
+                  ON s.em_id = %s
+                 AND s.seq_index = %s
+                 AND s.ts > c.cycle_start_ts
+                 AND s.ts <= c.cycle_end_ts
+                 AND s.step_name = 'STEP_STOP'
+                WHERE c.cycle_start_ts IS NOT NULL
+                GROUP BY c.cycle_end_ts
             )
-            SELECT ts,
-                   EXTRACT(EPOCH FROM ts - LAG(ts) OVER (ORDER BY ts)) * 1000 AS cycle_ms
-            FROM cycle_starts
-            WHERE ts BETWEEN %s AND %s
-            ORDER BY ts
+            SELECT
+                c.cycle_end_ts AS ts,
+                GREATEST(0, c.cycle_ms_raw - COALESCE(ss.step_stop_ms, 0)) AS cycle_ms
+            FROM cycles c
+            LEFT JOIN stop_sums ss
+              ON ss.cycle_end_ts = c.cycle_end_ts
+            WHERE c.cycle_start_ts IS NOT NULL
+              AND c.cycle_end_ts BETWEEN %s AND %s
+            ORDER BY c.cycle_end_ts
             """,
-            (em_id, seq_index, cycle_start_step, start, end),
+            (em_id, seq_index, cycle_start_step, em_id, seq_index, start, end),
         )
         df = pd.DataFrame(cur.fetchall(), columns=["ts", "cycle_ms"])
         return df.dropna(subset=["cycle_ms"])
+
+
+def query_cycle_windows(em_id: int, seq_index: int,
+                        cycle_start_step: str,
+                        start: datetime.datetime,
+                        end: datetime.datetime) -> pd.DataFrame:
+    """
+    Return one row per completed cycle:
+      - cycle_start_ts: previous arrival to cycle_start_step
+      - cycle_end_ts: current arrival to cycle_start_step
+      - cycle_ms: start-to-start duration
+    """
+    with Conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            WITH ordered AS (
+                SELECT ts,
+                       LEAD(step_name) OVER (ORDER BY ts) AS arriving_step
+                FROM step_event
+                WHERE em_id = %s
+                  AND seq_index = %s
+            ),
+            cycle_starts AS (
+                SELECT ts
+                FROM ordered
+                WHERE arriving_step = %s
+            ),
+            cycles AS (
+                SELECT
+                    LAG(ts) OVER (ORDER BY ts) AS cycle_start_ts,
+                    ts AS cycle_end_ts,
+                    EXTRACT(EPOCH FROM ts - LAG(ts) OVER (ORDER BY ts)) * 1000 AS cycle_ms_raw
+                FROM cycle_starts
+            ),
+            stop_sums AS (
+                SELECT
+                    c.cycle_end_ts,
+                    COALESCE(SUM(s.duration_ms), 0) AS step_stop_ms
+                FROM cycles c
+                LEFT JOIN step_event s
+                  ON s.em_id = %s
+                 AND s.seq_index = %s
+                 AND s.ts > c.cycle_start_ts
+                 AND s.ts <= c.cycle_end_ts
+                 AND s.step_name = 'STEP_STOP'
+                WHERE c.cycle_start_ts IS NOT NULL
+                GROUP BY c.cycle_end_ts
+            )
+            SELECT
+                c.cycle_start_ts,
+                c.cycle_end_ts,
+                GREATEST(0, c.cycle_ms_raw - COALESCE(ss.step_stop_ms, 0)) AS cycle_ms
+            FROM cycles c
+            LEFT JOIN stop_sums ss
+              ON ss.cycle_end_ts = c.cycle_end_ts
+            WHERE c.cycle_start_ts IS NOT NULL
+              AND c.cycle_end_ts BETWEEN %s AND %s
+            ORDER BY cycle_end_ts DESC
+            """,
+            (em_id, seq_index, cycle_start_step, em_id, seq_index, start, end),
+        )
+        return pd.DataFrame(
+            cur.fetchall(),
+            columns=["cycle_start_ts", "cycle_end_ts", "cycle_ms"],
+        )
+
+
+def query_cycle_steps(em_id: int, seq_index: int,
+                      cycle_start_ts: datetime.datetime,
+                      cycle_end_ts: datetime.datetime) -> pd.DataFrame:
+    """
+    Step transitions that occurred within one cycle window (start, end].
+    step_event rows represent DEPARTING step durations at transition time.
+    """
+    with Conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ts, step_name, step_desc, duration_ms, was_faulted
+            FROM step_event
+            WHERE em_id = %s
+              AND seq_index = %s
+              AND ts > %s
+              AND ts <= %s
+            ORDER BY ts
+            """,
+            (em_id, seq_index, cycle_start_ts, cycle_end_ts),
+        )
+        return pd.DataFrame(
+            cur.fetchall(),
+            columns=["ts", "step_name", "step_desc", "duration_ms", "was_faulted"],
+        )
 
 
 def query_fault_pareto(em_ids: list[int], seq_indices: list[int] | None,
