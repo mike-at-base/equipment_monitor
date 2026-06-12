@@ -81,6 +81,10 @@ class EMStateTracker:
         self._automatic: bool | None = None
         self._em_fault:  bool | None = None
         self._running:   bool | None = None
+        # Last timestamp written to em_availability_raw for this EM.
+        # Some PLC notifications share identical source timestamps; ensure
+        # strict monotonic writes so "latest row" queries are deterministic.
+        self._last_avail_ts: datetime.datetime | None = None
 
         # ── Down event — root-cause tracking (sticky) ─────────────────────────
         self._down_start_ts:    datetime.datetime | None = None
@@ -589,6 +593,9 @@ class EMStateTracker:
         Skipped until all three values have been received at least once."""
         if self._automatic is None or self._em_fault is None or self._running is None:
             return
+        if self._last_avail_ts is not None and ts <= self._last_avail_ts:
+            ts = self._last_avail_ts + datetime.timedelta(microseconds=1)
+        self._last_avail_ts = ts
         try:
             conn = get_pool().getconn()
             try:

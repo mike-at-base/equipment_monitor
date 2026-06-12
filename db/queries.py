@@ -825,7 +825,11 @@ def query_station_status(plc_name: str) -> list[dict]:
                 SELECT automatic, fault, running, ts
                 FROM em_availability_raw
                 WHERE em_id = e.id
-                ORDER BY ts DESC
+                -- Some PLC bursts can produce multiple raw rows with identical
+                -- source timestamps (e.g. running false/true in one cycle).
+                -- Prefer fault=true first, then running=true for ties so the
+                -- dashboard avoids random standby/prod flips on equal ts.
+                ORDER BY ts DESC, fault DESC, running DESC, automatic DESC
                 LIMIT 1
             ) r ON true
             LEFT JOIN em_current_step cs ON cs.em_id = e.id

@@ -86,6 +86,40 @@ def build_layout(plc_names: list[str]) -> html.Div:
                 html.Div(id="live-grid-content", className="pt-3"),
                 fluid=True,
             ),
+            dbc.Container(
+                [
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                html.H5("Availability Overview", className="mb-0"),
+                                md=8,
+                            ),
+                            dbc.Col(
+                                dcc.Dropdown(
+                                    id="avail-overview-hours",
+                                    options=[
+                                        {"label": "Last 1 hour", "value": 1},
+                                        {"label": "Last 4 hours", "value": 4},
+                                        {"label": "Last 8 hours", "value": 8},
+                                        {"label": "Last 24 hours", "value": 24},
+                                        {"label": "Last 7 days", "value": 168},
+                                    ],
+                                    value=24,
+                                    clearable=False,
+                                ),
+                                md=4,
+                            ),
+                        ],
+                        className="mt-4 mb-2",
+                    ),
+                    dcc.Loading(
+                        html.Div(id="availability-overview-content"),
+                        type="circle",
+                        color="#b2dd79",
+                    ),
+                ],
+                fluid=True,
+            ),
 
             # ── Station detail modal ─────────────────────────────────────────
             dbc.Modal(

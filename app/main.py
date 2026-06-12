@@ -23,6 +23,7 @@ import db.queries as q
 from app.layout import build_layout
 from app.pages import (
     availability,
+    availability_overview,
     configuration,
     cycle_time,
     fault_analysis,
@@ -159,22 +160,93 @@ def update_live_grid(_si, _li, plc_name, _rb):
 
 
 @callback(
+    Output("availability-overview-content", "children"),
+    Input("status-interval", "n_intervals"),
+    Input("live-interval", "n_intervals"),
+    Input("plc-select", "value"),
+    Input("avail-overview-hours", "value"),
+    Input("refresh-btn", "n_clicks"),
+)
+def update_availability_overview(_si, _li, plc_name, window_hours, _rb):
+    plc = plc_name or ""
+    if not plc:
+        return html.Div("No PLC selected.", className="text-muted p-3")
+    hours = int(window_hours or 24)
+    end = datetime.datetime.now(datetime.timezone.utc)
+    start = end - datetime.timedelta(hours=hours)
+    return availability_overview.render(plc, start, end)
+
+
+@callback(
     Output("station-modal",      "is_open"),
     Output("modal-station-data", "data"),
     Output("modal-tabs",         "active_tab"),
     Input({"type": "station-card", "index": ALL}, "n_clicks"),
+    Input("avail-lowest-table", "active_cell"),
+    Input("reason-top-table", "active_cell"),
+    Input("fault-top-table", "active_cell"),
+    Input("avail-overview-chart", "clickData"),
+    State("avail-lowest-table", "derived_virtual_data"),
+    State("avail-lowest-table", "data"),
+    State("reason-top-table", "derived_virtual_data"),
+    State("reason-top-table", "data"),
+    State("fault-top-table", "derived_virtual_data"),
+    State("fault-top-table", "data"),
     State("plc-select", "value"),
     prevent_initial_call=True,
 )
-def open_station_modal(n_clicks_list, plc_name):
+def open_station_modal(
+    n_clicks_list,
+    low_active,
+    reason_active,
+    fault_active,
+    chart_click,
+    low_virtual,
+    low_data,
+    reason_virtual,
+    reason_data,
+    fault_virtual,
+    fault_data,
+    plc_name,
+):
     """Open the detail modal when any station card is clicked."""
-    if not any(n_clicks_list):
-        raise PreventUpdate
     triggered = ctx.triggered_id
-    if not isinstance(triggered, dict):
+    station = None
+    tab = "step-history"
+
+    if isinstance(triggered, dict) and triggered.get("type") == "station-card":
+        if any(n_clicks_list):
+            station = triggered.get("index")
+            tab = "step-history"
+    elif triggered == "avail-lowest-table" and low_active:
+        rows = low_virtual if low_virtual is not None else (low_data or [])
+        idx = low_active.get("row")
+        if idx is not None and 0 <= idx < len(rows):
+            station = rows[idx].get("Station")
+            tab = "availability"
+    elif triggered == "reason-top-table" and reason_active:
+        rows = reason_virtual if reason_virtual is not None else (reason_data or [])
+        idx = reason_active.get("row")
+        if idx is not None and 0 <= idx < len(rows):
+            station = rows[idx].get("Station")
+            tab = "availability"
+    elif triggered == "fault-top-table" and fault_active:
+        rows = fault_virtual if fault_virtual is not None else (fault_data or [])
+        idx = fault_active.get("row")
+        if idx is not None and 0 <= idx < len(rows):
+            station = rows[idx].get("Station")
+            tab = "faults"
+    elif triggered == "avail-overview-chart" and chart_click:
+        try:
+            station = chart_click["points"][0]["customdata"][0]
+            tab = "availability"
+        except Exception:
+            station = None
+
+    if not station:
         raise PreventUpdate
-    station = triggered["index"]
-    return True, {"station": station, "plc": plc_name or ""}, "step-history"
+
+    return True, {"station": station, "plc": plc_name or ""}, tab
 
 
 @callback(
