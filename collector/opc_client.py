@@ -318,6 +318,10 @@ class OpcClient:
         # em_id → tracker
         self._trackers = trackers
         self._running = True
+        # Loading Siemens UDT definitions is expensive and appears to retain
+        # memory across reconnects in asyncua internals. Keep it one-time per
+        # OpcClient instance instead of on every reconnect attempt.
+        self._types_loaded = False
 
         # Struct-node refs cached for on-demand reads (populated in
         # _resolve_em_nodes).  Shape, keyed by em_id:
@@ -358,14 +362,16 @@ class OpcClient:
             # and reason enrichment cannot work.  Failure is non-fatal —
             # state tracking still functions, only the reason text stays at
             # its placeholder.
-            try:
-                await client.load_data_type_definitions()
-                log.info("[%s] Loaded custom data type definitions",
-                         self.plc_name)
-            except Exception:
-                log.warning("[%s] load_data_type_definitions failed — fault "
-                            "reason enrichment will be limited",
-                            self.plc_name, exc_info=True)
+            if not self._types_loaded:
+                try:
+                    await client.load_data_type_definitions()
+                    self._types_loaded = True
+                    log.info("[%s] Loaded custom data type definitions",
+                             self.plc_name)
+                except Exception:
+                    log.warning("[%s] load_data_type_definitions failed — fault "
+                                "reason enrichment will be limited",
+                                self.plc_name, exc_info=True)
 
             self._struct_nodes.clear()
             node_map: dict[int, tuple[EMStateTracker, str, Any]] = {}
@@ -389,7 +395,9 @@ class OpcClient:
             if not nodes:
                 log.warning("[%s] No nodes resolved — check em_db_path in config.yaml",
                             self.plc_name)
-                return
+                # Trigger outer reconnect handling (heartbeat false + backoff)
+                # instead of spinning a tight no-node loop.
+                raise RuntimeError("no nodes resolved")
 
             handler = _SubHandler(node_map)
             sub = await client.create_subscription(PUBLISH_INTERVAL_MS, handler)
