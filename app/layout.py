@@ -24,7 +24,7 @@ def _app_tz() -> datetime.tzinfo:
 
 def build_layout(plc_names: list[str]) -> html.Div:
     default_plc = plc_names[0] if plc_names else None
-    now   = datetime.datetime.now(_app_tz())
+    now = datetime.datetime.now(_app_tz())
     start = now - datetime.timedelta(hours=8)
     start_value = start.strftime("%Y-%m-%dT%H:%M")
     end_value = now.strftime("%Y-%m-%dT%H:%M")
@@ -57,12 +57,11 @@ def build_layout(plc_names: list[str]) -> html.Div:
                     html.Div(
                         className="app-nav-controls",
                         children=[
-                            dcc.Dropdown(
-                                id="plc-select",
-                                options=[{"label": n, "value": n} for n in plc_names],
-                                value=default_plc,
-                                clearable=False,
-                                className="app-plc-select",
+                            html.Button(
+                                "☰",
+                                id="sidebar-toggle-btn",
+                                className="app-nav-btn",
+                                title="Toggle sidebar",
                             ),
                             html.Button(
                                 "↻",
@@ -82,43 +81,96 @@ def build_layout(plc_names: list[str]) -> html.Div:
             ),
 
             # ── Live overview ────────────────────────────────────────────────
-            dbc.Container(
-                html.Div(id="live-grid-content", className="pt-3"),
-                fluid=True,
-            ),
-            dbc.Container(
-                [
-                    dbc.Row(
-                        [
-                            dbc.Col(
-                                html.H5("Availability Overview", className="mb-0"),
-                                md=8,
+            html.Div(
+                id="app-shell",
+                className="app-shell",
+                children=[
+                    html.Aside(
+                        id="app-sidebar",
+                        className="app-sidebar",
+                        children=[
+                            html.Div(
+                                className="sidebar-section",
+                                children=[
+                                    html.Div("PLCs", className="sidebar-section-title"),
+                                    dcc.Dropdown(
+                                        id="plc-select",
+                                        options=[{"label": n, "value": n} for n in plc_names],
+                                        value=default_plc,
+                                        clearable=False,
+                                        className="app-plc-select",
+                                    ),
+                                ],
                             ),
-                            dbc.Col(
-                                dcc.Dropdown(
-                                    id="avail-overview-hours",
-                                    options=[
-                                        {"label": "Last 1 hour", "value": 1},
-                                        {"label": "Last 4 hours", "value": 4},
-                                        {"label": "Last 8 hours", "value": 8},
-                                        {"label": "Last 24 hours", "value": 24},
-                                        {"label": "Last 7 days", "value": 168},
-                                    ],
-                                    value=24,
-                                    clearable=False,
-                                ),
-                                md=4,
+                            html.Div(
+                                className="sidebar-section",
+                                children=[
+                                    html.Div("Overviews & Dashboards", className="sidebar-section-title"),
+                                    html.Button(
+                                        "Live Status",
+                                        id="view-live-status-btn",
+                                        className="sidebar-nav-btn",
+                                    ),
+                                    html.Button(
+                                        "Availability Overview",
+                                        id="view-availability-overview-btn",
+                                        className="sidebar-nav-btn",
+                                    ),
+                                    html.Button(
+                                        "Daily Digest",
+                                        id="view-daily-digest-btn",
+                                        className="sidebar-nav-btn",
+                                    ),
+                                ],
+                            ),
+                            html.Div(
+                                className="sidebar-section",
+                                children=[
+                                    html.Div("Availability Window", className="sidebar-control-label"),
+                                    dcc.Dropdown(
+                                        id="avail-overview-hours",
+                                        options=[
+                                            {"label": "Last 1 hour", "value": 1},
+                                            {"label": "Last 4 hours", "value": 4},
+                                            {"label": "Last 8 hours", "value": 8},
+                                            {"label": "Last 24 hours", "value": 24},
+                                            {"label": "Last 7 days", "value": 168},
+                                        ],
+                                        value=24,
+                                        clearable=False,
+                                    ),
+                                    html.Div("Digest Shift Window", className="sidebar-control-label mt-2"),
+                                    dcc.Dropdown(
+                                        id="daily-digest-shift-hours",
+                                        options=[
+                                            {"label": "8-hour shift", "value": 8},
+                                            {"label": "12-hour shift", "value": 12},
+                                            {"label": "24-hour day", "value": 24},
+                                        ],
+                                        value=8,
+                                        clearable=False,
+                                    ),
+                                    dbc.Button(
+                                        "Export Digest JSON",
+                                        id="daily-digest-export-btn",
+                                        color="secondary",
+                                        className="w-100 mt-2",
+                                    ),
+                                ],
                             ),
                         ],
-                        className="mt-4 mb-2",
                     ),
-                    dcc.Loading(
-                        html.Div(id="availability-overview-content"),
-                        type="circle",
-                        color="#b2dd79",
+                    html.Main(
+                        id="app-main",
+                        className="app-main",
+                        children=[
+                            dbc.Container(
+                                html.Div(id="dashboard-main-content", className="pt-3"),
+                                fluid=True,
+                            ),
+                        ],
                     ),
                 ],
-                fluid=True,
             ),
 
             # ── Station detail modal ─────────────────────────────────────────
@@ -234,7 +286,11 @@ def build_layout(plc_names: list[str]) -> html.Div:
 
             # ── Stores + intervals ───────────────────────────────────────────
             dcc.Store(id="modal-station-data", data=None),
+            dcc.Store(id="dashboard-view", data="live-status"),
+            dcc.Store(id="sidebar-collapsed", data=False),
+            html.Div(id="live-timer-noop", style={"display": "none"}),
+            dcc.Download(id="daily-digest-export-download"),
             dcc.Interval(id="live-interval",   interval=30_000, n_intervals=0),
-            dcc.Interval(id="status-interval", interval=5_000,  n_intervals=0),
+            dcc.Interval(id="status-interval", interval=1_000,  n_intervals=0),
         ]
     )

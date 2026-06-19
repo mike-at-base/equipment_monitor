@@ -129,6 +129,74 @@ html, body {
   outline: none;
 }
 
+/* ── App shell (sidebar + page content) ───────────────────── */
+.app-shell {
+  display: flex;
+  min-height: calc(100vh - 56px);
+}
+
+.app-sidebar {
+  width: 290px;
+  min-width: 290px;
+  background: var(--bp-surface);
+  border-right: 1px solid var(--bp-border);
+  padding: 12px;
+  transition: width .15s ease, min-width .15s ease, padding .15s ease;
+  overflow: hidden;
+}
+.app-sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border-right: none;
+}
+
+.sidebar-section {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--bp-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.01);
+}
+.sidebar-section-title {
+  color: var(--bp-muted);
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 8px;
+}
+.sidebar-control-label {
+  color: var(--bp-muted);
+  font-size: .74rem;
+  margin-bottom: 4px;
+}
+.sidebar-nav-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--bp-border);
+  background: var(--bp-elevated);
+  color: var(--bp-text);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  font-size: .85rem;
+}
+.sidebar-nav-btn:hover {
+  border-color: var(--bp-livewire);
+  color: var(--bp-livewire);
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  transition: all .15s ease;
+}
+.app-main.expanded {
+  width: 100%;
+}
+
 /* Keep legacy Bootstrap `.navbar` rules off other parts of the page
    (dbc.Modal, dropdowns, etc. don't use them — this is just a guard
    against any third-party widget bringing in default navbar chrome). */

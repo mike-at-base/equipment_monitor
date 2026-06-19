@@ -2,7 +2,7 @@
 Live Status dashboard — one card per station showing current SEMI E10 state
 and active step for each EM.
 
-Cards auto-refresh every 5 s via the status-interval component.
+Cards mount once; EM values update incrementally on interval ticks.
 Hover over the scrolling step text to pause it.
 """
 from __future__ import annotations
@@ -54,8 +54,17 @@ def _format_step_elapsed(updated_at: datetime.datetime | None,
     return f"{days}d {hours}h"
 
 
+def _updated_at_iso(updated_at: datetime.datetime | None) -> str:
+    if updated_at is None:
+        return ""
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=datetime.timezone.utc)
+    return updated_at.astimezone(datetime.timezone.utc).isoformat()
+
+
 def _step_display(step_name: str | None, step_desc: str | None,
-                  step_elapsed: str | None) -> html.Div:
+                  step_elapsed: str | None,
+                  updated_at: datetime.datetime | None) -> html.Div:
     """
     Step name left-aligned and always visible.
     Description left-aligned below it; marquee only fires (via JS) when
@@ -76,13 +85,25 @@ def _step_display(step_name: str | None, step_desc: str | None,
             )
         )
     if step_elapsed:
+        ts_iso = _updated_at_iso(updated_at)
         children.append(
-            html.Div(f"In step: {step_elapsed}", className="text-muted small")
+            html.Div(
+                f"In step: {step_elapsed}",
+                className="text-muted small step-elapsed",
+                **{"data-updated-at": ts_iso},
+            )
         )
     return html.Div(children, className="step-display")
 
 
-def _em_row(em: dict, now: datetime.datetime) -> html.Div:
+def em_row_id(em: dict):
+    em_id = em.get("em_id")
+    if em_id is not None:
+        return em_id
+    return f"{em.get('station', '')}:{em.get('em_label', '')}"
+
+
+def em_row_children(em: dict, now: datetime.datetime) -> list:
     seq_name  = em.get("seq_name") or ""
     step_elapsed = _format_step_elapsed(em.get("updated_at"), now)
     header_children = [
@@ -93,11 +114,21 @@ def _em_row(em: dict, now: datetime.datetime) -> html.Div:
         header_children.append(
             html.Span(seq_name, className="seq-name-tag")
         )
+    return [
+        html.Div(header_children, className="em-header"),
+        _step_display(
+            em.get("step_name"),
+            em.get("step_desc"),
+            step_elapsed,
+            em.get("updated_at"),
+        ),
+    ]
+
+
+def _em_row(em: dict, now: datetime.datetime) -> html.Div:
     return html.Div(
-        [
-            html.Div(header_children, className="em-header"),
-            _step_display(em.get("step_name"), em.get("step_desc"), step_elapsed),
-        ],
+        em_row_children(em, now),
+        id={"type": "em-row-body", "em_id": em_row_id(em)},
         className="em-row",
     )
 
@@ -132,7 +163,7 @@ def _station_card(display_name: str, station: str, ems: list[dict]) -> html.Div:
     )
 
 
-def _connection_banner(plc_name: str) -> html.Div:
+def connection_banner_props(plc_name: str) -> tuple[list, str]:
     """Small status bar showing collector ↔ PLC connectivity."""
     try:
         hb_df = q.get_collector_status()
@@ -141,10 +172,10 @@ def _connection_banner(plc_name: str) -> html.Div:
         row = None
 
     if row is None or (hasattr(row, "empty") and row.empty):
-        return html.Div(
+        return (
             [html.Span("○", className="conn-dot conn-dot-unknown"),
              f"  {plc_name}  —  collector not seen"],
-            className="conn-banner conn-unknown",
+            "conn-banner conn-unknown",
         )
 
     r          = row.iloc[0]
@@ -181,9 +212,15 @@ def _connection_banner(plc_name: str) -> html.Div:
         dot_css  = "conn-dot conn-dot-down"
         label    = f"{plc_name}  —  disconnected  ·  last seen {age_str}"
 
+    return [html.Span(className=dot_css), label], f"conn-banner {css_mod}"
+
+
+def _connection_banner(plc_name: str) -> html.Div:
+    children, class_name = connection_banner_props(plc_name)
     return html.Div(
-        [html.Span(className=dot_css), label],
-        className=f"conn-banner {css_mod}",
+        children,
+        id="live-conn-banner",
+        className=class_name,
     )
 
 

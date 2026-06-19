@@ -624,6 +624,40 @@ def query_fault_pareto(em_ids: list[int], seq_indices: list[int] | None,
         return pd.DataFrame(cur.fetchall(), columns=cols)
 
 
+def query_fault_pareto_detailed(em_ids: list[int],
+                                start: datetime.datetime,
+                                end: datetime.datetime) -> pd.DataFrame:
+    """Fault pareto attributed to the station + sequence each fault came from.
+
+    Like query_fault_pareto but grouped by station/em/sequence as well as the
+    step, so callers can show where downtime originated. LEFT JOIN on
+    config_sequence so faults on an unknown sequence still appear.
+    """
+    with Conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT e.station, e.em_label, e.display_name, cs.seq_name,
+                   f.step_name, f.step_desc,
+                   COUNT(*) AS fault_count,
+                   AVG(f.duration_ms) AS avg_duration_ms,
+                   SUM(f.duration_ms) AS total_duration_ms
+            FROM fault_event f
+            JOIN config_em e ON e.id = f.em_id
+            LEFT JOIN config_sequence cs ON cs.em_id = f.em_id
+                                         AND cs.seq_index = f.seq_index
+            WHERE f.em_id = ANY(%s)
+              AND f.fault_start BETWEEN %s AND %s
+            GROUP BY e.station, e.em_label, e.display_name, cs.seq_name,
+                     f.step_name, f.step_desc
+            ORDER BY total_duration_ms DESC NULLS LAST
+            """,
+            (em_ids, start, end),
+        )
+        cols = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=cols)
+
+
 def query_fault_events(em_ids: list[int], seq_indices: list[int] | None,
                        start: datetime.datetime, end: datetime.datetime) -> pd.DataFrame:
     with Conn() as conn:

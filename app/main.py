@@ -6,6 +6,7 @@ Opens at http://localhost:8050
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import sys
 from zoneinfo import ZoneInfo
@@ -13,8 +14,21 @@ from zoneinfo import ZoneInfo
 import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
-from dash import ALL, MATCH, Input, Output, State, callback, ctx, dcc, html, no_update
+from dash import (
+    ALL,
+    MATCH,
+    Input,
+    Output,
+    State,
+    callback,
+    clientside_callback,
+    ctx,
+    dcc,
+    html,
+    no_update,
+)
 from dash.exceptions import PreventUpdate
+from flask import jsonify, request  # Dash bundles Flask; app.server is the Flask app
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -26,6 +40,7 @@ from app.pages import (
     availability_overview,
     configuration,
     cycle_time,
+    daily_digest,
     fault_analysis,
     station_status,
     step_history,
@@ -149,32 +164,155 @@ def _get_station_display_name(plc_name: str, station: str) -> str:
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
 @callback(
-    Output("live-grid-content", "children"),
-    Input("status-interval", "n_intervals"),
-    Input("live-interval",   "n_intervals"),
-    Input("plc-select",      "value"),
-    Input("refresh-btn",     "n_clicks"),
+    Output("dashboard-view", "data"),
+    Input("view-live-status-btn", "n_clicks"),
+    Input("view-availability-overview-btn", "n_clicks"),
+    Input("view-daily-digest-btn", "n_clicks"),
+    prevent_initial_call=True,
 )
-def update_live_grid(_si, _li, plc_name, _rb):
+def set_dashboard_view(_live, _avail, _digest):
+    trig = ctx.triggered_id
+    if trig == "view-availability-overview-btn":
+        return "availability-overview"
+    if trig == "view-daily-digest-btn":
+        return "daily-digest"
+    return "live-status"
+
+
+@callback(
+    Output("dashboard-main-content", "children"),
+    Input("plc-select", "value"),
+    Input("dashboard-view", "data"),
+    Input("avail-overview-hours", "value"),
+    Input("daily-digest-shift-hours", "value"),
+    Input("refresh-btn", "n_clicks"),
+)
+def render_dashboard_page(plc_name, view, window_hours, digest_shift_hours, _rb):
+    plc = plc_name or ""
+    if not plc:
+        return html.Div("No PLC selected.", className="text-muted p-3")
+    view = view or "live-status"
+
+    if view == "live-status":
+        return html.Div(id="live-grid-content", className="pt-3")
+    if view == "availability-overview":
+        hours = int(window_hours or 24)
+        end = datetime.datetime.now(datetime.timezone.utc)
+        start = end - datetime.timedelta(hours=hours)
+        return availability_overview.render(plc, start, end)
+    if view == "daily-digest":
+        shift = int(digest_shift_hours or 8)
+        end = datetime.datetime.now(datetime.timezone.utc)
+        return daily_digest.render(plc, shift, end)
+    return html.Div(id="live-grid-content", className="pt-3")
+
+
+@callback(
+    Output("live-grid-content", "children"),
+    Input("plc-select", "value"),
+    Input("dashboard-view", "data"),
+    Input("refresh-btn", "n_clicks"),
+)
+def update_live_grid(plc_name, view, _rb):
+    if (view or "live-status") != "live-status":
+        raise PreventUpdate
     return station_status.render(plc_name or "")
 
 
 @callback(
-    Output("availability-overview-content", "children"),
-    Input("status-interval", "n_intervals"),
+    Output({"type": "em-row-body", "em_id": ALL}, "children"),
+    Output("live-conn-banner", "children"),
+    Output("live-conn-banner", "className"),
     Input("live-interval", "n_intervals"),
-    Input("plc-select", "value"),
-    Input("avail-overview-hours", "value"),
     Input("refresh-btn", "n_clicks"),
+    Input("plc-select", "value"),
+    Input("dashboard-view", "data"),
+    State({"type": "em-row-body", "em_id": ALL}, "id"),
 )
-def update_availability_overview(_si, _li, plc_name, window_hours, _rb):
+def update_live_row_values(_li, _rb, plc_name, view, row_ids):
+    if (view or "live-status") != "live-status":
+        raise PreventUpdate
+    if not row_ids:
+        raise PreventUpdate
+
+    plc = plc_name or ""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        rows = q.query_station_status(plc)
+    except Exception:
+        rows = []
+
+    by_em_id = {
+        station_status.em_row_id(row): row
+        for row in rows
+    }
+    row_children = []
+    for row_id in row_ids:
+        em_key = (row_id or {}).get("em_id")
+        em_row = by_em_id.get(em_key)
+        if em_row is None:
+            row_children.append(no_update)
+        else:
+            row_children.append(station_status.em_row_children(em_row, now))
+
+    banner_children, banner_class = station_status.connection_banner_props(plc)
+    return row_children, banner_children, banner_class
+
+
+clientside_callback(
+    """
+    function(_tick, view) {
+        if ((view || "live-status") !== "live-status") {
+            return window.dash_clientside.no_update;
+        }
+        if (!window.equipmentMonitorLiveTimerTick) {
+            return window.dash_clientside.no_update;
+        }
+        window.equipmentMonitorLiveTimerTick();
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("live-timer-noop", "children"),
+    Input("status-interval", "n_intervals"),
+    Input("dashboard-view", "data"),
+)
+
+
+@callback(
+    Output("app-sidebar", "className"),
+    Output("app-main", "className"),
+    Output("sidebar-toggle-btn", "children"),
+    Output("sidebar-collapsed", "data"),
+    Input("sidebar-toggle-btn", "n_clicks"),
+    State("sidebar-collapsed", "data"),
+    prevent_initial_call=True,
+)
+def toggle_sidebar(_n, collapsed):
+    is_collapsed = not bool(collapsed)
+    if is_collapsed:
+        return "app-sidebar collapsed", "app-main expanded", "☰", True
+    return "app-sidebar", "app-main", "◧", False
+
+
+@callback(
+    Output("daily-digest-export-download", "data"),
+    Input("daily-digest-export-btn", "n_clicks"),
+    State("plc-select", "value"),
+    State("daily-digest-shift-hours", "value"),
+    prevent_initial_call=True,
+)
+def export_daily_digest(n_clicks, plc_name, shift_hours):
+    if not n_clicks:
+        raise PreventUpdate
     plc = plc_name or ""
     if not plc:
-        return html.Div("No PLC selected.", className="text-muted p-3")
-    hours = int(window_hours or 24)
+        raise PreventUpdate
+    hours = int(shift_hours or 8)
     end = datetime.datetime.now(datetime.timezone.utc)
-    start = end - datetime.timedelta(hours=hours)
-    return availability_overview.render(plc, start, end)
+    payload = daily_digest.build_export_payload(plc, hours, end)
+    stamp = end.strftime("%Y%m%d_%H%M")
+    filename = f"daily_digest_{plc}_{hours}h_{stamp}.json".replace(" ", "_")
+    return dict(content=json.dumps(payload, indent=2), filename=filename)
 
 
 @callback(
@@ -182,6 +320,24 @@ def update_availability_overview(_si, _li, plc_name, window_hours, _rb):
     Output("modal-station-data", "data"),
     Output("modal-tabs",         "active_tab"),
     Input({"type": "station-card", "index": ALL}, "n_clicks"),
+    State("plc-select", "value"),
+    prevent_initial_call=True,
+)
+def open_station_modal_from_card(n_clicks_list, plc_name):
+    """Open station modal from Live Status card clicks."""
+    triggered = ctx.triggered_id
+    if not (isinstance(triggered, dict) and triggered.get("type") == "station-card"):
+        raise PreventUpdate
+    station = triggered.get("index")
+    if not station:
+        raise PreventUpdate
+    return True, {"station": station, "plc": plc_name or ""}, "step-history"
+
+
+@callback(
+    Output("station-modal",      "is_open", allow_duplicate=True),
+    Output("modal-station-data", "data", allow_duplicate=True),
+    Output("modal-tabs",         "active_tab", allow_duplicate=True),
     Input("avail-lowest-table", "active_cell"),
     Input("reason-top-table", "active_cell"),
     Input("fault-top-table", "active_cell"),
@@ -195,8 +351,7 @@ def update_availability_overview(_si, _li, plc_name, window_hours, _rb):
     State("plc-select", "value"),
     prevent_initial_call=True,
 )
-def open_station_modal(
-    n_clicks_list,
+def open_station_modal_from_overview(
     low_active,
     reason_active,
     fault_active,
@@ -209,16 +364,12 @@ def open_station_modal(
     fault_data,
     plc_name,
 ):
-    """Open the detail modal when any station card is clicked."""
+    """Open station modal from availability overview interactions."""
     triggered = ctx.triggered_id
     station = None
-    tab = "step-history"
+    tab = "availability"
 
-    if isinstance(triggered, dict) and triggered.get("type") == "station-card":
-        if any(n_clicks_list):
-            station = triggered.get("index")
-            tab = "step-history"
-    elif triggered == "avail-lowest-table" and low_active:
+    if triggered == "avail-lowest-table" and low_active:
         rows = low_virtual if low_virtual is not None else (low_data or [])
         idx = low_active.get("row")
         if idx is not None and 0 <= idx < len(rows):
@@ -609,6 +760,110 @@ def save_yaml(n_clicks, content):
         )
     except Exception as e:
         return dbc.Alert(f"Error: {e}", color="danger")
+
+
+# ── Passdown metrics API ──────────────────────────────────────────────────────
+# Read-only JSON consumed by the Brain's nightly passdown. Reuses the existing
+# SEMI E10 availability summary and fault pareto queries so the math lives in
+# exactly one place. Optionally guarded by PASSDOWN_API_KEY (X-API-Key header).
+
+def _num(v) -> float | None:
+    """Coerce a value to float, mapping NaN/None to None for clean JSON."""
+    try:
+        if v is None or pd.isna(v):
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ms_to_min(v) -> float | None:
+    n = _num(v)
+    return round(n / 60000.0, 1) if n is not None else None
+
+
+def _parse_iso_utc(value: str | None) -> datetime.datetime:
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("missing timestamp")
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    dt = datetime.datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
+
+@app.server.route("/api/passdown")
+def api_passdown():
+    """GET /api/passdown?plc=<name>&start=<iso>&end=<iso>
+
+    Returns per-EM availability (SEMI E10) and a fault pareto for one PLC over
+    the window. start/end are ISO 8601; naive values are treated as UTC.
+    """
+    api_key = os.environ.get("PASSDOWN_API_KEY", "").strip()
+    if api_key and request.headers.get("X-API-Key", "").strip() != api_key:
+        return jsonify({"error": "unauthorized"}), 401
+
+    plc = (request.args.get("plc") or "").strip()
+    if not plc:
+        return jsonify({"error": "plc query parameter is required"}), 400
+    try:
+        start = _parse_iso_utc(request.args.get("start"))
+        end = _parse_iso_utc(request.args.get("end"))
+    except ValueError as e:
+        return jsonify({"error": f"invalid start/end: {e}"}), 400
+
+    ems = q.get_enabled_ems(plc)
+    em_ids = [e["id"] for e in ems]
+    if not em_ids:
+        return jsonify({
+            "plc": plc, "start": start.isoformat(), "end": end.isoformat(),
+            "availability": [], "pareto": [],
+        })
+
+    avail_df = q.query_state_summary(em_ids, start, end)
+    pareto_df = q.query_fault_pareto_detailed(em_ids, start, end)
+
+    availability = [
+        {
+            "station": r.get("station"),
+            "display_name": r.get("display_name"),
+            "em_label": r.get("em_label"),
+            "availability_pct": _num(r.get("availability_pct")),
+            "productive_min": _num(r.get("productive_min")),
+            "standby_min": _num(r.get("standby_min")),
+            "down_min": _num(r.get("down_min")),
+            "manual_min": _num(r.get("manual_min")),
+        }
+        for _, r in avail_df.iterrows()
+    ]
+
+    pareto = [
+        {
+            "station": r.get("station"),
+            "display_name": r.get("display_name"),
+            "em_label": r.get("em_label"),
+            "seq_name": r.get("seq_name"),
+            "step_name": r.get("step_name"),
+            "step_desc": r.get("step_desc"),
+            "fault_count": int(r.get("fault_count") or 0),
+            "total_downtime_min": _ms_to_min(r.get("total_duration_ms")),
+            "avg_downtime_min": _ms_to_min(r.get("avg_duration_ms")),
+        }
+        for _, r in pareto_df.iterrows()
+    ]
+    # "Top faults that caused downtime" -> rank by total downtime, keep top 15.
+    pareto.sort(key=lambda x: (x["total_downtime_min"] or 0.0), reverse=True)
+    pareto = pareto[:15]
+
+    return jsonify({
+        "plc": plc,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "availability": availability,
+        "pareto": pareto,
+    })
 
 
 if __name__ == "__main__":
