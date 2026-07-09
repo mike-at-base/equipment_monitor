@@ -173,11 +173,15 @@ def render(em_ids: list[int], start: datetime.datetime, end: datetime.datetime) 
             xaxis=dict(
                 type="date",
                 range=[start_local, end_local],
-                title=None,
+                title="Time",
             ),
-            yaxis=dict(autorange="reversed"),
+            yaxis=dict(
+                autorange="reversed",
+                title="Station / EM",
+                automargin=True,
+            ),
             legend=dict(orientation="h", y=1.1, font_size=11),
-            margin=dict(l=0, r=10, t=70, b=20),
+            margin=dict(l=260, r=10, t=70, b=20),
             height=max(280, n_rows * 44 + 100),
         )
         gantt_section = dcc.Graph(figure=fig, config={"displayModeBar": False})

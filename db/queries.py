@@ -53,20 +53,30 @@ def upsert_em(plc_id: int, station: str, display_name: str,
 
 def upsert_sequence(em_id: int, seq_index: int,
                     seq_name: str, is_production: bool,
-                    cycle_start_step: str = "SEQUENCE_INITIAL_STEP") -> None:
+                    cycle_start_step: str = "SEQUENCE_INITIAL_STEP",
+                    blocked_steps: list[str] | None = None,
+                    starved_steps: list[str] | None = None) -> None:
+    blocked_steps = blocked_steps or []
+    starved_steps = starved_steps or []
     with Conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO config_sequence
-              (em_id, seq_index, seq_name, is_production, cycle_start_step)
-            VALUES (%s, %s, %s, %s, %s)
+              (em_id, seq_index, seq_name, is_production, cycle_start_step,
+               blocked_steps, starved_steps)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (em_id, seq_index) DO UPDATE
               SET seq_name      = EXCLUDED.seq_name,
                   is_production = EXCLUDED.is_production,
-                  cycle_start_step = EXCLUDED.cycle_start_step
+                  cycle_start_step = EXCLUDED.cycle_start_step,
+                  blocked_steps = EXCLUDED.blocked_steps,
+                  starved_steps = EXCLUDED.starved_steps
             """,
-            (em_id, seq_index, seq_name, is_production, cycle_start_step),
+            (
+                em_id, seq_index, seq_name, is_production, cycle_start_step,
+                blocked_steps, starved_steps,
+            ),
         )
 
 
@@ -102,7 +112,8 @@ def get_sequences_for_em(em_id: int) -> list[dict]:
     with Conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT seq_index, seq_name, is_production, cycle_start_step "
+            "SELECT seq_index, seq_name, is_production, cycle_start_step, "
+            "       blocked_steps, starved_steps "
             "FROM config_sequence WHERE em_id=%s ORDER BY seq_index",
             (em_id,),
         )
@@ -175,16 +186,107 @@ def get_open_fault(conn, em_id: int, seq_index: int) -> dict | None:
 
 
 def insert_availability_raw(conn, em_id: int, ts: datetime.datetime,
-                            automatic: bool, fault: bool, running: bool) -> None:
+                            automatic: bool, fault: bool, running: bool,
+                            active_seq: int | None = None,
+                            active_is_production: bool | None = None) -> None:
     """Write one snapshot row whenever automatic, fault, or running changes."""
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO em_availability_raw (ts, em_id, automatic, fault, running)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO em_availability_raw
+            (ts, em_id, automatic, fault, running, active_seq, active_is_production)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (ts, em_id, automatic, fault, running),
+        (ts, em_id, automatic, fault, running, active_seq, active_is_production),
     )
+
+
+def insert_runtime_transition(
+    conn, em_id: int, ts: datetime.datetime,
+    from_state: str | None, to_state: str,
+    automatic: bool | None, running: bool | None,
+    paused: bool | None, stopped: bool | None,
+    unknown_status: bool | None,
+    fault: bool | None,
+    active_seq: int | None, active_is_production: bool | None,
+    step_name: str | None, step_desc: str | None,
+) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO em_runtime_transition
+            (ts, em_id, from_state, to_state, automatic, running, paused, stopped,
+             unknown_status,
+             fault, active_seq, active_is_production, step_name, step_desc)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            ts, em_id, from_state, to_state, automatic, running, paused, stopped,
+            unknown_status, fault, active_seq, active_is_production, step_name, step_desc,
+        ),
+    )
+
+
+def open_flow_event(conn, em_id: int, start_ts: datetime.datetime,
+                    kind: str, reason_desc: str | None,
+                    seq_index: int | None, step_name: str | None) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO em_flow_event
+          (start_ts, em_id, kind, reason_desc, seq_index, step_name)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (start_ts, em_id, kind, reason_desc, seq_index, step_name),
+    )
+
+
+def close_flow_event(conn, em_id: int, start_ts: datetime.datetime,
+                     end_ts: datetime.datetime) -> None:
+    dur_ms = int((end_ts - start_ts).total_seconds() * 1000)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE em_flow_event
+           SET end_ts = %s, duration_ms = %s
+         WHERE em_id = %s AND start_ts = %s AND end_ts IS NULL
+        """,
+        (end_ts, dur_ms, em_id, start_ts),
+    )
+
+
+def update_flow_event_reason(conn, em_id: int, start_ts: datetime.datetime,
+                             reason_desc: str) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE em_flow_event
+           SET reason_desc = %s
+         WHERE em_id = %s
+           AND start_ts = %s
+        """,
+        (reason_desc, em_id, start_ts),
+    )
+
+
+def get_open_flow_event(conn, em_id: int) -> dict | None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT start_ts, kind, reason_desc, seq_index, step_name
+        FROM em_flow_event
+        WHERE em_id = %s
+          AND end_ts IS NULL
+        ORDER BY start_ts DESC
+        LIMIT 1
+        """,
+        (em_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
 
 
 def upsert_current_step(conn, em_id: int, seq_index: int,
@@ -265,11 +367,12 @@ def update_down_event_reason(conn, em_id: int, start_ts: datetime.datetime,
                              reason_desc: str,
                              reason_type: str | None = None) -> None:
     """
-    Patch the reason fields on the currently-open down event.  Used by the
+    Patch the reason fields on a down event by its start timestamp. Used by the
     OpcClient after an async on-demand struct read enriches the placeholder.
     If ``reason_type`` is provided, it is updated alongside the description
     (e.g. demoting 'interlock' → 'manual' when no interlock condition was
-    actually failing).  No-op if the event has already been closed.
+    actually failing). Works for both open and recently closed rows so short
+    events still get enriched when the async read finishes just after close.
     """
     cur = conn.cursor()
     if reason_type is not None:
@@ -280,7 +383,6 @@ def update_down_event_reason(conn, em_id: int, start_ts: datetime.datetime,
                    reason_type = %s
              WHERE em_id    = %s
                AND start_ts = %s
-               AND end_ts IS NULL
             """,
             (reason_desc, reason_type, em_id, start_ts),
         )
@@ -291,7 +393,6 @@ def update_down_event_reason(conn, em_id: int, start_ts: datetime.datetime,
                SET reason_desc = %s
              WHERE em_id    = %s
                AND start_ts = %s
-               AND end_ts IS NULL
             """,
             (reason_desc, em_id, start_ts),
         )
@@ -359,6 +460,33 @@ def query_down_events(em_ids: list[int],
               AND d.start_ts < %s
               AND (d.end_ts IS NULL OR d.end_ts > %s)
             ORDER BY d.start_ts DESC
+            LIMIT %s
+            """,
+            (em_ids, end, start, limit),
+        )
+        cols = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=cols)
+
+
+def query_flow_events(em_ids: list[int],
+                      start: datetime.datetime,
+                      end: datetime.datetime,
+                      limit: int = 1000) -> pd.DataFrame:
+    with Conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT f.start_ts, f.end_ts, f.duration_ms,
+                   f.em_id, p.name AS plc_name,
+                   f.kind, f.reason_desc, f.seq_index, f.step_name,
+                   e.station, e.display_name, e.em_label
+            FROM em_flow_event f
+            JOIN config_em e ON e.id = f.em_id
+            JOIN config_plc p ON p.id = e.plc_id
+            WHERE f.em_id = ANY(%s)
+              AND f.start_ts < %s
+              AND (f.end_ts IS NULL OR f.end_ts > %s)
+            ORDER BY f.start_ts DESC
             LIMIT %s
             """,
             (em_ids, end, start, limit),
@@ -437,6 +565,32 @@ def query_step_history(em_ids: list[int], seq_indices: list[int] | None,
             {limit_clause}
             """,
             params + ([limit] if limit is not None else []),
+        )
+        cols = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=cols)
+
+
+def query_runtime_transitions(
+    em_ids: list[int], start: datetime.datetime, end: datetime.datetime,
+    limit: int = 500,
+) -> pd.DataFrame:
+    with Conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT t.ts, e.station, e.display_name, e.em_label,
+                   t.from_state, t.to_state,
+                   t.automatic, t.running, t.paused, t.stopped, t.unknown_status, t.fault,
+                   t.active_seq, t.active_is_production,
+                   t.step_name, t.step_desc
+            FROM em_runtime_transition t
+            JOIN config_em e ON e.id = t.em_id
+            WHERE t.em_id = ANY(%s)
+              AND t.ts BETWEEN %s AND %s
+            ORDER BY t.ts DESC
+            LIMIT %s
+            """,
+            (em_ids, start, end, limit),
         )
         cols = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=cols)
@@ -717,7 +871,7 @@ def query_state_timeline(em_ids: list[int],
     States:
       productive      — automatic=T, running=T, fault=F
       standby         — automatic=T, running=F, fault=F
-      unscheduled_down — fault=T (any mode)
+      unscheduled_down — fault=T, or active non-production sequence in automatic
       manual          — automatic=F, fault=F
     """
     with Conn() as conn:
@@ -729,6 +883,10 @@ def query_state_timeline(em_ids: list[int],
                        LEAD(ts) OVER (PARTITION BY em_id ORDER BY ts) AS next_ts,
                        CASE
                          WHEN fault                     THEN 'unscheduled_down'
+                         WHEN automatic
+                              AND active_seq IS NOT NULL
+                              AND COALESCE(active_is_production, FALSE) = FALSE
+                                                    THEN 'unscheduled_down'
                          WHEN automatic AND running     THEN 'productive'
                          WHEN automatic AND NOT running THEN 'standby'
                          ELSE 'manual'
@@ -778,6 +936,10 @@ def query_state_summary(em_ids: list[int],
                        LEAD(ts) OVER (PARTITION BY em_id ORDER BY ts) AS next_ts,
                        CASE
                          WHEN fault                     THEN 'unscheduled_down'
+                         WHEN automatic
+                              AND active_seq IS NOT NULL
+                              AND COALESCE(active_is_production, FALSE) = FALSE
+                                                    THEN 'unscheduled_down'
                          WHEN automatic AND running     THEN 'productive'
                          WHEN automatic AND NOT running THEN 'standby'
                          ELSE 'manual'
@@ -844,6 +1006,10 @@ def query_station_status(plc_name: str) -> list[dict]:
                 CASE
                     WHEN r.ts IS NULL                  THEN 'unknown'
                     WHEN r.fault                       THEN 'unscheduled_down'
+                    WHEN r.automatic
+                         AND r.active_seq IS NOT NULL
+                         AND COALESCE(r.active_is_production, FALSE) = FALSE
+                                                     THEN 'unscheduled_down'
                     WHEN r.automatic AND r.running     THEN 'productive'
                     WHEN r.automatic AND NOT r.running THEN 'standby'
                     ELSE                                    'manual'
@@ -856,7 +1022,7 @@ def query_station_status(plc_name: str) -> list[dict]:
             FROM config_em e
             JOIN config_plc p ON p.id = e.plc_id
             LEFT JOIN LATERAL (
-                SELECT automatic, fault, running, ts
+                SELECT automatic, fault, running, active_seq, active_is_production, ts
                 FROM em_availability_raw
                 WHERE em_id = e.id
                 -- Some PLC bursts can produce multiple raw rows with identical

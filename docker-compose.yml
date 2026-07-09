@@ -23,6 +23,11 @@ services:
     volumes:
       - ts_data:/var/lib/postgresql/data
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     # Healthcheck lets the collector and app wait for the DB to accept
     # connections before they start — `service_started` isn't enough
     # because Postgres may still be initialising when the container is up.
@@ -51,6 +56,11 @@ services:
       timescaledb:
         condition: service_healthy
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     # collector/main.py auto-runs init_schema() on startup, so the
     # em_down_event hypertable is created on first boot, no manual step.
     command: ["python", "-u", "collector/main.py"]
@@ -83,6 +93,11 @@ services:
         # before the app tries to start using the same tag.
         condition: service_started
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     command: ["python", "-u", "app/main.py"]
 
 volumes:

@@ -36,12 +36,16 @@ import app.brand  # registers Plotly template + exports DT styles
 import db.queries as q
 from app.layout import build_layout
 from app.pages import (
+    analysis_hub,
     availability,
     availability_overview,
     configuration,
     cycle_time,
     daily_digest,
     fault_analysis,
+    line_issues_timeline,
+    mod_bottleneck,
+    runtime_transitions,
     station_status,
     step_history,
 )
@@ -168,14 +172,23 @@ def _get_station_display_name(plc_name: str, station: str) -> str:
     Input("view-live-status-btn", "n_clicks"),
     Input("view-availability-overview-btn", "n_clicks"),
     Input("view-daily-digest-btn", "n_clicks"),
+    Input("view-mod-bottleneck-btn", "n_clicks"),
+    Input("view-line-issues-btn", "n_clicks"),
+    Input("view-analysis-btn", "n_clicks"),
     prevent_initial_call=True,
 )
-def set_dashboard_view(_live, _avail, _digest):
+def set_dashboard_view(_live, _avail, _digest, _mod, _line, _analysis):
     trig = ctx.triggered_id
     if trig == "view-availability-overview-btn":
         return "availability-overview"
     if trig == "view-daily-digest-btn":
         return "daily-digest"
+    if trig == "view-mod-bottleneck-btn":
+        return "mod-bottleneck"
+    if trig == "view-line-issues-btn":
+        return "line-issues"
+    if trig == "view-analysis-btn":
+        return "analysis"
     return "live-status"
 
 
@@ -185,9 +198,18 @@ def set_dashboard_view(_live, _avail, _digest):
     Input("dashboard-view", "data"),
     Input("avail-overview-hours", "value"),
     Input("daily-digest-shift-hours", "value"),
+    Input("bottleneck-excluded-stations", "value"),
+    Input("line-issues-plc-filter", "value"),
+    Input("line-issues-excluded-stations", "value"),
+    Input("line-issues-start-dt", "value"),
+    Input("line-issues-end-dt", "value"),
     Input("refresh-btn", "n_clicks"),
 )
-def render_dashboard_page(plc_name, view, window_hours, digest_shift_hours, _rb):
+def render_dashboard_page(
+    plc_name, view, window_hours, digest_shift_hours, bottleneck_excluded,
+    line_issues_plcs, line_issues_excluded_stations, line_issues_start_value,
+    line_issues_end_value, _rb
+):
     plc = plc_name or ""
     if not plc:
         return html.Div("No PLC selected.", className="text-muted p-3")
@@ -204,7 +226,94 @@ def render_dashboard_page(plc_name, view, window_hours, digest_shift_hours, _rb)
         shift = int(digest_shift_hours or 8)
         end = datetime.datetime.now(datetime.timezone.utc)
         return daily_digest.render(plc, shift, end)
+    if view == "mod-bottleneck":
+        return mod_bottleneck.render(plc, bottleneck_excluded or [])
+    if view == "line-issues":
+        try:
+            if line_issues_start_value and line_issues_end_value:
+                start, end = _parse_window(line_issues_start_value, line_issues_end_value)
+            else:
+                raise ValueError("line timeline datetime not set")
+        except Exception:
+            hours = int(window_hours or 24)
+            end = datetime.datetime.now(datetime.timezone.utc)
+            start = end - datetime.timedelta(hours=hours)
+        return line_issues_timeline.render(
+            start, end,
+            line_issues_plcs or [],
+            line_issues_excluded_stations or [],
+        )
+    if view == "analysis":
+        return analysis_hub.render(plc)
     return html.Div(id="live-grid-content", className="pt-3")
+
+
+@callback(
+    Output("bottleneck-excluded-stations", "options"),
+    Output("bottleneck-excluded-stations", "value"),
+    Input("plc-select", "value"),
+    State("bottleneck-excluded-stations", "value"),
+)
+def update_bottleneck_station_filter(plc_name, selected):
+    plc = plc_name or ""
+    stations = q.get_stations_for_plc(plc) if plc else []
+    opts = []
+    station_values: list[str] = []
+    for s in stations:
+        station = str(s.get("station") or "")
+        if not station:
+            continue
+        label = f"{station} — {s.get('display_name') or station}"
+        opts.append({"label": label, "value": station})
+        station_values.append(station)
+    valid = set(station_values)
+    selected_set = {str(v) for v in (selected or []) if str(v) in valid}
+    if not selected_set and plc == "MOD1":
+        defaults = {"ST36000-01", "ST36000-02"}
+        selected_set = defaults & valid
+    selected_out = sorted(selected_set)
+    return opts, selected_out
+
+
+@callback(
+    Output("line-issues-plc-filter", "options"),
+    Output("line-issues-plc-filter", "value"),
+    Input("plc-select", "value"),
+    State("line-issues-plc-filter", "value"),
+)
+def update_line_issues_plc_filter(_plc_name, selected):
+    plcs = [p["name"] for p in q.get_all_plcs() if p.get("enabled", True)]
+    options = [{"label": p, "value": p} for p in plcs]
+    valid = set(plcs)
+    selected_set = {str(v) for v in (selected or []) if str(v) in valid}
+    if not selected_set:
+        selected_set = valid
+    return options, sorted(selected_set)
+
+
+@callback(
+    Output("line-issues-excluded-stations", "options"),
+    Output("line-issues-excluded-stations", "value"),
+    Input("line-issues-plc-filter", "value"),
+    State("line-issues-excluded-stations", "value"),
+)
+def update_line_issues_station_filter(selected_plcs, selected_stations):
+    station_opts: list[dict] = []
+    station_keys: list[str] = []
+    for plc in (selected_plcs or []):
+        for em in q.get_enabled_ems(plc):
+            if str(em.get("em_label") or "").lower() != "main":
+                continue
+            station = str(em.get("station") or "")
+            if not station:
+                continue
+            key = f"{plc}|{station}"
+            label = f"{plc} / {station} — {em.get('display_name') or station}"
+            station_opts.append({"label": label, "value": key})
+            station_keys.append(key)
+    valid = set(station_keys)
+    selected_set = {str(v) for v in (selected_stations or []) if str(v) in valid}
+    return station_opts, sorted(selected_set)
 
 
 @callback(
@@ -401,6 +510,62 @@ def open_station_modal_from_overview(
 
 
 @callback(
+    Output("station-modal",      "is_open", allow_duplicate=True),
+    Output("modal-station-data", "data", allow_duplicate=True),
+    Output("modal-tabs",         "active_tab", allow_duplicate=True),
+    Input("mod-bottleneck-table", "active_cell"),
+    Input("mod-bottleneck-chart", "clickData"),
+    State("mod-bottleneck-table", "derived_virtual_data"),
+    State("mod-bottleneck-table", "data"),
+    State("plc-select", "value"),
+    prevent_initial_call=True,
+)
+def open_station_modal_from_mod_bottleneck(
+    active_cell,
+    chart_click,
+    table_virtual,
+    table_data,
+    plc_name,
+):
+    triggered = ctx.triggered_id
+    station = None
+    if triggered == "mod-bottleneck-table" and active_cell:
+        rows = table_virtual if table_virtual is not None else (table_data or [])
+        idx = active_cell.get("row")
+        if idx is not None and 0 <= idx < len(rows):
+            station = rows[idx].get("Station")
+    elif triggered == "mod-bottleneck-chart" and chart_click:
+        try:
+            station = chart_click["points"][0]["customdata"][0]
+        except Exception:
+            station = None
+    if not station:
+        raise PreventUpdate
+    return True, {"station": station, "plc": plc_name or ""}, "runtime-transitions"
+
+
+@callback(
+    Output("station-modal",      "is_open", allow_duplicate=True),
+    Output("modal-station-data", "data", allow_duplicate=True),
+    Output("modal-tabs",         "active_tab", allow_duplicate=True),
+    Input("line-issues-timeline-chart", "clickData"),
+    prevent_initial_call=True,
+)
+def open_station_modal_from_line_timeline(chart_click):
+    if not chart_click:
+        raise PreventUpdate
+    try:
+        cd = chart_click["points"][0].get("customdata") or []
+        station = cd[0]
+        plc_name = cd[1]
+    except Exception:
+        raise PreventUpdate
+    if not station or not plc_name:
+        raise PreventUpdate
+    return True, {"station": station, "plc": plc_name}, "runtime-transitions"
+
+
+@callback(
     Output("modal-station-title", "children"),
     Input("modal-station-data", "data"),
 )
@@ -452,6 +617,8 @@ def render_modal_tab(active_tab, start_value, end_value, data):
         return fault_analysis.render(em_ids, start, end)
     if active_tab == "availability":
         return availability.render(em_ids, start, end)
+    if active_tab == "runtime-transitions":
+        return runtime_transitions.render(em_ids, start, end)
 
     return html.Div("Unknown tab.")
 
@@ -782,6 +949,24 @@ def _ms_to_min(v) -> float | None:
     return round(n / 60000.0, 1) if n is not None else None
 
 
+def _str(v) -> str | None:
+    """Coerce a value to str, mapping NaN/None to None for valid JSON.
+
+    Pandas yields float NaN for missing string columns (e.g. a fault with no
+    matched sequence name). Flask's JSON encoder serializes that as a bare
+    ``NaN`` token, which is invalid JSON and breaks strict decoders (the Brain's
+    Go client rejects the whole payload). Normalizing to null keeps it valid.
+    """
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(v)
+
+
 def _parse_iso_utc(value: str | None) -> datetime.datetime:
     raw = (value or "").strip()
     if not raw:
@@ -792,6 +977,127 @@ def _parse_iso_utc(value: str | None) -> datetime.datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     return dt.astimezone(datetime.timezone.utc)
+
+
+def _build_shift_summary_payload(
+    plc: str, start: datetime.datetime, end: datetime.datetime
+) -> dict:
+    ems = q.get_enabled_ems(plc)
+    em_ids = [int(e["id"]) for e in ems]
+    if not em_ids:
+        return {
+            "plc": plc,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "stations": [],
+            "top_faults": [],
+            "bottleneck_station": None,
+        }
+
+    summary_df = q.query_state_summary(em_ids, start, end)
+    flow_df = q.query_flow_events(em_ids, start, end, limit=15000)
+    faults_df = q.query_fault_pareto_detailed(em_ids, start, end)
+
+    station = (
+        summary_df.groupby("station", as_index=False)
+        .agg(
+            display_name=("display_name", "first"),
+            availability_pct=("availability_pct", "mean"),
+            productive_min=("productive_min", "sum"),
+            standby_min=("standby_min", "sum"),
+            down_min=("down_min", "sum"),
+            manual_min=("manual_min", "sum"),
+        )
+        if not summary_df.empty
+        else pd.DataFrame(
+            columns=[
+                "station", "display_name", "availability_pct",
+                "productive_min", "standby_min", "down_min", "manual_min",
+            ]
+        )
+    )
+
+    if not flow_df.empty:
+        f = flow_df.copy()
+        f["start_ts"] = pd.to_datetime(f["start_ts"], utc=True, errors="coerce")
+        f["end_ts"] = pd.to_datetime(f["end_ts"], utc=True, errors="coerce")
+        end_ts = pd.Timestamp(end)
+        f["end_eff"] = f["end_ts"].fillna(end_ts)
+        f["dur_min"] = (f["end_eff"] - f["start_ts"]).dt.total_seconds() / 60.0
+        f["dur_min"] = pd.to_numeric(f["dur_min"], errors="coerce").fillna(0.0).clip(lower=0.0)
+        flow_station = (
+            f.pivot_table(
+                index="station",
+                columns="kind",
+                values="dur_min",
+                aggfunc="sum",
+                fill_value=0.0,
+            )
+            .reset_index()
+        )
+        if "blocked" not in flow_station.columns:
+            flow_station["blocked"] = 0.0
+        if "starved" not in flow_station.columns:
+            flow_station["starved"] = 0.0
+    else:
+        flow_station = pd.DataFrame(columns=["station", "blocked", "starved"])
+
+    merged = station.merge(flow_station, on="station", how="left")
+    for c in ("blocked", "starved"):
+        merged[c] = pd.to_numeric(merged.get(c), errors="coerce").fillna(0.0)
+    merged["flow_loss_min"] = merged["blocked"] + merged["starved"]
+    merged = merged.sort_values(
+        ["flow_loss_min", "down_min", "availability_pct"],
+        ascending=[False, False, True],
+    ).reset_index(drop=True)
+
+    top_faults: list[dict] = []
+    if not faults_df.empty:
+        ff = faults_df.copy()
+        ff["total_duration_ms"] = pd.to_numeric(ff["total_duration_ms"], errors="coerce").fillna(0.0)
+        top = (
+            ff.groupby(["station", "step_name"], as_index=False)
+            .agg(
+                fault_count=("fault_count", "sum"),
+                total_ms=("total_duration_ms", "sum"),
+            )
+            .sort_values(["total_ms", "fault_count"], ascending=[False, False])
+            .head(15)
+        )
+        top_faults = [
+            {
+                "station": _str(r.get("station")),
+                "step_name": _str(r.get("step_name")),
+                "fault_count": int(r.get("fault_count") or 0),
+                "total_downtime_min": _ms_to_min(r.get("total_ms")),
+            }
+            for _, r in top.iterrows()
+        ]
+
+    stations = [
+        {
+            "station": _str(r.get("station")),
+            "display_name": _str(r.get("display_name")),
+            "availability_pct": _num(r.get("availability_pct")),
+            "productive_min": _num(r.get("productive_min")),
+            "standby_min": _num(r.get("standby_min")),
+            "down_min": _num(r.get("down_min")),
+            "manual_min": _num(r.get("manual_min")),
+            "blocked_min": _num(r.get("blocked")),
+            "starved_min": _num(r.get("starved")),
+            "flow_loss_min": _num(r.get("flow_loss_min")),
+        }
+        for _, r in merged.iterrows()
+    ]
+    bottleneck_station = stations[0] if stations else None
+    return {
+        "plc": plc,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "stations": stations,
+        "top_faults": top_faults,
+        "bottleneck_station": bottleneck_station,
+    }
 
 
 @app.server.route("/api/passdown")
@@ -827,9 +1133,9 @@ def api_passdown():
 
     availability = [
         {
-            "station": r.get("station"),
-            "display_name": r.get("display_name"),
-            "em_label": r.get("em_label"),
+            "station": _str(r.get("station")),
+            "display_name": _str(r.get("display_name")),
+            "em_label": _str(r.get("em_label")),
             "availability_pct": _num(r.get("availability_pct")),
             "productive_min": _num(r.get("productive_min")),
             "standby_min": _num(r.get("standby_min")),
@@ -841,12 +1147,12 @@ def api_passdown():
 
     pareto = [
         {
-            "station": r.get("station"),
-            "display_name": r.get("display_name"),
-            "em_label": r.get("em_label"),
-            "seq_name": r.get("seq_name"),
-            "step_name": r.get("step_name"),
-            "step_desc": r.get("step_desc"),
+            "station": _str(r.get("station")),
+            "display_name": _str(r.get("display_name")),
+            "em_label": _str(r.get("em_label")),
+            "seq_name": _str(r.get("seq_name")),
+            "step_name": _str(r.get("step_name")),
+            "step_desc": _str(r.get("step_desc")),
             "fault_count": int(r.get("fault_count") or 0),
             "total_downtime_min": _ms_to_min(r.get("total_duration_ms")),
             "avg_downtime_min": _ms_to_min(r.get("avg_duration_ms")),
@@ -864,6 +1170,29 @@ def api_passdown():
         "availability": availability,
         "pareto": pareto,
     })
+
+
+@app.server.route("/api/shift_summary")
+def api_shift_summary():
+    """GET /api/shift_summary?plc=<name>&start=<iso>&end=<iso>"""
+    api_key = os.environ.get("PASSDOWN_API_KEY", "").strip()
+    if api_key and request.headers.get("X-API-Key", "").strip() != api_key:
+        return jsonify({"error": "unauthorized"}), 401
+    plc = (request.args.get("plc") or "").strip()
+    if not plc:
+        return jsonify({"error": "plc query parameter is required"}), 400
+    try:
+        start = _parse_iso_utc(request.args.get("start"))
+        end = _parse_iso_utc(request.args.get("end"))
+    except ValueError:
+        now_local = datetime.datetime.now(_app_tz())
+        start_local = now_local.replace(hour=7, minute=0, second=0, microsecond=0)
+        end_local = min(now_local.replace(hour=15, minute=30, second=0, microsecond=0), now_local)
+        if end_local < start_local:
+            end_local = start_local
+        start = start_local.astimezone(datetime.timezone.utc)
+        end = end_local.astimezone(datetime.timezone.utc)
+    return jsonify(_build_shift_summary_payload(plc, start, end))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,209 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MOD Manual Stations - Top Faults (Last 14 Days)</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #22d3ee;
+      --line: #1f2937;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+      background: linear-gradient(180deg, #0b1224 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    h1 { margin: 0 0 6px; font-size: 26px; }
+    .sub { color: var(--muted); margin-bottom: 18px; }
+    .grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(180px, 1fr)); margin-bottom: 18px; }
+    .card { background: rgba(17,24,39,.9); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+    .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+    .card .v { font-size: 24px; margin-top: 6px; color: var(--accent); }
+    .panel { background: rgba(17,24,39,.9); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 16px; }
+    .panel h2 { margin: 0 0 10px; font-size: 18px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
+    input, select, button {
+      background: #0b1220;
+      color: var(--text);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th {
+      position: sticky; top: 0;
+      background: #0b1220;
+      border-bottom: 1px solid #334155;
+      text-align: left;
+      padding: 9px 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    tbody td { border-bottom: 1px solid #1f2937; padding: 8px; vertical-align: top; }
+    tbody tr:hover { background: rgba(34,211,238,.06); }
+    .table-wrap { max-height: 480px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .right { text-align: right; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MOD Manual Stations - Top Faults</h1>
+    <div class="sub">One-off analysis for last 14 days. Data source: equipment monitor PostgreSQL export.</div>
+
+    <div class="grid">
+      <div class="card"><div class="k">Unique Fault Reasons</div><div class="v">20</div></div>
+      <div class="card"><div class="k">Stations in Report</div><div class="v">39</div></div>
+      <div class="card"><div class="k">Per-Station Rows</div><div class="v">147</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Line-Wide Fault Pareto</h2>
+      <div class="toolbar">
+        <input id="paretoSearch" type="text" placeholder="Search reason..." />
+        <button id="paretoExport">Export Visible CSV</button>
+        <span class="muted" id="paretoMeta"></span>
+      </div>
+      <div class="table-wrap"><table id="paretoTable"></table></div>
+    </div>
+
+    <div class="panel">
+      <h2>Per-Station Top Faults</h2>
+      <div class="toolbar">
+        <select id="plcFilter"><option value="">All PLCs</option><option>MOD1</option><option>MOD2</option></select>
+        <select id="stationFilter"><option value="">All Stations</option><option>ST10000</option><option>ST11000</option><option>ST12000</option><option>ST13000-A</option><option>ST13000-B</option><option>ST20000</option><option>ST22000</option><option>ST23000-01</option><option>ST23000-02</option><option>ST24000</option><option>ST25000</option><option>ST30000</option><option>ST33000-01</option><option>ST33000-02</option><option>ST33100-01</option><option>ST33100-02</option><option>ST34000-01</option><option>ST34000-02</option><option>ST35000-01</option><option>ST35000-02</option><option>ST36000-01</option><option>ST36000-02</option><option>ST36500</option><option>ST40000</option></select>
+        <input id="stationSearch" type="text" placeholder="Search fault / display name..." />
+        <button id="stationExport">Export Visible CSV</button>
+        <span class="muted" id="stationMeta"></span>
+      </div>
+      <div class="table-wrap"><table id="stationTable"></table></div>
+    </div>
+  </div>
+
+<script>
+const paretoData = [{"fault_reason":"Receive Conduit Clear Job","fault_count":"5158","total_downtime_min":"9762.8","avg_fault_s":"113.6","stations_hit":"22"},{"fault_reason":"Tooling in Nested Position","fault_count":"456","total_downtime_min":"4944.2","avg_fault_s":"650.6","stations_hit":"6"},{"fault_reason":"Check Job Loaded","fault_count":"28","total_downtime_min":"2302.2","avg_fault_s":"4933.2","stations_hit":"6"},{"fault_reason":"Execute Conduit Clear Job","fault_count":"95066","total_downtime_min":"311.4","avg_fault_s":"0.2","stations_hit":"20"},{"fault_reason":"Load Job","fault_count":"128","total_downtime_min":"191.0","avg_fault_s":"89.5","stations_hit":"11"},{"fault_reason":"Command set record to execute","fault_count":"68","total_downtime_min":"114.8","avg_fault_s":"101.3","stations_hit":"12"},{"fault_reason":"Update part info with destination","fault_count":"17","total_downtime_min":"23.3","avg_fault_s":"82.2","stations_hit":"4"},{"fault_reason":"Wait for Job Complete","fault_count":"7","total_downtime_min":"22.6","avg_fault_s":"193.8","stations_hit":"4"},{"fault_reason":"STEP_STOP","fault_count":"10321","total_downtime_min":"14.6","avg_fault_s":"0.1","stations_hit":"20"},{"fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"8777","total_downtime_min":"10.0","avg_fault_s":"0.1","stations_hit":"21"},{"fault_reason":"15-clearJob-30","fault_count":"4011","total_downtime_min":"9.9","avg_fault_s":"0.1","stations_hit":"3"},{"fault_reason":"Main sequence initial step","fault_count":"7022","total_downtime_min":"6.2","avg_fault_s":"0.1","stations_hit":"20"},{"fault_reason":"Start Conduit Clear Job Subsequence","fault_count":"4260","total_downtime_min":"4.3","avg_fault_s":"0.1","stations_hit":"20"},{"fault_reason":"Wait for Part","fault_count":"7","total_downtime_min":"1.2","avg_fault_s":"10.6","stations_hit":"4"},{"fault_reason":"15-clearJob-40","fault_count":"66","total_downtime_min":"0.2","avg_fault_s":"0.2","stations_hit":"17"},{"fault_reason":"Reset Conduit Load Job","fault_count":"2","total_downtime_min":"0.1","avg_fault_s":"3.2","stations_hit":"2"},{"fault_reason":"Set ok to release","fault_count":"1","total_downtime_min":"0.1","avg_fault_s":"4.8","stations_hit":"1"},{"fault_reason":"(unlabeled fault)","fault_count":"1","total_downtime_min":"0.1","avg_fault_s":"4.7","stations_hit":"1"},{"fault_reason":"15-clearJob-20","fault_count":"5","total_downtime_min":"0.0","avg_fault_s":"0.1","stations_hit":"2"},{"fault_reason":"Clear Conduit Station Status","fault_count":"1","total_downtime_min":"0.0","avg_fault_s":"0.0","stations_hit":"1"}];
+const stationData = [{"plc_name":"MOD1","station":"ST10000","display_name":"ST10000","rank_in_station":"1","fault_reason":"Command set record to execute","fault_count":"18","total_downtime_min":"25.5"},{"plc_name":"MOD1","station":"ST10000","display_name":"ST10000","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"185","total_downtime_min":"0.2"},{"plc_name":"MOD1","station":"ST10000","display_name":"ST10000","rank_in_station":"3","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"30","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST10000","display_name":"ST10000","rank_in_station":"4","fault_reason":"Execute Conduit Clear Job","fault_count":"20","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST10000","display_name":"ST10000","rank_in_station":"5","fault_reason":"STEP_STOP","fault_count":"18","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST11000","display_name":"ST11000","rank_in_station":"1","fault_reason":"Load Job","fault_count":"12","total_downtime_min":"5.6"},{"plc_name":"MOD1","station":"ST11000","display_name":"ST11000","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"184","total_downtime_min":"0.9"},{"plc_name":"MOD1","station":"ST11000","display_name":"ST11000","rank_in_station":"3","fault_reason":"Wait for Job Complete","fault_count":"2","total_downtime_min":"0.2"},{"plc_name":"MOD1","station":"ST11000","display_name":"ST11000","rank_in_station":"4","fault_reason":"Reset Conduit Load Job","fault_count":"1","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST11000","display_name":"ST11000","rank_in_station":"5","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"35","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST12000","display_name":"ST12000","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"5","total_downtime_min":"72.7"},{"plc_name":"MOD1","station":"ST12000","display_name":"ST12000","rank_in_station":"2","fault_reason":"Load Job","fault_count":"9","total_downtime_min":"44.0"},{"plc_name":"MOD1","station":"ST12000","display_name":"ST12000","rank_in_station":"3","fault_reason":"Update part info with destination","fault_count":"4","total_downtime_min":"2.6"},{"plc_name":"MOD1","station":"ST12000","display_name":"ST12000","rank_in_station":"4","fault_reason":"Reset Conduit Load Job","fault_count":"1","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST13000-A","display_name":"ST13000-A","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"3","total_downtime_min":"36.5"},{"plc_name":"MOD1","station":"ST13000-A","display_name":"ST13000-A","rank_in_station":"2","fault_reason":"Update part info with destination","fault_count":"2","total_downtime_min":"0.4"},{"plc_name":"MOD1","station":"ST13000-B","display_name":"ST13000-B","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"5","total_downtime_min":"55.2"},{"plc_name":"MOD1","station":"ST13000-B","display_name":"ST13000-B","rank_in_station":"2","fault_reason":"Load Job","fault_count":"2","total_downtime_min":"0.6"},{"plc_name":"MOD1","station":"ST13000-B","display_name":"ST13000-B","rank_in_station":"3","fault_reason":"Update part info with destination","fault_count":"1","total_downtime_min":"0.4"},{"plc_name":"MOD1","station":"ST20000","display_name":"ST20000","rank_in_station":"1","fault_reason":"Tooling in Nested Position","fault_count":"5","total_downtime_min":"5.7"},{"plc_name":"MOD1","station":"ST20000","display_name":"ST20000","rank_in_station":"2","fault_reason":"Load Job","fault_count":"5","total_downtime_min":"2.8"},{"plc_name":"MOD1","station":"ST20000","display_name":"ST20000","rank_in_station":"3","fault_reason":"Wait for Part","fault_count":"3","total_downtime_min":"1.2"},{"plc_name":"MOD1","station":"ST20000","display_name":"ST20000","rank_in_station":"4","fault_reason":"Receive Conduit Clear Job","fault_count":"185","total_downtime_min":"0.2"},{"plc_name":"MOD1","station":"ST20000","display_name":"ST20000","rank_in_station":"5","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"31","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST22000","display_name":"ST22000","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"2","total_downtime_min":"33.7"},{"plc_name":"MOD1","station":"ST23000-01","display_name":"ST23000-01","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"271","total_downtime_min":"1.9"},{"plc_name":"MOD1","station":"ST23000-01","display_name":"ST23000-01","rank_in_station":"2","fault_reason":"STEP_STOP","fault_count":"35","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST23000-01","display_name":"ST23000-01","rank_in_station":"3","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"45","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST23000-01","display_name":"ST23000-01","rank_in_station":"4","fault_reason":"Execute Conduit Clear Job","fault_count":"37","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST23000-01","display_name":"ST23000-01","rank_in_station":"5","fault_reason":"Main sequence initial step","fault_count":"25","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST23000-02","display_name":"ST23000-02","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"279","total_downtime_min":"0.3"},{"plc_name":"MOD1","station":"ST23000-02","display_name":"ST23000-02","rank_in_station":"2","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"50","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST23000-02","display_name":"ST23000-02","rank_in_station":"3","fault_reason":"STEP_STOP","fault_count":"32","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST23000-02","display_name":"ST23000-02","rank_in_station":"4","fault_reason":"Execute Conduit Clear Job","fault_count":"34","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST23000-02","display_name":"ST23000-02","rank_in_station":"5","fault_reason":"Main sequence initial step","fault_count":"27","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST24000","display_name":"ST24000","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"281","total_downtime_min":"5251.5"},{"plc_name":"MOD1","station":"ST24000","display_name":"ST24000","rank_in_station":"2","fault_reason":"Tooling in Nested Position","fault_count":"91","total_downtime_min":"91.8"},{"plc_name":"MOD1","station":"ST24000","display_name":"ST24000","rank_in_station":"3","fault_reason":"Command set record to execute","fault_count":"3","total_downtime_min":"10.6"},{"plc_name":"MOD1","station":"ST24000","display_name":"ST24000","rank_in_station":"4","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"47","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST24000","display_name":"ST24000","rank_in_station":"5","fault_reason":"STEP_STOP","fault_count":"31","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST25000","display_name":"ST25000","rank_in_station":"1","fault_reason":"Tooling in Nested Position","fault_count":"66","total_downtime_min":"59.1"},{"plc_name":"MOD1","station":"ST25000","display_name":"ST25000","rank_in_station":"2","fault_reason":"Command set record to execute","fault_count":"3","total_downtime_min":"16.2"},{"plc_name":"MOD1","station":"ST25000","display_name":"ST25000","rank_in_station":"3","fault_reason":"Wait for Job Complete","fault_count":"1","total_downtime_min":"15.3"},{"plc_name":"MOD1","station":"ST25000","display_name":"ST25000","rank_in_station":"4","fault_reason":"Receive Conduit Clear Job","fault_count":"305","total_downtime_min":"9.0"},{"plc_name":"MOD1","station":"ST25000","display_name":"ST25000","rank_in_station":"5","fault_reason":"Set ok to release","fault_count":"1","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST30000","display_name":"ST30000","rank_in_station":"1","fault_reason":"Command set record to execute","fault_count":"7","total_downtime_min":"17.8"},{"plc_name":"MOD1","station":"ST30000","display_name":"ST30000","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"265","total_downtime_min":"1.1"},{"plc_name":"MOD1","station":"ST30000","display_name":"ST30000","rank_in_station":"3","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"54","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST30000","display_name":"ST30000","rank_in_station":"4","fault_reason":"Execute Conduit Clear Job","fault_count":"30","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST30000","display_name":"ST30000","rank_in_station":"5","fault_reason":"STEP_STOP","fault_count":"29","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST33000-01","display_name":"ST33000-01","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"280","total_downtime_min":"27.5"},{"plc_name":"MOD1","station":"ST33000-01","display_name":"ST33000-01","rank_in_station":"2","fault_reason":"Command set record to execute","fault_count":"2","total_downtime_min":"5.0"},{"plc_name":"MOD1","station":"ST33000-01","display_name":"ST33000-01","rank_in_station":"3","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"49","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST33000-01","display_name":"ST33000-01","rank_in_station":"4","fault_reason":"STEP_STOP","fault_count":"39","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST33000-01","display_name":"ST33000-01","rank_in_station":"5","fault_reason":"Execute Conduit Clear Job","fault_count":"24","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST33000-02","display_name":"ST33000-02","rank_in_station":"1","fault_reason":"Command set record to execute","fault_count":"7","total_downtime_min":"7.4"},{"plc_name":"MOD1","station":"ST33000-02","display_name":"ST33000-02","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"278","total_downtime_min":"5.1"},{"plc_name":"MOD1","station":"ST33000-02","display_name":"ST33000-02","rank_in_station":"3","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"58","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST33000-02","display_name":"ST33000-02","rank_in_station":"4","fault_reason":"STEP_STOP","fault_count":"31","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST33000-02","display_name":"ST33000-02","rank_in_station":"5","fault_reason":"Execute Conduit Clear Job","fault_count":"32","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST33100-01","display_name":"ST33100-01","rank_in_station":"1","fault_reason":"Load Job","fault_count":"67","total_downtime_min":"58.5"},{"plc_name":"MOD1","station":"ST33100-01","display_name":"ST33100-01","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"283","total_downtime_min":"7.7"},{"plc_name":"MOD1","station":"ST33100-01","display_name":"ST33100-01","rank_in_station":"3","fault_reason":"Command set record to execute","fault_count":"1","total_downtime_min":"1.0"},{"plc_name":"MOD1","station":"ST33100-01","display_name":"ST33100-01","rank_in_station":"4","fault_reason":"STEP_STOP","fault_count":"36","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST33100-01","display_name":"ST33100-01","rank_in_station":"5","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"38","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST33100-02","display_name":"ST33100-02","rank_in_station":"1","fault_reason":"Load Job","fault_count":"4","total_downtime_min":"11.1"},{"plc_name":"MOD1","station":"ST33100-02","display_name":"ST33100-02","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"282","total_downtime_min":"2.7"},{"plc_name":"MOD1","station":"ST33100-02","display_name":"ST33100-02","rank_in_station":"3","fault_reason":"Command set record to execute","fault_count":"3","total_downtime_min":"0.4"},{"plc_name":"MOD1","station":"ST33100-02","display_name":"ST33100-02","rank_in_station":"4","fault_reason":"STEP_STOP","fault_count":"34","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST33100-02","display_name":"ST33100-02","rank_in_station":"5","fault_reason":"Execute Conduit Clear Job","fault_count":"36","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST34000-01","display_name":"ST34000-01","rank_in_station":"1","fault_reason":"Load Job","fault_count":"2","total_downtime_min":"1.7"},{"plc_name":"MOD1","station":"ST34000-01","display_name":"ST34000-01","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"171","total_downtime_min":"0.2"},{"plc_name":"MOD1","station":"ST34000-01","display_name":"ST34000-01","rank_in_station":"3","fault_reason":"STEP_STOP","fault_count":"27","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST34000-01","display_name":"ST34000-01","rank_in_station":"4","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"27","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST34000-01","display_name":"ST34000-01","rank_in_station":"5","fault_reason":"Main sequence initial step","fault_count":"19","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST34000-02","display_name":"ST34000-02","rank_in_station":"1","fault_reason":"Load Job","fault_count":"4","total_downtime_min":"3.3"},{"plc_name":"MOD1","station":"ST34000-02","display_name":"ST34000-02","rank_in_station":"2","fault_reason":"Command set record to execute","fault_count":"3","total_downtime_min":"2.4"},{"plc_name":"MOD1","station":"ST34000-02","display_name":"ST34000-02","rank_in_station":"3","fault_reason":"Receive Conduit Clear Job","fault_count":"182","total_downtime_min":"1.0"},{"plc_name":"MOD1","station":"ST34000-02","display_name":"ST34000-02","rank_in_station":"4","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"29","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST34000-02","display_name":"ST34000-02","rank_in_station":"5","fault_reason":"STEP_STOP","fault_count":"19","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST35000-01","display_name":"ST35000-01","rank_in_station":"1","fault_reason":"Tooling in Nested Position","fault_count":"74","total_downtime_min":"206.3"},{"plc_name":"MOD1","station":"ST35000-01","display_name":"ST35000-01","rank_in_station":"2","fault_reason":"Load Job","fault_count":"11","total_downtime_min":"12.1"},{"plc_name":"MOD1","station":"ST35000-01","display_name":"ST35000-01","rank_in_station":"3","fault_reason":"Receive Conduit Clear Job","fault_count":"167","total_downtime_min":"3.2"},{"plc_name":"MOD1","station":"ST35000-01","display_name":"ST35000-01","rank_in_station":"4","fault_reason":"Wait for Job Complete","fault_count":"1","total_downtime_min":"2.0"},{"plc_name":"MOD1","station":"ST35000-01","display_name":"ST35000-01","rank_in_station":"5","fault_reason":"STEP_STOP","fault_count":"30","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"1","fault_reason":"Tooling in Nested Position","fault_count":"112","total_downtime_min":"214.6"},{"plc_name":"MOD1","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"2","fault_reason":"Load Job","fault_count":"10","total_downtime_min":"51.1"},{"plc_name":"MOD1","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"3","fault_reason":"Receive Conduit Clear Job","fault_count":"174","total_downtime_min":"6.9"},{"plc_name":"MOD1","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"4","fault_reason":"Wait for Job Complete","fault_count":"2","total_downtime_min":"3.8"},{"plc_name":"MOD1","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"5","fault_reason":"Execute Conduit Clear Job","fault_count":"24","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST36000-01","display_name":"ST36000-01","rank_in_station":"1","fault_reason":"Execute Conduit Clear Job","fault_count":"47156","total_downtime_min":"158.5"},{"plc_name":"MOD1","station":"ST36000-01","display_name":"ST36000-01","rank_in_station":"2","fault_reason":"STEP_STOP","fault_count":"4924","total_downtime_min":"7.0"},{"plc_name":"MOD1","station":"ST36000-01","display_name":"ST36000-01","rank_in_station":"3","fault_reason":"15-clearJob-30","fault_count":"2033","total_downtime_min":"5.0"},{"plc_name":"MOD1","station":"ST36000-01","display_name":"ST36000-01","rank_in_station":"4","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"3968","total_downtime_min":"4.4"},{"plc_name":"MOD1","station":"ST36000-01","display_name":"ST36000-01","rank_in_station":"5","fault_reason":"Main sequence initial step","fault_count":"3275","total_downtime_min":"2.9"},{"plc_name":"MOD1","station":"ST36000-02","display_name":"ST36000-02","rank_in_station":"1","fault_reason":"Execute Conduit Clear Job","fault_count":"47367","total_downtime_min":"152.3"},{"plc_name":"MOD1","station":"ST36000-02","display_name":"ST36000-02","rank_in_station":"2","fault_reason":"STEP_STOP","fault_count":"4800","total_downtime_min":"6.8"},{"plc_name":"MOD1","station":"ST36000-02","display_name":"ST36000-02","rank_in_station":"3","fault_reason":"15-clearJob-30","fault_count":"1977","total_downtime_min":"4.9"},{"plc_name":"MOD1","station":"ST36000-02","display_name":"ST36000-02","rank_in_station":"4","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"4003","total_downtime_min":"4.5"},{"plc_name":"MOD1","station":"ST36000-02","display_name":"ST36000-02","rank_in_station":"5","fault_reason":"Main sequence initial step","fault_count":"3292","total_downtime_min":"2.9"},{"plc_name":"MOD1","station":"ST36500","display_name":"ST36500","rank_in_station":"1","fault_reason":"Tooling in Nested Position","fault_count":"75","total_downtime_min":"55.5"},{"plc_name":"MOD1","station":"ST36500","display_name":"ST36500","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"294","total_downtime_min":"7.7"},{"plc_name":"MOD1","station":"ST36500","display_name":"ST36500","rank_in_station":"3","fault_reason":"Command set record to execute","fault_count":"3","total_downtime_min":"2.8"},{"plc_name":"MOD1","station":"ST36500","display_name":"ST36500","rank_in_station":"4","fault_reason":"(unlabeled fault)","fault_count":"1","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST36500","display_name":"ST36500","rank_in_station":"5","fault_reason":"STEP_STOP","fault_count":"31","total_downtime_min":"0.0"},{"plc_name":"MOD1","station":"ST40000","display_name":"ST40000","rank_in_station":"1","fault_reason":"Command set record to execute","fault_count":"15","total_downtime_min":"21.0"},{"plc_name":"MOD1","station":"ST40000","display_name":"ST40000","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"266","total_downtime_min":"3.1"},{"plc_name":"MOD1","station":"ST40000","display_name":"ST40000","rank_in_station":"3","fault_reason":"Load Job","fault_count":"2","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST40000","display_name":"ST40000","rank_in_station":"4","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"42","total_downtime_min":"0.1"},{"plc_name":"MOD1","station":"ST40000","display_name":"ST40000","rank_in_station":"5","fault_reason":"STEP_STOP","fault_count":"30","total_downtime_min":"0.0"},{"plc_name":"MOD2","station":"ST12000","display_name":"ST12000","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"5","total_downtime_min":"203.0"},{"plc_name":"MOD2","station":"ST12000","display_name":"ST12000","rank_in_station":"2","fault_reason":"Check Job Loaded","fault_count":"15","total_downtime_min":"190.6"},{"plc_name":"MOD2","station":"ST12000","display_name":"ST12000","rank_in_station":"3","fault_reason":"Update part info with destination","fault_count":"3","total_downtime_min":"10.5"},{"plc_name":"MOD2","station":"ST13000-A","display_name":"ST13000-A","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"11","total_downtime_min":"254.9"},{"plc_name":"MOD2","station":"ST13000-A","display_name":"ST13000-A","rank_in_station":"2","fault_reason":"Check Job Loaded","fault_count":"2","total_downtime_min":"9.0"},{"plc_name":"MOD2","station":"ST13000-A","display_name":"ST13000-A","rank_in_station":"3","fault_reason":"Update part info with destination","fault_count":"1","total_downtime_min":"0.4"},{"plc_name":"MOD2","station":"ST13000-B","display_name":"ST13000-B","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"4","total_downtime_min":"246.3"},{"plc_name":"MOD2","station":"ST13000-B","display_name":"ST13000-B","rank_in_station":"2","fault_reason":"Update part info with destination","fault_count":"1","total_downtime_min":"3.8"},{"plc_name":"MOD2","station":"ST13000-B","display_name":"ST13000-B","rank_in_station":"3","fault_reason":"Check Job Loaded","fault_count":"2","total_downtime_min":"1.4"},{"plc_name":"MOD2","station":"ST13000-B","display_name":"ST13000-B","rank_in_station":"4","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"1","total_downtime_min":"0.3"},{"plc_name":"MOD2","station":"ST22000","display_name":"ST22000","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"3","total_downtime_min":"294.0"},{"plc_name":"MOD2","station":"ST22000","display_name":"ST22000","rank_in_station":"2","fault_reason":"Check Job Loaded","fault_count":"6","total_downtime_min":"30.6"},{"plc_name":"MOD2","station":"ST22000","display_name":"ST22000","rank_in_station":"3","fault_reason":"Update part info with destination","fault_count":"5","total_downtime_min":"5.1"},{"plc_name":"MOD2","station":"ST22000","display_name":"ST22000","rank_in_station":"4","fault_reason":"Command set record to execute","fault_count":"3","total_downtime_min":"4.8"},{"plc_name":"MOD2","station":"ST23000-01","display_name":"ST23000-01","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"1","total_downtime_min":"780.8"},{"plc_name":"MOD2","station":"ST24000","display_name":"ST24000","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"8","total_downtime_min":"807.0"},{"plc_name":"MOD2","station":"ST24000","display_name":"ST24000","rank_in_station":"2","fault_reason":"Tooling in Nested Position","fault_count":"5","total_downtime_min":"8.9"},{"plc_name":"MOD2","station":"ST25000","display_name":"ST25000","rank_in_station":"1","fault_reason":"Tooling in Nested Position","fault_count":"8","total_downtime_min":"3940.4"},{"plc_name":"MOD2","station":"ST25000","display_name":"ST25000","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"1","total_downtime_min":"778.0"},{"plc_name":"MOD2","station":"ST25000","display_name":"ST25000","rank_in_station":"3","fault_reason":"Wait for Part","fault_count":"1","total_downtime_min":"0.0"},{"plc_name":"MOD2","station":"ST30000","display_name":"ST30000","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"762","total_downtime_min":"0.7"},{"plc_name":"MOD2","station":"ST30000","display_name":"ST30000","rank_in_station":"2","fault_reason":"Reset Conduit Clear Job Send/Receive","fault_count":"107","total_downtime_min":"0.1"},{"plc_name":"MOD2","station":"ST30000","display_name":"ST30000","rank_in_station":"3","fault_reason":"STEP_STOP","fault_count":"76","total_downtime_min":"0.1"},{"plc_name":"MOD2","station":"ST30000","display_name":"ST30000","rank_in_station":"4","fault_reason":"Execute Conduit Clear Job","fault_count":"69","total_downtime_min":"0.1"},{"plc_name":"MOD2","station":"ST30000","display_name":"ST30000","rank_in_station":"5","fault_reason":"Main sequence initial step","fault_count":"64","total_downtime_min":"0.1"},{"plc_name":"MOD2","station":"ST33000-01","display_name":"ST33000-01","rank_in_station":"1","fault_reason":"Check Job Loaded","fault_count":"2","total_downtime_min":"2066.3"},{"plc_name":"MOD2","station":"ST33000-01","display_name":"ST33000-01","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"1","total_downtime_min":"2.7"},{"plc_name":"MOD2","station":"ST33000-02","display_name":"ST33000-02","rank_in_station":"1","fault_reason":"Check Job Loaded","fault_count":"1","total_downtime_min":"4.3"},{"plc_name":"MOD2","station":"ST33100-01","display_name":"ST33100-01","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"3","total_downtime_min":"5.3"},{"plc_name":"MOD2","station":"ST33100-02","display_name":"ST33100-02","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"2","total_downtime_min":"8.1"},{"plc_name":"MOD2","station":"ST35000-01","display_name":"ST35000-01","rank_in_station":"1","fault_reason":"Tooling in Nested Position","fault_count":"9","total_downtime_min":"125.7"},{"plc_name":"MOD2","station":"ST35000-01","display_name":"ST35000-01","rank_in_station":"2","fault_reason":"Receive Conduit Clear Job","fault_count":"3","total_downtime_min":"17.1"},{"plc_name":"MOD2","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"2","total_downtime_min":"779.5"},{"plc_name":"MOD2","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"2","fault_reason":"Tooling in Nested Position","fault_count":"7","total_downtime_min":"235.4"},{"plc_name":"MOD2","station":"ST35000-02","display_name":"ST35000-02","rank_in_station":"3","fault_reason":"Wait for Job Complete","fault_count":"1","total_downtime_min":"1.4"},{"plc_name":"MOD2","station":"ST36500","display_name":"ST36500","rank_in_station":"1","fault_reason":"Receive Conduit Clear Job","fault_count":"5","total_downtime_min":"56.6"},{"plc_name":"MOD2","station":"ST36500","display_name":"ST36500","rank_in_station":"2","fault_reason":"Tooling in Nested Position","fault_count":"4","total_downtime_min":"0.9"}];
+
+function asNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toCsv(rows, cols) {
+  const esc = (x) => `"${String(x ?? '').replaceAll('"','""')}"`;
+  const lines = [cols.map(c => esc(c.label)).join(',')];
+  for (const r of rows) lines.push(cols.map(c => esc(r[c.key])).join(','));
+  return lines.join('\n');
+}
+
+function download(name, text) {
+  const blob = new Blob([text], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderTable(el, rows, cols, sorter) {
+  const thead = `<thead><tr>${cols.map((c,i)=>`<th data-i="${i}">${c.label}</th>`).join('')}</tr></thead>`;
+  const tbody = `<tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="${c.right?'right':''}">${r[c.key] ?? ''}</td>`).join('')}</tr>`).join('')}</tbody>`;
+  el.innerHTML = thead + tbody;
+  el.querySelectorAll('th').forEach(th => th.addEventListener('click', () => sorter.set(Number(th.dataset.i))));
+}
+
+function makeSorter(cols, redraw) {
+  let idx = 0;
+  let asc = false;
+  return {
+    set(i) { if (idx === i) asc = !asc; else { idx = i; asc = true; } redraw(); },
+    sort(rows) {
+      const key = cols[idx].key;
+      const num = cols[idx].numeric;
+      const out = [...rows].sort((a,b) => {
+        const av = a[key] ?? '';
+        const bv = b[key] ?? '';
+        if (num) return asNumber(av) - asNumber(bv);
+        return String(av).localeCompare(String(bv));
+      });
+      return asc ? out : out.reverse();
+    }
+  };
+}
+
+const paretoCols = [
+  { key:'fault_reason', label:'Fault Reason' },
+  { key:'fault_count', label:'Fault Count', numeric:true, right:true },
+  { key:'total_downtime_min', label:'Total Downtime (min)', numeric:true, right:true },
+  { key:'avg_fault_s', label:'Avg Fault (s)', numeric:true, right:true },
+  { key:'stations_hit', label:'Stations Hit', numeric:true, right:true },
+];
+let paretoFiltered = [...paretoData];
+const paretoTable = document.getElementById('paretoTable');
+const paretoMeta = document.getElementById('paretoMeta');
+const paretoSort = makeSorter(paretoCols, drawPareto);
+
+function drawPareto() {
+  const q = document.getElementById('paretoSearch').value.toLowerCase().trim();
+  paretoFiltered = paretoData.filter(r => !q || String(r.fault_reason).toLowerCase().includes(q));
+  const view = paretoSort.sort(paretoFiltered);
+  renderTable(paretoTable, view, paretoCols, paretoSort);
+  paretoMeta.textContent = `${view.length} row(s)`;
+}
+
+document.getElementById('paretoSearch').addEventListener('input', drawPareto);
+document.getElementById('paretoExport').addEventListener('click', () => {
+  const view = paretoSort.sort(paretoFiltered);
+  download('mod_manual_fault_pareto_visible.csv', toCsv(view, paretoCols));
+});
+
+const stationCols = [
+  { key:'plc_name', label:'PLC' },
+  { key:'station', label:'Station' },
+  { key:'display_name', label:'Display Name' },
+  { key:'rank_in_station', label:'Rank', numeric:true, right:true },
+  { key:'fault_reason', label:'Fault Reason' },
+  { key:'fault_count', label:'Fault Count', numeric:true, right:true },
+  { key:'total_downtime_min', label:'Total Downtime (min)', numeric:true, right:true },
+];
+let stationFiltered = [...stationData];
+const stationTable = document.getElementById('stationTable');
+const stationMeta = document.getElementById('stationMeta');
+const stationSort = makeSorter(stationCols, drawStations);
+
+function drawStations() {
+  const plc = document.getElementById('plcFilter').value;
+  const st = document.getElementById('stationFilter').value;
+  const q = document.getElementById('stationSearch').value.toLowerCase().trim();
+  stationFiltered = stationData.filter(r =>
+    (!plc || r.plc_name === plc) &&
+    (!st || r.station === st) &&
+    (!q || (`${r.display_name} ${r.fault_reason}`).toLowerCase().includes(q))
+  );
+  const view = stationSort.sort(stationFiltered);
+  renderTable(stationTable, view, stationCols, stationSort);
+  stationMeta.textContent = `${view.length} row(s)`;
+}
+
+['plcFilter','stationFilter'].forEach(id => document.getElementById(id).addEventListener('change', drawStations));
+document.getElementById('stationSearch').addEventListener('input', drawStations);
+document.getElementById('stationExport').addEventListener('click', () => {
+  const view = stationSort.sort(stationFiltered);
+  download('mod_manual_station_faults_visible.csv', toCsv(view, stationCols));
+});
+
+drawPareto();
+drawStations();
+</script>
+</body>
+</html>

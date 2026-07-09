@@ -18,6 +18,7 @@ import plotly.graph_objects as go
 from dash import dash_table, dcc, html
 
 import db.queries as q
+from app.cache import ttl_get_or_set
 from app.brand import (
     AVAIL_PCT_COND, DT_STYLE_CELL, DT_STYLE_FILTER, DT_STYLE_HEADER, DT_STYLE_TABLE,
 )
@@ -109,9 +110,9 @@ def _build_lowest_chart(low_df: pd.DataFrame) -> html.Div:
     fig.update_layout(
         title="Lowest Availability Stations",
         xaxis_title="Availability %",
-        yaxis_title=None,
-        yaxis={"autorange": "reversed"},
-        margin=dict(l=0, r=10, t=40, b=30),
+        yaxis_title="Station",
+        yaxis={"autorange": "reversed", "automargin": True},
+        margin=dict(l=220, r=10, t=40, b=30),
         height=max(280, 26 * len(low_df) + 100),
     )
     return dcc.Graph(id="avail-overview-chart", figure=fig, config={"displayModeBar": False})
@@ -209,7 +210,11 @@ def _build_fault_table(fault_df: pd.DataFrame, lowest_stations: list[str], limit
 
 
 def render(plc_name: str, start: datetime.datetime, end: datetime.datetime) -> html.Div:
-    rows = q.query_station_status(plc_name)
+    rows = ttl_get_or_set(
+        ("avail_overview", "status", plc_name),
+        20,
+        lambda: q.query_station_status(plc_name),
+    )
     if not rows:
         return html.Div("No station data for selected PLC.", className="text-muted")
 
@@ -217,9 +222,22 @@ def render(plc_name: str, start: datetime.datetime, end: datetime.datetime) -> h
     if not em_ids:
         return html.Div("No enabled equipment modules for selected PLC.", className="text-muted")
 
-    summary_df = q.query_state_summary(em_ids, start, end)
-    down_df = q.query_down_events(em_ids, start, end, limit=5000)
-    fault_df = q.query_fault_events(em_ids, None, start, end)
+    em_key = tuple(sorted(em_ids))
+    summary_df = ttl_get_or_set(
+        ("avail_overview", "summary", plc_name, em_key, start.isoformat(), end.isoformat()),
+        30,
+        lambda: q.query_state_summary(em_ids, start, end),
+    )
+    down_df = ttl_get_or_set(
+        ("avail_overview", "down", plc_name, em_key, start.isoformat(), end.isoformat()),
+        30,
+        lambda: q.query_down_events(em_ids, start, end, limit=5000),
+    )
+    fault_df = ttl_get_or_set(
+        ("avail_overview", "fault", plc_name, em_key, start.isoformat(), end.isoformat()),
+        30,
+        lambda: q.query_fault_events(em_ids, None, start, end),
+    )
 
     station_df = _station_agg(summary_df)
     lowest_table, lowest_df = _build_lowest_availability(station_df)

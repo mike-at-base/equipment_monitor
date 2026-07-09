@@ -24,6 +24,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
+# Keep third-party OPC stack noise out of container logs. The collector's own
+# INFO logs remain enabled, but asyncua callback payloads are extremely verbose.
+logging.getLogger("asyncua").setLevel(logging.WARNING)
+logging.getLogger("asyncua.common.subscription").setLevel(logging.WARNING)
 log = logging.getLogger("collector")
 
 

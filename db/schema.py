@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS config_sequence (
     seq_name      TEXT NOT NULL,
     is_production BOOL DEFAULT FALSE,
     cycle_start_step TEXT DEFAULT 'SEQUENCE_INITIAL_STEP',
+    blocked_steps TEXT[] DEFAULT '{}',
+    starved_steps TEXT[] DEFAULT '{}',
     UNIQUE (em_id, seq_index)
 );
 
@@ -77,7 +79,9 @@ CREATE TABLE IF NOT EXISTS em_availability_raw (
     em_id     INT NOT NULL,
     automatic BOOL NOT NULL,
     fault     BOOL NOT NULL,
-    running   BOOL NOT NULL
+    running   BOOL NOT NULL,
+    active_seq SMALLINT,
+    active_is_production BOOL
 );
 
 -- ── Live status snapshot (one row per EM, upserted on every step change) ────
@@ -89,6 +93,38 @@ CREATE TABLE IF NOT EXISTS em_current_step (
     step_name  TEXT        NOT NULL,
     step_desc  TEXT,
     updated_at TIMESTAMPTZ NOT NULL
+);
+
+-- ── Runtime state transitions (running/paused/stopped/idle/manual/faulted) ───
+
+CREATE TABLE IF NOT EXISTS em_runtime_transition (
+    ts                  TIMESTAMPTZ NOT NULL,
+    em_id               INT NOT NULL REFERENCES config_em(id) ON DELETE CASCADE,
+    from_state          TEXT,
+    to_state            TEXT NOT NULL,
+    automatic           BOOL,
+    running             BOOL,
+    paused              BOOL,
+    stopped             BOOL,
+    unknown_status      BOOL,
+    fault               BOOL,
+    active_seq          SMALLINT,
+    active_is_production BOOL,
+    step_name           TEXT,
+    step_desc           TEXT
+);
+
+-- ── Flow-loss events (blocked/starved while still available) ─────────────────
+
+CREATE TABLE IF NOT EXISTS em_flow_event (
+    start_ts      TIMESTAMPTZ NOT NULL,
+    em_id         INT NOT NULL REFERENCES config_em(id) ON DELETE CASCADE,
+    end_ts        TIMESTAMPTZ,
+    duration_ms   INT,
+    kind          TEXT NOT NULL,  -- 'blocked' | 'starved'
+    reason_desc   TEXT,
+    seq_index     SMALLINT,
+    step_name     TEXT
 );
 
 -- ── Down event tracking — sticky root-cause unavailability record ─────────────
@@ -116,6 +152,8 @@ HYPERTABLES = [
     ("step_event",          "ts"),
     ("fault_event",         "fault_start"),
     ("em_availability_raw", "ts"),
+    ("em_runtime_transition", "ts"),
+    ("em_flow_event",       "start_ts"),
     ("em_down_event",       "start_ts"),
 ]
 
@@ -123,6 +161,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_step_em_seq_ts   ON step_event          (em_id, seq_index, ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_fault_em_seq     ON fault_event         (em_id, seq_index, fault_start DESC)",
     "CREATE INDEX IF NOT EXISTS idx_avail_raw_em_ts  ON em_availability_raw (em_id, ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_runtime_em_ts    ON em_runtime_transition (em_id, ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_flow_em_start    ON em_flow_event (em_id, start_ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_down_em_start    ON em_down_event       (em_id, start_ts DESC)",
 ]
 
@@ -139,6 +179,32 @@ def init_schema():
             "ALTER TABLE config_sequence "
             "ADD COLUMN IF NOT EXISTS cycle_start_step TEXT "
             "DEFAULT 'SEQUENCE_INITIAL_STEP'"
+        )
+        cur.execute(
+            "ALTER TABLE config_sequence "
+            "ADD COLUMN IF NOT EXISTS blocked_steps TEXT[] "
+            "DEFAULT '{}'"
+        )
+        cur.execute(
+            "ALTER TABLE config_sequence "
+            "ADD COLUMN IF NOT EXISTS starved_steps TEXT[] "
+            "DEFAULT '{}'"
+        )
+        cur.execute(
+            "ALTER TABLE em_availability_raw "
+            "ADD COLUMN IF NOT EXISTS active_seq SMALLINT"
+        )
+        cur.execute(
+            "ALTER TABLE em_availability_raw "
+            "ADD COLUMN IF NOT EXISTS active_is_production BOOL"
+        )
+        cur.execute(
+            "ALTER TABLE em_runtime_transition "
+            "ADD COLUMN IF NOT EXISTS unknown_status BOOL"
+        )
+        cur.execute(
+            "ALTER TABLE em_flow_event "
+            "ADD COLUMN IF NOT EXISTS reason_desc TEXT"
         )
         for table, col in HYPERTABLES:
             try:

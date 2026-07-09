@@ -256,6 +256,18 @@ def _build_interlock_reason(conditions: list[dict]) -> str | None:
     return _join_reason(descs)
 
 
+def _build_flow_reason(kind: str, branches: list[dict]) -> str | None:
+    descs: list[str] = []
+    for b in branches:
+        if not b.get('enabled', True):
+            continue
+        for c in b.get('conditions', []):
+            if not c['ok'] and c['description']:
+                descs.append(c['description'])
+    prefix = "Blocked" if kind == "blocked" else "Starved"
+    return _join_reason(descs, prefix=prefix)
+
+
 # ── Subscription handler ─────────────────────────────────────────────────────
 
 class _SubHandler:
@@ -275,6 +287,28 @@ class _SubHandler:
     def __init__(self, node_map: dict[int, tuple]) -> None:
         self._map = node_map
 
+    @staticmethod
+    def _normalize_ts(raw_ts: datetime.datetime | None) -> datetime.datetime:
+        """Return a safe UTC timestamp for event writes.
+
+        Some PLC/OPC stacks can emit stale or unrealistic SourceTimestamp
+        values (for example year 2012). If the timestamp is far from "now",
+        use current UTC so history appears in the expected operator window.
+        """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if raw_ts is None:
+            return now
+        ts = raw_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=datetime.timezone.utc)
+        else:
+            ts = ts.astimezone(datetime.timezone.utc)
+        if ts < (now - datetime.timedelta(days=30)):
+            return now
+        if ts > (now + datetime.timedelta(minutes=5)):
+            return now
+        return ts
+
     def datachange_notification(self, node, val, data) -> None:
         try:
             nid = node.nodeid.Identifier
@@ -282,7 +316,11 @@ class _SubHandler:
             if entry is None:
                 return
             tracker, role, payload = entry
-            ts = data.monitored_item.Value.SourceTimestamp or datetime.datetime.now(datetime.timezone.utc)
+            dv = data.monitored_item.Value
+            ts = self._normalize_ts(
+                getattr(dv, "SourceTimestamp", None)
+                or getattr(dv, "ServerTimestamp", None)
+            )
 
             if role == "step":
                 tracker.on_step_change(payload, str(val) if val else "", ts)
@@ -302,6 +340,15 @@ class _SubHandler:
                 tracker.on_em_fault_change(bool(val), ts)
             elif role == "running":
                 tracker.on_running_change(bool(val), ts)
+            elif role == "paused":
+                tracker.on_paused_change(bool(val), ts)
+            elif role == "stopped":
+                tracker.on_stopped_change(bool(val), ts)
+            elif role == "unknown_status":
+                tracker.on_unknown_status_change(bool(val), ts)
+            elif role == "interlock_snapshot":
+                conds = _parse_conditions(val)
+                tracker.on_interlock_snapshot(_build_interlock_reason(conds), ts)
         except Exception:
             log.exception("datachange_notification error")
 
@@ -328,6 +375,9 @@ class OpcClient:
         #   {'interlock':     <Node>,
         #    'step_branches': {seq_idx: <Node>, ...}}
         self._struct_nodes: dict[int, dict] = {}
+        # Event-loop reference used to schedule async enrichment tasks from
+        # synchronous subscription callbacks.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def run(self) -> None:
         while self._running:
@@ -355,6 +405,7 @@ class OpcClient:
         client.application_uri = OPC_APPLICATION_URI
         client.session_timeout = SESSION_TIMEOUT_MS  # match S7-1500 grant
         client.timeout         = REQUEST_TIMEOUT_S   # per-request timeout
+        self._loop = asyncio.get_running_loop()
         async with client:
             # Load the PLC's custom UDT definitions so subsequent struct reads
             # (activeStepBranch, interlock) deserialise into objects with the
@@ -377,7 +428,8 @@ class OpcClient:
             node_map: dict[int, tuple[EMStateTracker, str, Any]] = {}
             nodes: list[Any] = []
 
-            # avail_nodes: em_id → (tracker, auto_node, fault_node, running_node)
+            # avail_nodes: em_id → (tracker, auto_node, fault_node, running_node,
+            #                        paused_node, stopped_node, unknown_node)
             # kept for periodic re-reads in the keep-alive loop below
             avail_nodes: dict[int, tuple] = {}
 
@@ -385,6 +437,7 @@ class OpcClient:
             # automatically whenever a tracker opens an event.
             for tracker in self._trackers.values():
                 tracker.on_down_event_opened = self._schedule_reason_enrichment
+                tracker.on_flow_event_opened = self._schedule_reason_enrichment
 
             for em_id, tracker in self._trackers.items():
                 em_nodes = await self._resolve_em_nodes(
@@ -419,6 +472,7 @@ class OpcClient:
             # settles, using _active_seq (if known) or the first non-STOP seq.
             await asyncio.sleep(2.0)
             flush_ts = datetime.datetime.now(datetime.timezone.utc)
+            await self._resync_current_steps(client)
             for tracker in self._trackers.values():
                 tracker.flush_current_step(flush_ts)
 
@@ -439,6 +493,8 @@ class OpcClient:
                 tick += 1
                 if tick % 3 == 0:               # every 30 s
                     await self._resync_availability(avail_nodes)
+                    await self._resync_current_steps(client)
+        self._loop = None
 
     async def _resync_availability(
         self,
@@ -451,16 +507,93 @@ class OpcClient:
         MinimumSamplingInterval are delivered inconsistently).
         """
         ts = datetime.datetime.now(datetime.timezone.utc)
-        for em_id, (tracker, auto_node, fault_node, run_node) in avail_nodes.items():
+        for em_id, (tracker, auto_node, fault_node, run_node, paused_node, stopped_node, unknown_node) in avail_nodes.items():
             try:
                 auto    = bool(await auto_node.read_value())
                 fault   = bool(await fault_node.read_value())
                 running = bool(await run_node.read_value())
+                paused  = bool(await paused_node.read_value()) if paused_node is not None else False
+                stopped = bool(await stopped_node.read_value()) if stopped_node is not None else False
+                unknown_status = bool(await unknown_node.read_value()) if unknown_node is not None else False
                 tracker.on_automatic_change(auto,    ts)
                 tracker.on_em_fault_change(fault,    ts)
                 tracker.on_running_change(running,   ts)
+                tracker.on_paused_change(paused,     ts)
+                tracker.on_stopped_change(stopped,   ts)
+                tracker.on_unknown_status_change(unknown_status, ts)
             except Exception:
                 log.debug("resync_availability failed em=%d", em_id)
+
+    async def _resync_current_steps(self, client: Client) -> None:
+        """Refresh active sequence + step signals directly from PLC.
+
+        Some PLCs emit no initial DataChange for step tags after subscribe.
+        This read-through pass seeds tracker state so em_current_step and
+        subsequent history transitions are aligned with the real active step.
+        """
+        ns = 3
+        ts = datetime.datetime.now(datetime.timezone.utc)
+
+        def make_node(path: str):
+            return client.get_node(ua.NodeId(path, ns))
+
+        for tracker in self._trackers.values():
+            raw_path = tracker.em_db_path if hasattr(tracker, "em_db_path") else ""
+            base = siemens_path(raw_path)
+
+            active_seq = None
+            try:
+                paused_val = await make_node(f"{base}.status.paused").read_value()
+                tracker.on_paused_change(bool(paused_val), ts)
+            except Exception:
+                tracker.on_paused_change(False, ts)
+            try:
+                stopped_val = await make_node(f"{base}.status.stopped").read_value()
+                tracker.on_stopped_change(bool(stopped_val), ts)
+            except Exception:
+                tracker.on_stopped_change(False, ts)
+            try:
+                unknown_val = await make_node(f"{base}.status.unknown").read_value()
+                tracker.on_unknown_status_change(bool(unknown_val), ts)
+            except Exception:
+                tracker.on_unknown_status_change(False, ts)
+            try:
+                active_val = await make_node(f"{base}.status.activeSequence").read_value()
+                active_seq = int(active_val) if active_val else None
+                tracker.on_active_seq_change(active_seq, ts)
+            except Exception:
+                pass
+
+            seq_indices = list(getattr(tracker, "seq_indices", []) or [])
+            if active_seq is not None and active_seq not in seq_indices:
+                seq_indices.append(active_seq)
+
+            for seq_idx in seq_indices:
+                if seq_idx is None or seq_idx <= 0:
+                    continue
+                sc = f"{base}.stepControl[{seq_idx - 1}]"
+                try:
+                    step = await make_node(f"{sc}.step").read_value()
+                    tracker.on_step_change(seq_idx, str(step) if step else "", ts)
+                except Exception:
+                    pass
+                try:
+                    desc = await make_node(f"{sc}.description").read_value()
+                    tracker.on_step_desc_change(
+                        seq_idx, str(desc).strip() if desc else None, ts
+                    )
+                except Exception:
+                    pass
+                try:
+                    faulted = await make_node(f"{sc}.faulted").read_value()
+                    tracker.on_fault_change(seq_idx, bool(faulted), ts)
+                except Exception:
+                    pass
+                try:
+                    ext = await make_node(f"{sc}.externalFaultMessage").read_value()
+                    tracker._ext_msg[seq_idx] = str(ext).strip() if ext else None
+                except Exception:
+                    pass
 
     async def _resolve_em_nodes(
         self,
@@ -508,7 +641,11 @@ class OpcClient:
         await try_node(f'{base}.status.mode.automatic',  'automatic',  None)
         await try_node(f'{base}.status.alarm.fault',     'em_fault',   None)
         await try_node(f'{base}.status.running',         'running',    None)
+        has_paused = await try_node(f'{base}.status.paused', 'paused', None)
+        has_stopped = await try_node(f'{base}.status.stopped', 'stopped', None)
+        has_unknown = await try_node(f'{base}.status.unknown', 'unknown_status', None)
         await try_node(f'{base}.status.activeSequence',  'active_seq', None)
+        await try_node(f'{base}.interlock',              'interlock_snapshot', None)
 
         # Save node refs for periodic re-reads (avail signal bounce recovery)
         avail_nodes[tracker.em_id] = (
@@ -516,6 +653,9 @@ class OpcClient:
             make_node(f'{base}.status.mode.automatic'),
             make_node(f'{base}.status.alarm.fault'),
             make_node(f'{base}.status.running'),
+            make_node(f'{base}.status.paused') if has_paused else None,
+            make_node(f'{base}.status.stopped') if has_stopped else None,
+            make_node(f'{base}.status.unknown') if has_unknown else None,
         )
 
         # ── Per-sequence step subscriptions (4 trigger nodes per sequence) ────
@@ -552,6 +692,7 @@ class OpcClient:
 
     def _schedule_reason_enrichment(
         self, em_id: int, reason_type: str, seq_idx: int | None,
+        start_ts: datetime.datetime | None = None,
     ) -> None:
         """
         Called by EMStateTracker when a down event opens (sync, from the
@@ -562,21 +703,41 @@ class OpcClient:
         tracker = self._trackers.get(em_id)
         if tracker is None:
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            log.debug("no running event loop — skipping reason enrichment "
-                      "em=%d type=%s", em_id, reason_type)
+        loop = self._loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+        if loop is None:
+            log.warning(
+                "[%s] no event loop for reason enrichment em=%d type=%s",
+                self.plc_name, em_id, reason_type,
+            )
             return
 
+        coro = None
         if reason_type == "step_fault" and seq_idx is not None:
-            loop.create_task(self._enrich_step_fault_reason(tracker, seq_idx))
+            coro = self._enrich_step_fault_reason(tracker, seq_idx, start_ts)
+        elif reason_type in ("blocked", "starved") and seq_idx is not None:
+            coro = self._enrich_flow_reason(tracker, reason_type, seq_idx, start_ts)
         elif reason_type == "interlock":
-            loop.create_task(self._enrich_interlock_reason(tracker))
+            coro = self._enrich_interlock_reason(tracker, start_ts)
         # 'manual' / unknown — no enrichment
+        if coro is None:
+            return
+
+        if loop.is_running():
+            loop.call_soon_threadsafe(loop.create_task, coro)
+        else:
+            log.warning(
+                "[%s] enrichment loop not running em=%d type=%s",
+                self.plc_name, em_id, reason_type,
+            )
 
     async def _enrich_step_fault_reason(
         self, tracker: EMStateTracker, seq_idx: int,
+        start_ts: datetime.datetime | None = None,
     ) -> None:
         """
         Read ``stepControl[N-1].activeStepBranch`` (one struct, one round-trip)
@@ -603,9 +764,11 @@ class OpcClient:
             ext_msg=tracker._ext_msg.get(seq_idx),
         )
         if reason:
-            tracker.update_down_event_reason(reason)
+            tracker.update_down_event_reason(reason, start_ts_override=start_ts)
 
-    async def _enrich_interlock_reason(self, tracker: EMStateTracker) -> None:
+    async def _enrich_interlock_reason(
+        self, tracker: EMStateTracker, start_ts: datetime.datetime | None = None,
+    ) -> None:
         """
         Read ``interlock`` (one struct, one round-trip) and update the open
         down event's reason.  If no interlock condition is failing, this was
@@ -633,7 +796,7 @@ class OpcClient:
         conditions = _parse_conditions(raw)
         reason = _build_interlock_reason(conditions)
         if reason:
-            tracker.update_down_event_reason(reason)
+            tracker.update_down_event_reason(reason, start_ts_override=start_ts)
         else:
             # Only demote to manual if there is no active EM fault.
             # If fault is still active but interlock detail parsing yields
@@ -642,9 +805,36 @@ class OpcClient:
                 tracker.update_down_event_reason(
                     "EM fault active (interlock details unavailable)",
                     reason_type="interlock",
+                    start_ts_override=start_ts,
                 )
             else:
-                tracker.update_down_event_reason("Manual mode", reason_type="manual")
+                tracker.update_down_event_reason(
+                    "Manual mode", reason_type="manual",
+                    start_ts_override=start_ts,
+                )
+
+    async def _enrich_flow_reason(
+        self, tracker: EMStateTracker, kind: str, seq_idx: int,
+        start_ts: datetime.datetime | None = None,
+    ) -> None:
+        struct = self._struct_nodes.get(tracker.em_id)
+        if not struct:
+            return
+        branch_node = struct.get('step_branches', {}).get(seq_idx)
+        if branch_node is None:
+            return
+
+        try:
+            raw = await branch_node.read_value()
+        except Exception:
+            log.debug("read activeStepBranch failed for flow em=%d seq=%d",
+                      tracker.em_id, seq_idx, exc_info=True)
+            return
+
+        branches = _parse_step_branches(raw)
+        reason = _build_flow_reason(kind, branches)
+        if reason:
+            tracker.update_flow_event_reason(reason, start_ts_override=start_ts)
 
     async def _heartbeat(self, connected: bool, node_count: int = 0) -> None:
         try:
@@ -693,17 +883,40 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                     cycle_start_step=seq.get(
                         "cycle_start_step", "SEQUENCE_INITIAL_STEP"
                     ),
+                    blocked_steps=list(seq.get("blocked_steps", []) or []),
+                    starved_steps=list(seq.get("starved_steps", []) or []),
                 )
 
             if not enabled:
                 continue
 
             seq_indices = [s["index"] for s in em_cfg.get("sequences", [])]
+            seq_is_production = {
+                int(s["index"]): bool(s.get("is_production", False))
+                for s in em_cfg.get("sequences", [])
+            }
+            seq_blocked_steps = {
+                int(s["index"]): {
+                    str(x).strip() for x in (s.get("blocked_steps", []) or [])
+                    if str(x).strip()
+                }
+                for s in em_cfg.get("sequences", [])
+            }
+            seq_starved_steps = {
+                int(s["index"]): {
+                    str(x).strip() for x in (s.get("starved_steps", []) or [])
+                    if str(x).strip()
+                }
+                for s in em_cfg.get("sequences", [])
+            }
             tracker = EMStateTracker(
                 em_id=em_id,
                 station=em_cfg["station"],
                 em_label=em_cfg["em_label"],
                 seq_indices=seq_indices,
+                seq_is_production=seq_is_production,
+                seq_blocked_steps=seq_blocked_steps,
+                seq_starved_steps=seq_starved_steps,
             )
             # Attach db_path so opc_client can build node paths
             tracker.em_db_path = em_cfg["em_db_path"]

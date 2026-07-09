@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Equipment Monitor - State and Availability Logic</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #1f2937; line-height: 1.45; }
+    h1, h2, h3 { color: #111827; }
+    h1 { margin-bottom: 6px; }
+    .muted { color: #6b7280; }
+    code { background: #f3f4f6; padding: 2px 5px; border-radius: 4px; }
+    pre { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 12px 0 20px 0; }
+    th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f3f4f6; }
+    .section { margin-top: 28px; }
+    ul { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Equipment Monitor: State Collection and Availability Logic</h1>
+  <div class="muted">Last updated: 2026-06-22</div>
+
+  <div class="section">
+    <h2>1) High-level flow</h2>
+    <ol>
+      <li>Collector loads <code>config.yaml</code> and creates one OPC client per PLC.</li>
+      <li>Each client subscribes to a minimal set of state tags per equipment module (EM).</li>
+      <li>Incoming value changes drive an EM state tracker.</li>
+      <li>Tracker writes:
+        <ul>
+          <li><code>em_availability_raw</code> (signal snapshots + active sequence context)</li>
+          <li><code>em_current_step</code> (live active step per EM)</li>
+          <li><code>step_event</code> and <code>fault_event</code> on sequence transitions/fault edges</li>
+          <li><code>em_down_event</code> when availability drops</li>
+        </ul>
+      </li>
+      <li>Dash pages compute availability/timelines from these DB tables.</li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>2) OPC tags used for state transitions</h2>
+    <p>Each EM uses its configured base path: <code>{em_db_path}</code> (with Siemens DB name quoting applied).</p>
+
+    <h3>2.1 EM-level tags (subscribed)</h3>
+    <table>
+      <thead>
+        <tr><th>Tag (suffix under base path)</th><th>Meaning</th><th>Used for</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>.status.mode.automatic</code></td><td>Auto mode active</td><td>Availability state transitions</td></tr>
+        <tr><td><code>.status.alarm.fault</code></td><td>EM-level fault bit</td><td>Availability and down-event open</td></tr>
+        <tr><td><code>.status.running</code></td><td>Running bit</td><td>Productive vs standby</td></tr>
+        <tr><td><code>.status.activeSequence</code></td><td>Active sequence index</td><td>Current step selection and production-sequence logic</td></tr>
+        <tr><td><code>.interlock</code></td><td>Interlock struct snapshot</td><td>Live interlock condition parsing and reason attribution</td></tr>
+      </tbody>
+    </table>
+
+    <h3>2.2 Sequence-level tags (subscribed for each configured sequence index N)</h3>
+    <table>
+      <thead>
+        <tr><th>Tag</th><th>Meaning</th><th>Used for</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>.stepControl[N-1].step</code></td><td>Current step value</td><td>Step history and current step</td></tr>
+        <tr><td><code>.stepControl[N-1].description</code></td><td>Step description</td><td>Step history/current step text</td></tr>
+        <tr><td><code>.stepControl[N-1].faulted</code></td><td>Sequence fault edge</td><td>Step fault events and down-event root cause</td></tr>
+        <tr><td><code>.stepControl[N-1].externalFaultMessage</code></td><td>External fault detail</td><td>Fault reason text</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>3) Availability state model</h2>
+    <p>Tracker derives one of four SEMI E10-style states from EM-level signals + active-sequence context:</p>
+
+    <table>
+      <thead>
+        <tr><th>Derived state</th><th>Condition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>unscheduled_down</strong></td><td><code>fault = true</code></td></tr>
+        <tr><td><strong>unscheduled_down</strong></td><td><code>automatic = true</code> and active sequence is non-production (e.g. Home)</td></tr>
+        <tr><td><strong>productive</strong></td><td><code>automatic = true</code> and <code>running = true</code> and no fault and no non-production override</td></tr>
+        <tr><td><strong>standby</strong></td><td><code>automatic = true</code> and <code>running = false</code> and no fault and no non-production override</td></tr>
+        <tr><td><strong>manual</strong></td><td>Else (typically not in automatic with no fault)</td></tr>
+      </tbody>
+    </table>
+
+    <p>Raw snapshots are written to <code>em_availability_raw</code> with:</p>
+    <ul>
+      <li><code>automatic</code>, <code>fault</code>, <code>running</code></li>
+      <li><code>active_seq</code>, <code>active_is_production</code></li>
+      <li>timestamp <code>ts</code> (monotonic per EM)</li>
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>4) Down-event reason logic (why downtime happened)</h2>
+    <h3>4.1 Open trigger</h3>
+    <p>A row in <code>em_down_event</code> opens when derived state enters down/manual (sticky root-cause model).</p>
+
+    <h3>4.2 Reason attribution precedence</h3>
+    <ol>
+      <li><strong>Step fault edge</strong> (<code>stepControl[N-1].faulted</code>) -> reason type <code>step_fault</code>.</li>
+      <li><strong>Manual/idle transition</strong>:
+        <ul>
+          <li>If interlock snapshot shows failed conditions -> reason type <code>interlock</code> with parsed condition text.</li>
+          <li>If interlocks are healthy -> reason type <code>manual</code> and reason text <code>Manual mode</code>.</li>
+        </ul>
+      </li>
+      <li><strong>Non-production active sequence</strong> -> reason text like <code>Non-production sequence active (N)</code>.</li>
+    </ol>
+
+    <h3>4.3 Placeholder handling</h3>
+    <p>Placeholder strings are not intended to persist. If async enrichment cannot resolve before close, close-out finalization rewrites to a concrete value (typically <code>Manual mode</code> or <code>EM fault active (interlock details unavailable)</code>).</p>
+  </div>
+
+  <div class="section">
+    <h2>5) Availability calculation shown in the app</h2>
+    <p>From SQL interval rollups over <code>em_availability_raw</code>:</p>
+    <pre>Availability % = (productive + standby) / (productive + standby + unscheduled_down) * 100</pre>
+    <p><code>manual</code> time is excluded from denominator (SEMI E10 non-scheduled time treatment).</p>
+  </div>
+
+  <div class="section">
+    <h2>6) Quick PLC audit checklist</h2>
+    <ul>
+      <li>Watch <code>.status.mode.automatic</code>, <code>.status.running</code>, <code>.status.alarm.fault</code>, <code>.status.activeSequence</code> together.</li>
+      <li>Watch <code>.interlock</code> struct condition array fields (<code>ok</code> + <code>description</code>).</li>
+      <li>If machine idles and interlock conditions remain healthy, downtime will classify as <code>Manual mode</code>.</li>
+      <li>If one or more interlock conditions drop, their descriptions are used as the down-event reason.</li>
+    </ul>
+  </div>
+</body>
+</html>
