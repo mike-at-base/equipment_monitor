@@ -7,26 +7,30 @@ TITLE = EM telemetry datagram payload
 // bumping VERSION and updating the collector parser.
 //
 // All fields land on even byte offsets so the serialized layout has no
-// alignment padding surprises.  Total serialized size: 824 bytes.
+// alignment padding surprises.  Total serialized size: 906 bytes.
 //
-VERSION : 0.1
+VERSION : 0.2
    STRUCT
-      version : USInt := 1;               // wire format version
+      version : USInt := 2;               // wire format version
       msgType : USInt;                    // 1 = event, 2 = heartbeat
       statusBits : Word;                  // bit0 automatic, bit1 fault, bit2 running,
                                           // bit3 paused, bit4 stopped, bit5 unknown,
                                           // bit6 stepFaulted, bit7 interlockOk,
-                                          // bit8 extAlarmActive
-      seq : UDInt;                        // per-EM datagram counter (gap detection)
-      plcTime : LDT;                      // CPU time, ns since 1970-01-01 UTC
+                                          // bit8 extAlarmActive, bit9 reset
+      modeBits : Word;                    // bit0 idle, bit1 stepMode, bit2 mesBypass,
+                                          // bit3 dryCycle, bit4 endOfCycle,
+                                          // bit5 pauseAtHome, bit6 requestEntry
       activeSequence : Int;               // 0 = no sequence active
+      seq : UDInt;                        // per-EM datagram counter (gap detection)
       stepActiveTime : Time;              // time in current step (ms)
+      plcTime : LDT;                      // CPU time, ns since 1970-01-01 UTC
       stationName : String[32];
       emLabel : String[16];
       "step" : String[60];                // active sequence's current step
       stepDescription : String[200];
       alarmMessage : String[200];         // status.alarm.message (PLC-composed)
-      interlockFirstFail : String[80];    // first failing interlock condition
+      interlockFails : String[160];       // ALL failing interlock conditions,
+                                          // '; '-separated, first-out first
       faultConditions : String[200];      // failing step-permissive conditions,
                                           // latched on the SCAN the step fault
                                           // rose ('; '-separated); '' when the

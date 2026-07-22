@@ -1,7 +1,7 @@
 """
 UDP telemetry receiver — counterpart to the PLC EquipmentModuleTelemetry FB.
 
-The FB pushes one 622-byte datagram (typeEquipmentModuleTelemetry, S7
+The FB pushes one 906-byte datagram (typeEquipmentModuleTelemetry, S7
 Serialize layout, big-endian) on every EM state/step change plus a 1 s
 heartbeat snapshot.  This receiver parses each datagram and feeds the same
 EMStateTracker callbacks the OPC UA subscription handler uses — trackers
@@ -27,8 +27,8 @@ from collector.state_tracker import EMStateTracker
 
 log = logging.getLogger(__name__)
 
-_WIRE_VERSION = 1
-_PAYLOAD_LEN = 824
+_WIRE_VERSION = 2
+_PAYLOAD_LEN = 906
 
 # statusBits
 _BIT_AUTOMATIC   = 0x0001
@@ -40,6 +40,14 @@ _BIT_UNKNOWN     = 0x0020
 _BIT_STEP_FAULT  = 0x0040
 _BIT_INTERLOCK_OK = 0x0080
 _BIT_EXT_ALARM   = 0x0100
+_BIT_RESET       = 0x0200
+
+# modeBits
+_MODE_FIELDS = [
+    ("idle", 0x0001), ("step_mode", 0x0002), ("mes_bypass", 0x0004),
+    ("dry_cycle", 0x0008), ("end_of_cycle", 0x0010),
+    ("pause_at_home", 0x0020), ("request_entry", 0x0040),
+]
 
 # Max plausible skew between PLC clock and collector clock before we fall
 # back to receive time (PLC clocks drift / may never have been set).
@@ -62,26 +70,26 @@ def parse_payload(data: bytes) -> dict | None:
         return None
     if data[0] != _WIRE_VERSION:
         return None
-    status_bits, seq = struct.unpack_from(">HI", data, 2)
-    plc_time_ns, = struct.unpack_from(">Q", data, 8)
-    active_seq, = struct.unpack_from(">h", data, 16)
-    step_active_ms, = struct.unpack_from(">i", data, 18)
+    status_bits, mode_bits, active_seq, seq, step_active_ms =         struct.unpack_from(">HHhIi", data, 2)
+    plc_time_ns, = struct.unpack_from(">Q", data, 16)
     return {
         "msg_type": data[1],
         "status_bits": status_bits,
+        "mode_bits": mode_bits,
         "seq": seq,
         "plc_time_ns": plc_time_ns,
         "active_seq": active_seq,
         "step_active_ms": step_active_ms,
-        "station": _s7_string(data, 22, 32),
-        "em_label": _s7_string(data, 56, 16),
-        "step": _s7_string(data, 74, 60),
-        "step_desc": _s7_string(data, 136, 200),
-        "alarm_msg": _s7_string(data, 338, 200),
-        "interlock_first_fail": _s7_string(data, 540, 80),
+        "station": _s7_string(data, 24, 32),
+        "em_label": _s7_string(data, 58, 16),
+        "step": _s7_string(data, 76, 60),
+        "step_desc": _s7_string(data, 138, 200),
+        "alarm_msg": _s7_string(data, 340, 200),
+        # ALL failing interlock conditions, first-out first
+        "interlock_fails": _s7_string(data, 542, 160),
         # failing step-permissive conditions, latched by the FB on the very
         # scan the step fault rose — race-free root cause
-        "fault_conditions": _s7_string(data, 622, 200),
+        "fault_conditions": _s7_string(data, 704, 200),
     }
 
 
@@ -164,7 +172,11 @@ class TelemetryReceiver(DatagramProtocol):
         tracker.on_alarm_msg_change(alarm_msg, ts)
         tracker.on_interlock_snapshot(
             None if (bits & _BIT_INTERLOCK_OK) else
-            (p["interlock_first_fail"] or "Interlock not OK"), ts,
+            (p["interlock_fails"] or "Interlock not OK"), ts,
+        )
+        tracker.on_mode_snapshot(
+            {name: bool(p["mode_bits"] & mask) for name, mask in _MODE_FIELDS},
+            ts,
         )
 
         active_seq = p["active_seq"] if p["active_seq"] > 0 else None
@@ -201,3 +213,7 @@ class TelemetryReceiver(DatagramProtocol):
             unknown_status=bool(bits & _BIT_UNKNOWN),
             ts=ts,
         )
+
+        # Reset AFTER the status snapshot so a fault + reset arriving in the
+        # same datagram stamps ack_ts on the down event that snapshot opened.
+        tracker.on_reset_change(bool(bits & _BIT_RESET), ts)

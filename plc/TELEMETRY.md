@@ -33,27 +33,47 @@ covers reliability the pragmatic way:
 
 ## Wire format
 
-One UDP datagram per event/heartbeat, 824 bytes, produced by `Serialize`
+One UDP datagram per event/heartbeat, 906 bytes, produced by `Serialize`
 of `typeEquipmentModuleTelemetry` (S7 standard/non-optimized layout,
-big-endian, strings as `[max][len][chars...]`):
+big-endian, strings as `[max][len][chars...]`).  Wire version: **2**.
 
-| Offset | Type        | Field              | Notes                                  |
-|-------:|-------------|--------------------|----------------------------------------|
-| 0      | USInt       | version            | 1                                      |
-| 1      | USInt       | msgType            | 1 = event, 2 = heartbeat               |
-| 2      | Word        | statusBits         | see bit map below                      |
-| 4      | UDInt       | seq                | wraps at 2^32                          |
-| 8      | LDT         | plcTime            | ns since 1970-01-01 UTC                |
-| 16     | Int         | activeSequence     | 0 = none                               |
-| 18     | Time        | stepActiveTime     | ms in current step                     |
-| 22     | String[32]  | stationName        | e.g. `ST34000`                         |
-| 56     | String[16]  | emLabel            | e.g. `main`, `SL01_MAG01`              |
-| 74     | String[60]  | step               | active sequence's current step         |
-| 136    | String[200] | stepDescription    |                                        |
-| 338    | String[200] | alarmMessage       | `status.alarm.message` (composed)      |
-| 540    | String[80]  | interlockFirstFail | first failing interlock condition desc |
-| 622    | String[200] | faultConditions    | failing step-permissive conditions,    |
-|        |             |                    | latched on the fault scan              |
+| Offset | Type        | Field           | Notes                                   |
+|-------:|-------------|-----------------|------------------------------------------|
+| 0      | USInt       | version         | 2                                        |
+| 1      | USInt       | msgType         | 1 = event, 2 = heartbeat                 |
+| 2      | Word        | statusBits      | see bit map below                        |
+| 4      | Word        | modeBits        | see bit map below                        |
+| 6      | Int         | activeSequence  | 0 = none                                 |
+| 8      | UDInt       | seq             | wraps at 2^32                            |
+| 12     | Time        | stepActiveTime  | ms in current step                       |
+| 16     | LDT         | plcTime         | ns since 1970-01-01 UTC                  |
+| 24     | String[32]  | stationName     | e.g. `ST34000`                           |
+| 58     | String[16]  | emLabel         | e.g. `main`, `SL01_MAG01`                |
+| 76     | String[60]  | step            | active sequence's current step           |
+| 138    | String[200] | stepDescription |                                          |
+| 340    | String[200] | alarmMessage    | `status.alarm.message` (composed)        |
+| 542    | String[160] | interlockFails  | ALL failing interlock conditions,        |
+|        |             |                 | `'; '`-separated, first-out first        |
+| 704    | String[200] | faultConditions | failing step-permissive conditions,      |
+|        |             |                 | latched on the fault scan                |
+
+`statusBits`: bit0 automatic · bit1 fault · bit2 running · bit3 paused ·
+bit4 stopped · bit5 unknown · bit6 stepFaulted · bit7 interlockOk ·
+bit8 extAlarmActive · bit9 reset.
+
+`modeBits`: bit0 idle · bit1 stepMode · bit2 mesBypass · bit3 dryCycle ·
+bit4 endOfCycle · bit5 pauseAtHome · bit6 requestEntry.
+
+### What the collector does with the extras
+
+- **modeBits** → `em_mode_event` rows on change: history can exclude
+  dry-cycle / MES-bypass windows from OEE and treat step-mode time as
+  maintenance activity.
+- **reset (bit9)** → `em_operator_event` rows; the FIRST reset while a
+  down event is open stamps `em_down_event.ack_ts`, splitting MTTR into
+  response time (down → ack) and repair time (ack → recovered).
+- **interlockFails** → down-event reasons carry every failing condition,
+  not just the first-out.
 
 ### Fault reason semantics
 
@@ -74,10 +94,6 @@ The collector composes the down-event / fault-event reason as:
 
 This telemetry-sourced reason is authoritative: the slower OPC enrichment
 read is skipped for it.
-
-`statusBits`: bit0 automatic · bit1 fault · bit2 running · bit3 paused ·
-bit4 stopped · bit5 unknown · bit6 stepFaulted · bit7 interlockOk ·
-bit8 extAlarmActive.
 
 ## PLC integration (per EM)
 

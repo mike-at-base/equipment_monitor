@@ -342,6 +342,52 @@ def close_down_event(conn, em_id: int, start_ts: datetime.datetime,
     )
 
 
+def ack_down_event(conn, em_id: int, ack_ts: datetime.datetime) -> None:
+    """
+    Stamp the first operator reset on the currently-open down event.
+    Splits MTTR into response time (start→ack) and repair time (ack→end).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE em_down_event
+           SET ack_ts = %s
+         WHERE em_id = %s AND end_ts IS NULL AND ack_ts IS NULL
+        """,
+        (ack_ts, em_id),
+    )
+
+
+def insert_operator_event(conn, em_id: int, ts: datetime.datetime,
+                          event: str) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO em_operator_event (ts, em_id, event) VALUES (%s, %s, %s)",
+        (ts, em_id, event),
+    )
+
+
+def insert_mode_event(conn, em_id: int, ts: datetime.datetime,
+                      modes: dict) -> None:
+    """One row per mode-bit change (idle/step/mesBypass/dryCycle/...)."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO em_mode_event
+          (ts, em_id, idle, step_mode, mes_bypass, dry_cycle,
+           end_of_cycle, pause_at_home, request_entry)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            ts, em_id,
+            bool(modes.get("idle")), bool(modes.get("step_mode")),
+            bool(modes.get("mes_bypass")), bool(modes.get("dry_cycle")),
+            bool(modes.get("end_of_cycle")), bool(modes.get("pause_at_home")),
+            bool(modes.get("request_entry")),
+        ),
+    )
+
+
 def get_open_down_event(conn, em_id: int) -> dict | None:
     """Return the latest open down-event row for one EM, if any."""
     cur = conn.cursor()

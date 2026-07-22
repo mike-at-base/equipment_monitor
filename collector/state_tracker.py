@@ -118,6 +118,11 @@ class EMStateTracker:
         self._down_step:        str | None               = None
         self._down_fault_msg:   str | None               = None
 
+        # Mode context + operator reset (UDP telemetry only)
+        self._modes: dict[str, bool] | None = None
+        self._reset: bool | None = None
+        self._down_ack_recorded: bool = False
+
         # Most recent parsed interlock health snapshot (from OPC interlock
         # struct datachange subscription). Used to distinguish true interlock
         # stops from operator-initiated HMI stops.
@@ -221,6 +226,7 @@ class EMStateTracker:
                     self._down_seq_idx     = seq_idx
                     self._down_step        = step_name
                     self._down_fault_msg   = fault_msg
+                    self._down_ack_recorded = False
 
                     log.debug("[%s/%s] down event OPEN  type=%s desc=%s",
                               self.station, self.em_label, reason_type, reason_desc)
@@ -382,6 +388,7 @@ class EMStateTracker:
         self._down_seq_idx     = None
         self._down_step        = None
         self._down_fault_msg   = None
+        self._down_ack_recorded = False
 
         try:
             conn = get_pool().getconn()
@@ -1121,6 +1128,47 @@ class EMStateTracker:
     def on_alarm_msg_change(self, msg: str | None, ts: datetime.datetime) -> None:
         """Track EM status.alarm.message (composed fault text, new library)."""
         self._alarm_msg = msg or None
+
+    def on_mode_snapshot(self, modes: dict, ts: datetime.datetime) -> None:
+        """Record mode-bit changes (dry cycle / MES bypass / step mode / ...)."""
+        if modes == self._modes:
+            return
+        self._modes = dict(modes)
+        try:
+            conn = get_pool().getconn()
+            try:
+                q.insert_mode_event(conn, self.em_id, ts, modes)
+                conn.commit()
+            finally:
+                get_pool().putconn(conn)
+        except Exception:
+            log.exception("insert_mode_event failed em=%d", self.em_id)
+
+    def on_reset_change(self, val: bool, ts: datetime.datetime) -> None:
+        """
+        Operator reset edge.  Recorded as an operator event, and the FIRST
+        reset while a down event is open stamps ack_ts on it — splitting
+        MTTR into response time (down→ack) and repair time (ack→recover).
+        """
+        if val == self._reset:
+            return
+        rising = bool(val) and self._reset is not None
+        self._reset = bool(val)
+        if not rising:
+            return
+        log.debug("[%s/%s] operator reset", self.station, self.em_label)
+        try:
+            conn = get_pool().getconn()
+            try:
+                q.insert_operator_event(conn, self.em_id, ts, "reset")
+                if self._down_start_ts is not None and not self._down_ack_recorded:
+                    q.ack_down_event(conn, self.em_id, ts)
+                    self._down_ack_recorded = True
+                conn.commit()
+            finally:
+                get_pool().putconn(conn)
+        except Exception:
+            log.exception("operator reset handling failed em=%d", self.em_id)
 
     def _recent_interlock_reason(self, ts: datetime.datetime) -> str | None:
         if not self._interlock_has_fail or not self._interlock_reason:

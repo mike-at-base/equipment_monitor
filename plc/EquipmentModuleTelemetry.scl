@@ -4,7 +4,7 @@ TITLE = EM telemetry publisher (UDP push to equipment-monitor collector)
 VERSION : 0.1
 //
 // Drop-in per equipment module.  Pushes one small UDP datagram
-// (typeEquipmentModuleTelemetry, 824 bytes) to the collector whenever any
+// (typeEquipmentModuleTelemetry, 906 bytes) to the collector whenever any
 // monitored EM value changes, plus a heartbeat snapshot every
 // heartbeatInterval.  Change detection runs every scan, so transitions
 // faster than the OPC UA sampling interval are never lost; an 8-deep send
@@ -60,13 +60,14 @@ VERSION : 0.1
       statQueueTail : Int;              // next read slot
       statQueueCount : Int;
       statTxPayload : "typeEquipmentModuleTelemetry";
-      statTxBuffer : Array[0..839] of Byte;
+      statTxBuffer : Array[0..959] of Byte;
       statTxLen : UDInt;
       statSendReq : Bool;
    END_VAR
 
    VAR_TEMP
       tempBits : Word;
+      tempModeBits : Word;
       tempSeqIdx : Int;
       tempStepFaulted : Bool;
       tempChanged : Bool;
@@ -117,7 +118,7 @@ BEGIN
             #statAddrParam.RemoteAddress.ADDR[4] := #remoteIp4;
             #statAddrParam.RemotePort := #remotePort;
 
-            #statSnapshot.version := 1;
+            #statSnapshot.version := 2;
             #statSnapshot.stationName := #stationName;
             #statSnapshot.emLabel := #emLabel;
 
@@ -155,6 +156,19 @@ BEGIN
         IF #controlInterface.status.stopped        THEN #tempBits := #tempBits OR W#16#0010; END_IF;
         IF #controlInterface.status.unknown        THEN #tempBits := #tempBits OR W#16#0020; END_IF;
         IF #controlInterface.interlock.status.ok   THEN #tempBits := #tempBits OR W#16#0080; END_IF;
+        IF #controlInterface.status.reset          THEN #tempBits := #tempBits OR W#16#0200; END_IF;
+
+        // mode bits — context that changes how history is interpreted
+        // (dry cycle / MES bypass windows, step-mode = maintenance activity)
+        #tempModeBits := W#16#0000;
+        IF #controlInterface.status.mode.idle         THEN #tempModeBits := #tempModeBits OR W#16#0001; END_IF;
+        IF #controlInterface.status.mode."step"       THEN #tempModeBits := #tempModeBits OR W#16#0002; END_IF;
+        IF #controlInterface.status.mode.mesBypass    THEN #tempModeBits := #tempModeBits OR W#16#0004; END_IF;
+        IF #controlInterface.status.mode.dryCycle     THEN #tempModeBits := #tempModeBits OR W#16#0008; END_IF;
+        IF #controlInterface.status.mode.endOfCycle   THEN #tempModeBits := #tempModeBits OR W#16#0010; END_IF;
+        IF #controlInterface.status.mode.pauseAtHome  THEN #tempModeBits := #tempModeBits OR W#16#0020; END_IF;
+        IF #controlInterface.status.mode.requestEntry THEN #tempModeBits := #tempModeBits OR W#16#0040; END_IF;
+        #statSnapshot.modeBits := #tempModeBits;
 
         #tempSeqIdx := #controlInterface.status.activeSequence;
         #statSnapshot.activeSequence := #tempSeqIdx;
@@ -181,14 +195,23 @@ BEGIN
         #statSnapshot.statusBits := #tempBits;
         #statSnapshot.alarmMessage := LEFT(IN := #controlInterface.status.alarm.message, L := 200);
 
-        // first failing interlock condition (root-cause capture at the source)
-        #statSnapshot.interlockFirstFail := '';
+        // ALL failing interlock conditions, first-out first (root-cause plus
+        // co-occurrence: door open + air dump is a different event than a
+        // door alone)
+        #statSnapshot.interlockFails := '';
         IF NOT #controlInterface.interlock.status.ok THEN
             FOR #ii := 0 TO 15 DO
                 IF NOT #controlInterface.interlock.condition[#ii].ok THEN
-                    #statSnapshot.interlockFirstFail :=
-                        LEFT(IN := #controlInterface.interlock.condition[#ii].description, L := 80);
-                    EXIT;
+                    #tempDesc := #controlInterface.interlock.condition[#ii].description;
+                    IF LEN(#tempDesc) > 0 THEN
+                        IF LEN(#statSnapshot.interlockFails) = 0 THEN
+                            #statSnapshot.interlockFails := LEFT(IN := #tempDesc, L := 160);
+                        ELSIF (LEN(#statSnapshot.interlockFails) + LEN(#tempDesc) + 2) <= 160 THEN
+                            #statSnapshot.interlockFails := CONCAT(IN1 := #statSnapshot.interlockFails,
+                                                                   IN2 := '; ',
+                                                                   IN3 := #tempDesc);
+                        END_IF;
+                    END_IF;
                 END_IF;
             END_FOR;
         END_IF;
@@ -236,13 +259,14 @@ BEGIN
         // stepActiveTime / plcTime / seq deliberately excluded — they change
         // every scan and would turn event push into continuous streaming.
         #tempChanged :=
-            (#statSnapshot.statusBits         <> #statLastSent.statusBits) OR
-            (#statSnapshot.activeSequence     <> #statLastSent.activeSequence) OR
-            (#statSnapshot."step"             <> #statLastSent."step") OR
-            (#statSnapshot.stepDescription    <> #statLastSent.stepDescription) OR
-            (#statSnapshot.alarmMessage       <> #statLastSent.alarmMessage) OR
-            (#statSnapshot.interlockFirstFail <> #statLastSent.interlockFirstFail) OR
-            (#statSnapshot.faultConditions    <> #statLastSent.faultConditions);
+            (#statSnapshot.statusBits      <> #statLastSent.statusBits) OR
+            (#statSnapshot.modeBits        <> #statLastSent.modeBits) OR
+            (#statSnapshot.activeSequence  <> #statLastSent.activeSequence) OR
+            (#statSnapshot."step"          <> #statLastSent."step") OR
+            (#statSnapshot.stepDescription <> #statLastSent.stepDescription) OR
+            (#statSnapshot.alarmMessage    <> #statLastSent.alarmMessage) OR
+            (#statSnapshot.interlockFails  <> #statLastSent.interlockFails) OR
+            (#statSnapshot.faultConditions <> #statLastSent.faultConditions);
 
         // Heartbeat: self-resetting TON emits one pulse per interval.
         #instHeartbeatTimer(IN := #enable AND NOT #instHeartbeatTimer.Q,
