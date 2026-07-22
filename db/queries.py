@@ -878,7 +878,28 @@ def query_state_timeline(em_ids: list[int],
         cur = conn.cursor()
         cur.execute(
             """
-            WITH raw AS (
+            -- Bound the scan to the window plus each EM's last row at-or-
+            -- before the window start (needed to know the state entering the
+            -- window).  Without the bound this scanned the hypertable from
+            -- the beginning of time and got slower every day.
+            WITH bounded AS (
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM em_availability_raw
+                WHERE em_id = ANY(%s) AND ts > %s AND ts <= %s
+                UNION ALL
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM (
+                    SELECT DISTINCT ON (em_id)
+                           ts, em_id, automatic, fault, running,
+                           active_seq, active_is_production
+                    FROM em_availability_raw
+                    WHERE em_id = ANY(%s) AND ts <= %s
+                    ORDER BY em_id, ts DESC
+                ) prior
+            ),
+            raw AS (
                 SELECT ts, em_id, automatic, fault, running,
                        LEAD(ts) OVER (PARTITION BY em_id ORDER BY ts) AS next_ts,
                        CASE
@@ -891,9 +912,7 @@ def query_state_timeline(em_ids: list[int],
                          WHEN automatic AND NOT running THEN 'standby'
                          ELSE 'manual'
                        END AS state
-                FROM em_availability_raw
-                WHERE em_id = ANY(%s)
-                  AND ts <= %s
+                FROM bounded
             )
             SELECT r.ts, r.em_id, r.state, r.next_ts,
                    e.station, e.display_name, e.em_label
@@ -902,7 +921,7 @@ def query_state_timeline(em_ids: list[int],
             WHERE (r.next_ts IS NULL OR r.next_ts > %s)
             ORDER BY r.em_id, r.ts
             """,
-            (em_ids, end, start),
+            (em_ids, start, end, em_ids, start, start),
         )
         cols = [d[0] for d in cur.description]
         df = pd.DataFrame(cur.fetchall(), columns=cols)
@@ -931,7 +950,26 @@ def query_state_summary(em_ids: list[int],
         cur = conn.cursor()
         cur.execute(
             """
-            WITH raw AS (
+            -- Bound the scan to the window plus each EM's last row at-or-
+            -- before the window start (see query_state_timeline).
+            WITH bounded AS (
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM em_availability_raw
+                WHERE em_id = ANY(%s) AND ts > %s AND ts <= %s
+                UNION ALL
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM (
+                    SELECT DISTINCT ON (em_id)
+                           ts, em_id, automatic, fault, running,
+                           active_seq, active_is_production
+                    FROM em_availability_raw
+                    WHERE em_id = ANY(%s) AND ts <= %s
+                    ORDER BY em_id, ts DESC
+                ) prior
+            ),
+            raw AS (
                 SELECT ts, em_id,
                        LEAD(ts) OVER (PARTITION BY em_id ORDER BY ts) AS next_ts,
                        CASE
@@ -944,9 +982,7 @@ def query_state_summary(em_ids: list[int],
                          WHEN automatic AND NOT running THEN 'standby'
                          ELSE 'manual'
                        END AS state
-                FROM em_availability_raw
-                WHERE em_id = ANY(%s)
-                  AND ts <= %s
+                FROM bounded
             ),
             clipped AS (
                 SELECT em_id, state,
@@ -980,7 +1016,7 @@ def query_state_summary(em_ids: list[int],
             GROUP BY c.em_id, e.station, e.display_name, e.em_label
             ORDER BY e.station, e.em_label
             """,
-            (em_ids, end, start, end, end, start, end),
+            (em_ids, start, end, em_ids, start, start, end, end, start, end),
         )
         cols = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=cols)

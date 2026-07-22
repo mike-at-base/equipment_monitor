@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import app.brand  # registers Plotly template + exports DT styles
 import db.queries as q
-from app.layout import build_layout
+from app.layout import NAV_VIEWS, build_layout
 from app.pages import (
     analysis_hub,
     availability,
@@ -193,59 +193,128 @@ def set_dashboard_view(_live, _avail, _digest, _mod, _line, _analysis):
 
 
 @callback(
+    [Output(btn_id, "className") for btn_id, _lbl in NAV_VIEWS.values()]
+    + [Output(f"toolbar-{view}", "className") for view in NAV_VIEWS],
+    Input("dashboard-view", "data"),
+)
+def update_nav_state(view):
+    """Highlight the active nav button and show only that view's toolbar."""
+    view = view or "live-status"
+    btn_classes = [
+        "sidebar-nav-btn active" if v == view else "sidebar-nav-btn"
+        for v in NAV_VIEWS
+    ]
+    toolbar_classes = [
+        "view-toolbar" if v == view else "view-toolbar d-none"
+        for v in NAV_VIEWS
+    ]
+    return btn_classes + toolbar_classes
+
+
+def _loading(content_id: str):
+    return dcc.Loading(
+        html.Div(id=content_id),
+        type="circle",
+        color="#b2dd79",
+    )
+
+
+@callback(
     Output("dashboard-main-content", "children"),
     Input("plc-select", "value"),
     Input("dashboard-view", "data"),
-    Input("avail-overview-hours", "value"),
-    Input("daily-digest-shift-hours", "value"),
-    Input("bottleneck-excluded-stations", "value"),
-    Input("line-issues-plc-filter", "value"),
-    Input("line-issues-excluded-stations", "value"),
-    Input("line-issues-start-dt", "value"),
-    Input("line-issues-end-dt", "value"),
     Input("refresh-btn", "n_clicks"),
 )
-def render_dashboard_page(
-    plc_name, view, window_hours, digest_shift_hours, bottleneck_excluded,
-    line_issues_plcs, line_issues_excluded_stations, line_issues_start_value,
-    line_issues_end_value, _rb
-):
+def render_view_shell(plc_name, view, _rb):
+    """
+    Mount the thin shell for the active view.  The shell's content div is
+    filled by that view's own callback (fires on mount and whenever one of
+    the view's OWN controls changes) — deliberately no other inputs here so
+    unrelated control changes can't re-render the page.
+    """
     plc = plc_name or ""
     if not plc:
         return html.Div("No PLC selected.", className="text-muted p-3")
     view = view or "live-status"
 
-    if view == "live-status":
-        return html.Div(id="live-grid-content", className="pt-3")
     if view == "availability-overview":
-        hours = int(window_hours or 24)
-        end = datetime.datetime.now(datetime.timezone.utc)
-        start = end - datetime.timedelta(hours=hours)
-        return availability_overview.render(plc, start, end)
+        return _loading("avail-overview-content")
     if view == "daily-digest":
-        shift = int(digest_shift_hours or 8)
-        end = datetime.datetime.now(datetime.timezone.utc)
-        return daily_digest.render(plc, shift, end)
+        return _loading("daily-digest-content")
     if view == "mod-bottleneck":
-        return mod_bottleneck.render(plc, bottleneck_excluded or [])
+        return _loading("mod-bottleneck-content")
     if view == "line-issues":
-        try:
-            if line_issues_start_value and line_issues_end_value:
-                start, end = _parse_window(line_issues_start_value, line_issues_end_value)
-            else:
-                raise ValueError("line timeline datetime not set")
-        except Exception:
-            hours = int(window_hours or 24)
-            end = datetime.datetime.now(datetime.timezone.utc)
-            start = end - datetime.timedelta(hours=hours)
-        return line_issues_timeline.render(
-            start, end,
-            line_issues_plcs or [],
-            line_issues_excluded_stations or [],
-        )
+        return _loading("line-issues-content")
     if view == "analysis":
         return analysis_hub.render(plc)
-    return html.Div(id="live-grid-content", className="pt-3")
+    # live-status: render the grid inline — an intermediate callback firing
+    # into a just-mounted div races Dash's layout injection and can leave
+    # the page empty when switching back to this view.
+    return html.Div(
+        station_status.render(plc), id="live-grid-content", className="pt-2",
+    )
+
+
+@callback(
+    Output("avail-overview-content", "children"),
+    Input("avail-overview-hours", "value"),
+    State("plc-select", "value"),
+)
+def render_availability_overview_content(window_hours, plc_name):
+    plc = plc_name or ""
+    if not plc:
+        raise PreventUpdate
+    hours = int(window_hours or 24)
+    end = datetime.datetime.now(datetime.timezone.utc)
+    start = end - datetime.timedelta(hours=hours)
+    return availability_overview.render(plc, start, end)
+
+
+@callback(
+    Output("daily-digest-content", "children"),
+    Input("daily-digest-shift-hours", "value"),
+    State("plc-select", "value"),
+)
+def render_daily_digest_content(shift_hours, plc_name):
+    plc = plc_name or ""
+    if not plc:
+        raise PreventUpdate
+    shift = int(shift_hours or 8)
+    end = datetime.datetime.now(datetime.timezone.utc)
+    return daily_digest.render(plc, shift, end)
+
+
+@callback(
+    Output("mod-bottleneck-content", "children"),
+    Input("bottleneck-excluded-stations", "value"),
+    State("plc-select", "value"),
+)
+def render_mod_bottleneck_content(excluded, plc_name):
+    plc = plc_name or ""
+    if not plc:
+        raise PreventUpdate
+    return mod_bottleneck.render(plc, excluded or [])
+
+
+@callback(
+    Output("line-issues-content", "children"),
+    Input("line-issues-plc-filter", "value"),
+    Input("line-issues-excluded-stations", "value"),
+    Input("line-issues-start-dt", "value"),
+    Input("line-issues-end-dt", "value"),
+)
+def render_line_issues_content(plcs, excluded_stations, start_value, end_value):
+    try:
+        if start_value and end_value:
+            start, end = _parse_window(start_value, end_value)
+        else:
+            raise ValueError("line timeline datetime not set")
+    except Exception:
+        end = datetime.datetime.now(datetime.timezone.utc)
+        start = end - datetime.timedelta(hours=24)
+    return line_issues_timeline.render(
+        start, end, plcs or [], excluded_stations or [],
+    )
 
 
 @callback(
@@ -317,18 +386,6 @@ def update_line_issues_station_filter(selected_plcs, selected_stations):
 
 
 @callback(
-    Output("live-grid-content", "children"),
-    Input("plc-select", "value"),
-    Input("dashboard-view", "data"),
-    Input("refresh-btn", "n_clicks"),
-)
-def update_live_grid(plc_name, view, _rb):
-    if (view or "live-status") != "live-status":
-        raise PreventUpdate
-    return station_status.render(plc_name or "")
-
-
-@callback(
     Output({"type": "em-row-body", "em_id": ALL}, "children"),
     Output("live-conn-banner", "children"),
     Output("live-conn-banner", "className"),
@@ -347,7 +404,7 @@ def update_live_row_values(_li, _rb, plc_name, view, row_ids):
     plc = plc_name or ""
     now = datetime.datetime.now(datetime.timezone.utc)
     try:
-        rows = q.query_station_status(plc)
+        rows = station_status.query_station_status_cached(plc)
     except Exception:
         rows = []
 
