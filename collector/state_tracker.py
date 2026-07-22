@@ -81,6 +81,14 @@ class EMStateTracker:
         self._fault_step:      dict[int, str | None]              = {i: None  for i in seq_indices}
         self._fault_step_desc: dict[int, str | None]              = {i: None  for i in seq_indices}
         self._ext_msg:         dict[int, str | None]              = {i: None  for i in seq_indices}
+        # externalAlarm.active gate for _ext_msg (new library only).
+        # None = unknown / old library (externalFaultMessage) → trust message.
+        self._ext_msg_active:  dict[int, bool | None]             = {i: None  for i in seq_indices}
+        # Latest EM status.alarm.message (new library composes the fault text
+        # with precedence: config error > step not found > timeout > external).
+        # NOTE: the PLC does not clear this string when the fault clears, so
+        # it is only trustworthy while/just after a fault was active.
+        self._alarm_msg: str | None = None
 
         # EM-level raw signals — written on every change to em_availability_raw.
         # Initialised to None so the first OPC notification always triggers a
@@ -144,6 +152,27 @@ class EMStateTracker:
             return None
         return desc
 
+    def _effective_ext_msg(self, seq_idx: int) -> str | None:
+        """
+        External fault message for a sequence, gated by externalAlarm.active
+        where the new library exposes it.  active=None means old library
+        (externalFaultMessage, no gate) — trust the message as-is.
+        """
+        msg = self._ext_msg.get(seq_idx)
+        if not msg:
+            return None
+        if self._ext_msg_active.get(seq_idx) is False:
+            return None
+        return msg
+
+    @staticmethod
+    def _is_placeholder_reason(desc: str | None) -> bool:
+        if not desc:
+            return True
+        if "(reading conditions...)" in desc:
+            return True
+        return desc.startswith("Step ") and desc.endswith(" faulted")
+
     # ── Down-event helpers ────────────────────────────────────────────────────
 
     def _try_open_down_event(
@@ -177,7 +206,9 @@ class EMStateTracker:
                     self._down_fault_msg = existing["fault_msg"]
                     # Collector restart can adopt an open placeholder event
                     # from DB; re-run enrichment to replace placeholder text.
-                    should_enrich = self._down_reason_type in ("interlock", "step_fault")
+                    should_enrich = self._down_reason_type in (
+                        "interlock", "step_fault", "paused",
+                    )
                 else:
                     self._down_start_ts    = ts
                     self._down_reason_type = reason_type
@@ -302,26 +333,41 @@ class EMStateTracker:
 
         # Ensure placeholder text does not persist in history if async
         # enrichment could not resolve before close.
-        if self._down_reason_desc == "Manual / interlock (reading conditions...)":
-            if self._em_fault:
-                self._down_reason_desc = "EM fault active (interlock details unavailable)"
-                self._down_reason_type = "interlock"
-            else:
-                self._down_reason_desc = "Manual mode"
-                self._down_reason_type = "manual"
-            try:
-                conn = get_pool().getconn()
+        if self._is_placeholder_reason(self._down_reason_desc):
+            finalized = None
+            if self._down_reason_type == "step_fault":
+                # The EM's status.alarm.message carried this fault's composed
+                # text while it was active (the PLC never clears the string,
+                # so at close it still holds this fault's message).
+                seq = self._down_seq_idx
+                finalized = (
+                    (self._effective_ext_msg(seq) if seq is not None else None)
+                    or self._alarm_msg
+                )
+            elif self._down_reason_type == "paused":
+                finalized = "Operator pause"
+            elif self._down_reason_type in ("interlock", "manual"):
+                if self._em_fault:
+                    finalized = "EM fault active (interlock details unavailable)"
+                    self._down_reason_type = "interlock"
+                else:
+                    finalized = "Manual mode"
+                    self._down_reason_type = "manual"
+            if finalized:
+                self._down_reason_desc = finalized
                 try:
-                    q.update_down_event_reason(
-                        conn, self.em_id, start_ts,
-                        self._down_reason_desc,
-                        self._down_reason_type,
-                    )
-                    conn.commit()
-                finally:
-                    get_pool().putconn(conn)
-            except Exception:
-                log.exception("finalize_down_event_reason failed em=%d", self.em_id)
+                    conn = get_pool().getconn()
+                    try:
+                        q.update_down_event_reason(
+                            conn, self.em_id, start_ts,
+                            self._down_reason_desc,
+                            self._down_reason_type,
+                        )
+                        conn.commit()
+                    finally:
+                        get_pool().putconn(conn)
+                except Exception:
+                    log.exception("finalize_down_event_reason failed em=%d", self.em_id)
 
         # Clear in-memory state before the DB write so that any exception
         # in the write doesn't leave the tracker stuck.
@@ -376,12 +422,39 @@ class EMStateTracker:
         elif self._automatic and self._running:
             state = "productive"
         elif self._automatic and not self._running:
-            state = "standby"
+            # The PLC state machine PAUSES the sequence when the EM interlock
+            # drops while running, and the interlock alarm is NOT mapped into
+            # status.alarm — so an interlock stop looks identical to standby
+            # on the three raw signals.  Use the live interlock snapshot (and
+            # the paused bit, where the library exposes it) to attribute it.
+            if interlock_reason:
+                state = "interlock_down"
+            elif self._paused:
+                state = "paused_down"
+            else:
+                state = "standby"
         else:
             state = "manual"
 
         if state in ("productive", "standby"):
             self._try_close_down_event(ts)
+
+        elif state == "interlock_down":
+            self._try_open_down_event(
+                ts,
+                reason_type="interlock",
+                reason_desc=interlock_reason,
+            )
+
+        elif state == "paused_down":
+            # Paused in automatic with a healthy interlock — most likely an
+            # operator pause.  The interlock enrichment read double-checks:
+            # if conditions are failing it promotes the reason to interlock.
+            self._try_open_down_event(
+                ts,
+                reason_type="paused",
+                reason_desc="Paused (reading conditions...)",
+            )
 
         elif state == "manual":
             # If interlock conditions are currently failing, attribute stop
@@ -757,7 +830,7 @@ class EMStateTracker:
             # completes.  _try_open_down_event no-ops if one is already
             # open (sticky root cause).
             step    = self._step.get(seq_idx)
-            ext_msg = self._ext_msg.get(seq_idx)
+            ext_msg = self._effective_ext_msg(seq_idx)
             placeholder = ext_msg or f"Step {step or '?'} faulted"
             self._try_open_down_event(
                 ts,
@@ -767,10 +840,10 @@ class EMStateTracker:
                 step_name=step,
                 fault_msg=ext_msg,
             )
-            # If the EM-level fault edge opened a generic interlock/manual
-            # event first, promote it to step_fault now that we know the
-            # sequence context.
-            if self._down_start_ts is not None and self._down_reason_type in ("interlock", "manual"):
+            # If the EM-level fault edge opened a generic interlock/manual/
+            # paused event first, promote it to step_fault now that we know
+            # the sequence context.
+            if self._down_start_ts is not None and self._down_reason_type in ("interlock", "manual", "paused"):
                 self._down_reason_type = "step_fault"
                 self._down_reason_desc = placeholder
                 self._down_seq_idx = seq_idx
@@ -831,7 +904,7 @@ class EMStateTracker:
                             self._fault_step[seq_idx],
                             self._fault_step_desc[seq_idx],
                         ),
-                            ext_msg=self._ext_msg.get(seq_idx),
+                            ext_msg=self._effective_ext_msg(seq_idx),
                         )
                         self._fault_id[seq_idx] = fault_id
                 else:
@@ -995,9 +1068,19 @@ class EMStateTracker:
 
     def on_interlock_snapshot(self, reason: str | None, ts: datetime.datetime) -> None:
         """Track latest interlock condition health from live PLC struct data."""
+        changed = (reason != self._interlock_reason)
         self._interlock_reason = reason
         self._interlock_has_fail = bool(reason)
         self._interlock_ts = ts
+        # An interlock trip pauses the sequence WITHOUT raising the EM alarm,
+        # and the snapshot notification can arrive after the running/paused
+        # edges.  Re-evaluate so the pause gets attributed to the interlock.
+        if changed:
+            self._check_down_event(ts)
+
+    def on_alarm_msg_change(self, msg: str | None, ts: datetime.datetime) -> None:
+        """Track EM status.alarm.message (composed fault text, new library)."""
+        self._alarm_msg = msg or None
 
     def _recent_interlock_reason(self, ts: datetime.datetime) -> str | None:
         if not self._interlock_has_fail or not self._interlock_reason:
