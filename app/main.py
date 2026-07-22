@@ -494,6 +494,11 @@ def open_station_modal_from_card(n_clicks_list, plc_name):
     triggered = ctx.triggered_id
     if not (isinstance(triggered, dict) and triggered.get("type") == "station-card"):
         raise PreventUpdate
+    # Newly-mounted pattern-matching inputs fire this callback with
+    # n_clicks 0/None on every grid render — only react to a real click.
+    trig_value = ctx.triggered[0].get("value") if ctx.triggered else None
+    if not trig_value:
+        raise PreventUpdate
     station = triggered.get("index")
     if not station:
         raise PreventUpdate
