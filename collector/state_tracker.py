@@ -84,6 +84,11 @@ class EMStateTracker:
         # externalAlarm.active gate for _ext_msg (new library only).
         # None = unknown / old library (externalFaultMessage) → trust message.
         self._ext_msg_active:  dict[int, bool | None]             = {i: None  for i in seq_indices}
+        # True when _ext_msg holds a scan-accurate fault reason from UDP
+        # telemetry (alarm message + fault-scan permissive conditions).
+        # The OPC enrichment read must not overwrite it — by the time that
+        # read lands, activeStepBranch may already show post-fault state.
+        self._ext_msg_authoritative: dict[int, bool]              = {i: False for i in seq_indices}
         # Latest EM status.alarm.message (new library composes the fault text
         # with precedence: config error > step not found > timeout > external).
         # NOTE: the PLC does not clear this string when the fault clears, so

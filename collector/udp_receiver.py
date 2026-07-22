@@ -28,7 +28,7 @@ from collector.state_tracker import EMStateTracker
 log = logging.getLogger(__name__)
 
 _WIRE_VERSION = 1
-_PAYLOAD_LEN = 622
+_PAYLOAD_LEN = 824
 
 # statusBits
 _BIT_AUTOMATIC   = 0x0001
@@ -79,6 +79,9 @@ def parse_payload(data: bytes) -> dict | None:
         "step_desc": _s7_string(data, 136, 200),
         "alarm_msg": _s7_string(data, 338, 200),
         "interlock_first_fail": _s7_string(data, 540, 80),
+        # failing step-permissive conditions, latched by the FB on the very
+        # scan the step fault rose — race-free root cause
+        "fault_conditions": _s7_string(data, 622, 200),
     }
 
 
@@ -168,11 +171,21 @@ class TelemetryReceiver(DatagramProtocol):
         tracker.on_active_seq_change(active_seq, ts)
 
         if active_seq is not None and active_seq in tracker.seq_indices:
-            # The datagram's alarm message is scan-consistent with the fault
-            # bit — feed it through the ext-msg path so step-fault events and
-            # down-event reasons carry the PLC's own fault text immediately.
-            tracker._ext_msg[active_seq] = alarm_msg
+            # Scan-consistent fault reason: the PLC-composed alarm message
+            # (timeout text / external device message) plus the permissive
+            # conditions the FB latched on the fault scan.  Feed it through
+            # the ext-msg path so step-fault events and down-event reasons
+            # carry it immediately, and mark it authoritative so the slower
+            # OPC enrichment read (which sees post-fault branch state) does
+            # not overwrite it.
+            conditions = p["fault_conditions"] if alarm_active else None
+            if alarm_msg and conditions:
+                fault_reason = f"{alarm_msg} — {conditions}"
+            else:
+                fault_reason = alarm_msg or conditions
+            tracker._ext_msg[active_seq] = fault_reason
             tracker._ext_msg_active[active_seq] = alarm_active
+            tracker._ext_msg_authoritative[active_seq] = bool(fault_reason)
             tracker.on_step_desc_change(active_seq, p["step_desc"] or None, ts)
             tracker.on_step_change(active_seq, p["step"], ts)
             tracker.on_fault_change(active_seq, bool(bits & _BIT_STEP_FAULT), ts)

@@ -7,7 +7,7 @@ TITLE = EM telemetry datagram payload
 // bumping VERSION and updating the collector parser.
 //
 // All fields land on even byte offsets so the serialized layout has no
-// alignment padding surprises.  Total serialized size: 622 bytes.
+// alignment padding surprises.  Total serialized size: 824 bytes.
 //
 VERSION : 0.1
    STRUCT
@@ -27,6 +27,10 @@ VERSION : 0.1
       stepDescription : String[200];
       alarmMessage : String[200];         // status.alarm.message (PLC-composed)
       interlockFirstFail : String[80];    // first failing interlock condition
+      faultConditions : String[200];      // failing step-permissive conditions,
+                                          // latched on the SCAN the step fault
+                                          // rose ('; '-separated); '' when the
+                                          // fault is not permissive-driven
    END_STRUCT;
 
 END_TYPE

@@ -33,7 +33,7 @@ covers reliability the pragmatic way:
 
 ## Wire format
 
-One UDP datagram per event/heartbeat, 622 bytes, produced by `Serialize`
+One UDP datagram per event/heartbeat, 824 bytes, produced by `Serialize`
 of `typeEquipmentModuleTelemetry` (S7 standard/non-optimized layout,
 big-endian, strings as `[max][len][chars...]`):
 
@@ -52,6 +52,28 @@ big-endian, strings as `[max][len][chars...]`):
 | 136    | String[200] | stepDescription    |                                        |
 | 338    | String[200] | alarmMessage       | `status.alarm.message` (composed)      |
 | 540    | String[80]  | interlockFirstFail | first failing interlock condition desc |
+| 622    | String[200] | faultConditions    | failing step-permissive conditions,    |
+|        |             |                    | latched on the fault scan              |
+
+### Fault reason semantics
+
+`faultConditions` is latched by the FB **on the same scan the step fault
+rises** — every enabled branch's permissive conditions with `ok = FALSE`
+at that instant, `'; '`-joined and de-duplicated. One scan later would
+already be too late (a stop/reset overwrites `activeStepBranch`), which is
+exactly why after-the-fact OPC reads were unreliable.
+
+The collector composes the down-event / fault-event reason as:
+
+- permissive-driven fault (e.g. timeout waiting on a condition):
+  `"<alarmMessage> — <faultConditions>"` → `"Unclamp Timeout — Clamp
+  retracted not made"`
+- external device fault (no failing permissives): `alarmMessage` alone →
+  `"Robot fault: servo alarm SRVO-062"` (the external message passes
+  through `status.alarm.message` on the PLC)
+
+This telemetry-sourced reason is authoritative: the slower OPC enrichment
+read is skipped for it.
 
 `statusBits`: bit0 automatic · bit1 fault · bit2 running · bit3 paused ·
 bit4 stopped · bit5 unknown · bit6 stepFaulted · bit7 interlockOk ·

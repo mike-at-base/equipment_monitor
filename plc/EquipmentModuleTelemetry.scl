@@ -4,7 +4,7 @@ TITLE = EM telemetry publisher (UDP push to equipment-monitor collector)
 VERSION : 0.1
 //
 // Drop-in per equipment module.  Pushes one small UDP datagram
-// (typeEquipmentModuleTelemetry, 622 bytes) to the collector whenever any
+// (typeEquipmentModuleTelemetry, 824 bytes) to the collector whenever any
 // monitored EM value changes, plus a heartbeat snapshot every
 // heartbeatInterval.  Change detection runs every scan, so transitions
 // faster than the OPC UA sampling interval are never lost; an 8-deep send
@@ -46,7 +46,9 @@ VERSION : 0.1
       instRetryTimer {InstructionName := 'TON'; LibVersion := '1.0'} : TON;
       instRetryOneShot : R_TRIG;
       instHeartbeatTimer {InstructionName := 'TON'; LibVersion := '1.0'} : TON;
+      instStepFaultOneShot : R_TRIG;
       statFirstScan : Bool := TRUE;
+      statFaultConditions : String[200];
       statConnParam : TCON_IP_v4;
       statAddrParam : TADDR_Param;
       statConnPending : Bool;
@@ -58,7 +60,7 @@ VERSION : 0.1
       statQueueTail : Int;              // next read slot
       statQueueCount : Int;
       statTxPayload : "typeEquipmentModuleTelemetry";
-      statTxBuffer : Array[0..639] of Byte;
+      statTxBuffer : Array[0..839] of Byte;
       statTxLen : UDInt;
       statSendReq : Bool;
    END_VAR
@@ -66,6 +68,7 @@ VERSION : 0.1
    VAR_TEMP
       tempBits : Word;
       tempSeqIdx : Int;
+      tempStepFaulted : Bool;
       tempChanged : Bool;
       tempEnqueueEvent : Bool;
       tempEnqueueHeartbeat : Bool;
@@ -73,7 +76,9 @@ VERSION : 0.1
       tempRetVal : Int;
       tempSerRet : Int;
       tempLdt : LDT;
+      tempDesc : String;
       ii : Int;
+      jj : Int;
    END_VAR
 
 
@@ -153,9 +158,11 @@ BEGIN
 
         #tempSeqIdx := #controlInterface.status.activeSequence;
         #statSnapshot.activeSequence := #tempSeqIdx;
+        #tempStepFaulted := FALSE;
 
         IF (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER") THEN
-            IF #controlInterface.stepControl[#tempSeqIdx].faulted THEN
+            #tempStepFaulted := #controlInterface.stepControl[#tempSeqIdx].faulted;
+            IF #tempStepFaulted THEN
                 #tempBits := #tempBits OR W#16#0040;
             END_IF;
             IF #controlInterface.stepControl[#tempSeqIdx].externalAlarm.active THEN
@@ -187,6 +194,44 @@ BEGIN
         END_IF;
     END_REGION
 
+    REGION Fault Reason Capture
+        // Latch the failing step-permissive conditions on the SAME SCAN the
+        // step fault rises.  One scan later is already too late: a stop /
+        // reset transition overwrites activeStepBranch with the next step's
+        // branches, which is exactly the race that makes after-the-fact OPC
+        // reads unreliable.  For faults that are not permissive-driven
+        // (external device alarms) no condition is failing and this stays
+        // empty — the collector then uses alarmMessage as the reason.
+        #instStepFaultOneShot(CLK := #tempStepFaulted);
+        IF #instStepFaultOneShot.Q THEN
+            #statFaultConditions := '';
+            FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                    FOR #jj := 0 TO 15 DO
+                        IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
+                            #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
+                            IF LEN(#tempDesc) > 0 THEN
+                                IF LEN(#statFaultConditions) = 0 THEN
+                                    #statFaultConditions := LEFT(IN := #tempDesc, L := 200);
+                                ELSIF (FIND(IN1 := #statFaultConditions, IN2 := #tempDesc) = 0)
+                                    AND ((LEN(#statFaultConditions) + LEN(#tempDesc) + 2) <= 200)
+                                THEN
+                                    // append only new, still-fitting descriptions
+                                    #statFaultConditions := CONCAT(IN1 := #statFaultConditions,
+                                                                   IN2 := '; ',
+                                                                   IN3 := #tempDesc);
+                                END_IF;
+                            END_IF;
+                        END_IF;
+                    END_FOR;
+                END_IF;
+            END_FOR;
+        ELSIF NOT #tempStepFaulted THEN
+            #statFaultConditions := '';
+        END_IF;
+        #statSnapshot.faultConditions := #statFaultConditions;
+    END_REGION
+
     REGION Change Detection And Enqueue
         // stepActiveTime / plcTime / seq deliberately excluded — they change
         // every scan and would turn event push into continuous streaming.
@@ -196,7 +241,8 @@ BEGIN
             (#statSnapshot."step"             <> #statLastSent."step") OR
             (#statSnapshot.stepDescription    <> #statLastSent.stepDescription) OR
             (#statSnapshot.alarmMessage       <> #statLastSent.alarmMessage) OR
-            (#statSnapshot.interlockFirstFail <> #statLastSent.interlockFirstFail);
+            (#statSnapshot.interlockFirstFail <> #statLastSent.interlockFirstFail) OR
+            (#statSnapshot.faultConditions    <> #statLastSent.faultConditions);
 
         // Heartbeat: self-resetting TON emits one pulse per interval.
         #instHeartbeatTimer(IN := #enable AND NOT #instHeartbeatTimer.Q,

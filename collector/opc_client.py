@@ -778,6 +778,11 @@ class OpcClient:
         and update the open down event's reason with the failed-condition
         descriptions.  No-op if the event has already closed.
         """
+        # UDP telemetry already latched the reason on the fault scan —
+        # this read happens later and would see post-fault branch state.
+        if tracker._ext_msg_authoritative.get(seq_idx):
+            return
+
         struct = self._struct_nodes.get(tracker.em_id)
         if not struct:
             return
