@@ -1066,6 +1066,41 @@ class EMStateTracker:
         self._check_down_event(ts)
         self._check_flow_event(ts)
 
+    def on_status_snapshot(
+        self, automatic: bool, em_fault: bool, running: bool,
+        paused: bool, stopped: bool, unknown_status: bool,
+        ts: datetime.datetime,
+    ) -> None:
+        """
+        Apply all six EM-level signals atomically (UDP telemetry datagrams
+        are scan-consistent snapshots).  Unlike the per-signal OPC callbacks
+        this cannot emit transient runtime states from half-applied updates,
+        and it writes at most one availability/transition row per datagram.
+        """
+        changed_avail = (
+            automatic != self._automatic
+            or em_fault != self._em_fault
+            or running != self._running
+        )
+        changed_any = changed_avail or (
+            paused != self._paused
+            or stopped != self._stopped
+            or unknown_status != self._unknown_status
+        )
+        if not changed_any:
+            return
+        self._automatic = automatic
+        self._em_fault = em_fault
+        self._running = running
+        self._paused = paused
+        self._stopped = stopped
+        self._unknown_status = unknown_status
+        if changed_avail:
+            self._emit_availability_raw(ts)
+        self._emit_runtime_transition(ts)
+        self._check_down_event(ts)
+        self._check_flow_event(ts)
+
     def on_interlock_snapshot(self, reason: str | None, ts: datetime.datetime) -> None:
         """Track latest interlock condition health from live PLC struct data."""
         changed = (reason != self._interlock_reason)

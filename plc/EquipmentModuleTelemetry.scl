@@ -1,0 +1,266 @@
+FUNCTION_BLOCK "EquipmentModuleTelemetry"
+TITLE = EM telemetry publisher (UDP push to equipment-monitor collector)
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//
+// Drop-in per equipment module.  Pushes one small UDP datagram
+// (typeEquipmentModuleTelemetry, 622 bytes) to the collector whenever any
+// monitored EM value changes, plus a heartbeat snapshot every
+// heartbeatInterval.  Change detection runs every scan, so transitions
+// faster than the OPC UA sampling interval are never lost; an 8-deep send
+// queue absorbs changes on consecutive scans while TUSEND is busy.
+//
+// Call AFTER the EquipmentModule FB in the same OB so the snapshot sees
+// the freshest scan data.  Give every instance on a CPU a unique
+// connectionId and localPort.
+//
+   VAR_INPUT
+      enable : Bool := TRUE;
+      stationName : String[32];         // e.g. 'ST34000'
+      emLabel : String[16] := 'main';   // e.g. 'main', 'SL01_MAG01'
+      hwInterfaceId : HW_ANY;           // HW id of the PN interface (System constants)
+      connectionId : CONN_OUC;          // unique per instance on this CPU
+      localPort : UInt;                 // unique per instance on this CPU
+      remoteIp1 : USInt;                // collector host IPv4 octets
+      remoteIp2 : USInt;
+      remoteIp3 : USInt;
+      remoteIp4 : USInt;
+      remotePort : UInt := 15020;
+      heartbeatInterval : Time := T#1s;
+   END_VAR
+
+   VAR_OUTPUT
+      connected : Bool;
+      queueDrops : UDInt;               // events dropped because queue was full
+      sendErrors : UDInt;
+      lastError : Word;                 // last TCON/TUSEND STATUS on error
+   END_VAR
+
+   VAR_IN_OUT
+      controlInterface : "typeEquipmentModuleControlInterface";
+   END_VAR
+
+   VAR
+      instTCon {InstructionName := 'TCON'; LibVersion := '4.0'} : TCON;
+      instTUSend {InstructionName := 'TUSEND'; LibVersion := '4.0'} : TUSEND;
+      instRetryTimer {InstructionName := 'TON'; LibVersion := '1.0'} : TON;
+      instRetryOneShot : R_TRIG;
+      instHeartbeatTimer {InstructionName := 'TON'; LibVersion := '1.0'} : TON;
+      statFirstScan : Bool := TRUE;
+      statConnParam : TCON_IP_v4;
+      statAddrParam : TADDR_Param;
+      statConnPending : Bool;
+      statSeq : UDInt;
+      statSnapshot : "typeEquipmentModuleTelemetry";
+      statLastSent : "typeEquipmentModuleTelemetry";
+      statQueue : Array[0..7] of "typeEquipmentModuleTelemetry";
+      statQueueHead : Int;              // next write slot
+      statQueueTail : Int;              // next read slot
+      statQueueCount : Int;
+      statTxPayload : "typeEquipmentModuleTelemetry";
+      statTxBuffer : Array[0..639] of Byte;
+      statTxLen : UDInt;
+      statSendReq : Bool;
+   END_VAR
+
+   VAR_TEMP
+      tempBits : Word;
+      tempSeqIdx : Int;
+      tempChanged : Bool;
+      tempEnqueueEvent : Bool;
+      tempEnqueueHeartbeat : Bool;
+      tempPos : DInt;
+      tempRetVal : Int;
+      tempSerRet : Int;
+      tempLdt : LDT;
+      ii : Int;
+   END_VAR
+
+
+BEGIN
+    REGION Version Control
+        // EquipmentModuleTelemetry
+        // Description: Streams EM state/step/fault data to the equipment-monitor
+        //              collector over UDP, event-driven from the scan cycle, so
+        //              transitions faster than the OPC UA sampling interval are
+        //              still captured.  See equipment-monitor/plc/TELEMETRY.md
+        //              for the wire contract.
+
+        // Change Log:
+        // version      date                    author              description
+        // 0.1.0        2026-07-22              mwebb               first release
+    END_REGION
+
+    REGION Initial Scan
+        IF #statFirstScan THEN
+            // UDP "connection" = local port binding; remote is addressed per
+            // datagram via TADDR_Param on TUSEND.
+            #statConnParam.InterfaceId := #hwInterfaceId;
+            #statConnParam.ID := #connectionId;
+            #statConnParam.ConnectionType := 19;          // UDP
+            #statConnParam.ActiveEstablished := FALSE;
+            #statConnParam.RemoteAddress.ADDR[1] := 0;
+            #statConnParam.RemoteAddress.ADDR[2] := 0;
+            #statConnParam.RemoteAddress.ADDR[3] := 0;
+            #statConnParam.RemoteAddress.ADDR[4] := 0;
+            #statConnParam.RemotePort := 0;
+            #statConnParam.LocalPort := #localPort;
+
+            #statAddrParam.RemoteAddress.ADDR[1] := #remoteIp1;
+            #statAddrParam.RemoteAddress.ADDR[2] := #remoteIp2;
+            #statAddrParam.RemoteAddress.ADDR[3] := #remoteIp3;
+            #statAddrParam.RemoteAddress.ADDR[4] := #remoteIp4;
+            #statAddrParam.RemotePort := #remotePort;
+
+            #statSnapshot.version := 1;
+            #statSnapshot.stationName := #stationName;
+            #statSnapshot.emLabel := #emLabel;
+
+            #statFirstScan := FALSE;
+        END_IF;
+    END_REGION
+
+    REGION Connection Management
+        // Retry timer input drops while TCON is busy, so each failed attempt
+        // re-arms a fresh 5 s edge.
+        #instRetryTimer(IN := #enable AND NOT #connected AND NOT #statConnPending,
+                        PT := T#5s);
+        #instRetryOneShot(CLK := #instRetryTimer.Q);
+
+        #instTCon(REQ := #instRetryOneShot.Q,
+                  ID := #connectionId,
+                  CONNECT := #statConnParam);
+        #statConnPending := #instTCon.BUSY;
+        IF #instTCon.DONE THEN
+            #connected := TRUE;
+        END_IF;
+        IF #instTCon.ERROR THEN
+            #connected := FALSE;
+            #lastError := #instTCon.STATUS;
+        END_IF;
+    END_REGION
+
+    REGION Build Snapshot
+        // status bits
+        #tempBits := W#16#0000;
+        IF #controlInterface.status.mode.automatic THEN #tempBits := #tempBits OR W#16#0001; END_IF;
+        IF #controlInterface.status.alarm.fault    THEN #tempBits := #tempBits OR W#16#0002; END_IF;
+        IF #controlInterface.status.running        THEN #tempBits := #tempBits OR W#16#0004; END_IF;
+        IF #controlInterface.status.paused         THEN #tempBits := #tempBits OR W#16#0008; END_IF;
+        IF #controlInterface.status.stopped        THEN #tempBits := #tempBits OR W#16#0010; END_IF;
+        IF #controlInterface.status.unknown        THEN #tempBits := #tempBits OR W#16#0020; END_IF;
+        IF #controlInterface.interlock.status.ok   THEN #tempBits := #tempBits OR W#16#0080; END_IF;
+
+        #tempSeqIdx := #controlInterface.status.activeSequence;
+        #statSnapshot.activeSequence := #tempSeqIdx;
+
+        IF (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER") THEN
+            IF #controlInterface.stepControl[#tempSeqIdx].faulted THEN
+                #tempBits := #tempBits OR W#16#0040;
+            END_IF;
+            IF #controlInterface.stepControl[#tempSeqIdx].externalAlarm.active THEN
+                #tempBits := #tempBits OR W#16#0100;
+            END_IF;
+            #statSnapshot."step" := #controlInterface.stepControl[#tempSeqIdx]."step";
+            #statSnapshot.stepDescription :=
+                LEFT(IN := #controlInterface.stepControl[#tempSeqIdx].description, L := 200);
+            #statSnapshot.stepActiveTime := #controlInterface.stepControl[#tempSeqIdx].activeTime;
+        ELSE
+            #statSnapshot."step" := '';
+            #statSnapshot.stepDescription := '';
+            #statSnapshot.stepActiveTime := T#0ms;
+        END_IF;
+
+        #statSnapshot.statusBits := #tempBits;
+        #statSnapshot.alarmMessage := LEFT(IN := #controlInterface.status.alarm.message, L := 200);
+
+        // first failing interlock condition (root-cause capture at the source)
+        #statSnapshot.interlockFirstFail := '';
+        IF NOT #controlInterface.interlock.status.ok THEN
+            FOR #ii := 0 TO 15 DO
+                IF NOT #controlInterface.interlock.condition[#ii].ok THEN
+                    #statSnapshot.interlockFirstFail :=
+                        LEFT(IN := #controlInterface.interlock.condition[#ii].description, L := 80);
+                    EXIT;
+                END_IF;
+            END_FOR;
+        END_IF;
+    END_REGION
+
+    REGION Change Detection And Enqueue
+        // stepActiveTime / plcTime / seq deliberately excluded — they change
+        // every scan and would turn event push into continuous streaming.
+        #tempChanged :=
+            (#statSnapshot.statusBits         <> #statLastSent.statusBits) OR
+            (#statSnapshot.activeSequence     <> #statLastSent.activeSequence) OR
+            (#statSnapshot."step"             <> #statLastSent."step") OR
+            (#statSnapshot.stepDescription    <> #statLastSent.stepDescription) OR
+            (#statSnapshot.alarmMessage       <> #statLastSent.alarmMessage) OR
+            (#statSnapshot.interlockFirstFail <> #statLastSent.interlockFirstFail);
+
+        // Heartbeat: self-resetting TON emits one pulse per interval.
+        #instHeartbeatTimer(IN := #enable AND NOT #instHeartbeatTimer.Q,
+                            PT := #heartbeatInterval);
+
+        #tempEnqueueEvent := #enable AND #tempChanged;
+        #tempEnqueueHeartbeat := #enable AND #instHeartbeatTimer.Q AND NOT #tempChanged;
+
+        IF #tempEnqueueEvent OR #tempEnqueueHeartbeat THEN
+            IF #tempEnqueueEvent THEN
+                #statSnapshot.msgType := 1;
+                #statLastSent := #statSnapshot;
+            ELSE
+                #statSnapshot.msgType := 2;
+            END_IF;
+
+            #tempRetVal := RD_SYS_T(#tempLdt);
+            #statSnapshot.plcTime := #tempLdt;
+            #statSeq := #statSeq + 1;
+            #statSnapshot.seq := #statSeq;
+
+            // ring buffer: drop-oldest on overflow so the NEWEST state always
+            // gets through (stale intermediate steps are the acceptable loss)
+            IF #statQueueCount >= 8 THEN
+                #statQueueTail := (#statQueueTail + 1) MOD 8;
+                #statQueueCount := #statQueueCount - 1;
+                #queueDrops := #queueDrops + 1;
+            END_IF;
+            #statQueue[#statQueueHead] := #statSnapshot;
+            #statQueueHead := (#statQueueHead + 1) MOD 8;
+            #statQueueCount := #statQueueCount + 1;
+        END_IF;
+    END_REGION
+
+    REGION Send Queue Drain
+        IF #connected AND NOT #statSendReq AND (#statQueueCount > 0) THEN
+            #statTxPayload := #statQueue[#statQueueTail];
+            #statQueueTail := (#statQueueTail + 1) MOD 8;
+            #statQueueCount := #statQueueCount - 1;
+
+            #tempPos := 0;
+            #tempSerRet := Serialize(SRC_VARIABLE := #statTxPayload,
+                                     DEST_ARRAY => #statTxBuffer,
+                                     POS := #tempPos);
+            #statTxLen := DINT_TO_UDINT(#tempPos);
+            #statSendReq := TRUE;
+        END_IF;
+
+        #instTUSend(REQ := #statSendReq,
+                    ID := #connectionId,
+                    LEN := #statTxLen,
+                    DATA := #statTxBuffer,
+                    ADDR := #statAddrParam);
+
+        IF #instTUSend.DONE THEN
+            #statSendReq := FALSE;
+        END_IF;
+        IF #instTUSend.ERROR THEN
+            // UDP send errors are rare (no ack semantics) — drop and move on;
+            // the next heartbeat snapshot self-heals collector state.
+            #statSendReq := FALSE;
+            #sendErrors := #sendErrors + 1;
+            #lastError := #instTUSend.STATUS;
+        END_IF;
+    END_REGION
+
+END_FUNCTION_BLOCK

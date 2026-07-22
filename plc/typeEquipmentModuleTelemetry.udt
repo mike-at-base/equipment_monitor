@@ -1,0 +1,32 @@
+TYPE "typeEquipmentModuleTelemetry"
+TITLE = EM telemetry datagram payload
+//
+// Serialized with the Serialize instruction and sent as one UDP datagram.
+// Field ORDER and SIZES are the wire contract with the collector
+// (collector/udp_receiver.py) — do not reorder or resize fields without
+// bumping VERSION and updating the collector parser.
+//
+// All fields land on even byte offsets so the serialized layout has no
+// alignment padding surprises.  Total serialized size: 622 bytes.
+//
+VERSION : 0.1
+   STRUCT
+      version : USInt := 1;               // wire format version
+      msgType : USInt;                    // 1 = event, 2 = heartbeat
+      statusBits : Word;                  // bit0 automatic, bit1 fault, bit2 running,
+                                          // bit3 paused, bit4 stopped, bit5 unknown,
+                                          // bit6 stepFaulted, bit7 interlockOk,
+                                          // bit8 extAlarmActive
+      seq : UDInt;                        // per-EM datagram counter (gap detection)
+      plcTime : LDT;                      // CPU time, ns since 1970-01-01 UTC
+      activeSequence : Int;               // 0 = no sequence active
+      stepActiveTime : Time;              // time in current step (ms)
+      stationName : String[32];
+      emLabel : String[16];
+      "step" : String[60];                // active sequence's current step
+      stepDescription : String[200];
+      alarmMessage : String[200];         // status.alarm.message (PLC-composed)
+      interlockFirstFail : String[80];    // first failing interlock condition
+   END_STRUCT;
+
+END_TYPE
