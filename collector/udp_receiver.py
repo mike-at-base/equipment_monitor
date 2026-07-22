@@ -1,7 +1,7 @@
 """
 UDP telemetry receiver — counterpart to the PLC EquipmentModuleTelemetry FB.
 
-The FB pushes one 906-byte datagram (typeEquipmentModuleTelemetry, S7
+The FB pushes one 1108-byte datagram (typeEquipmentModuleTelemetry, S7
 Serialize layout, big-endian) on every EM state/step change plus a 1 s
 heartbeat snapshot.  This receiver parses each datagram and feeds the same
 EMStateTracker callbacks the OPC UA subscription handler uses — trackers
@@ -27,8 +27,8 @@ from collector.state_tracker import EMStateTracker
 
 log = logging.getLogger(__name__)
 
-_WIRE_VERSION = 2
-_PAYLOAD_LEN = 906
+_WIRE_VERSION = 3
+_PAYLOAD_LEN = 1108
 
 # statusBits
 _BIT_AUTOMATIC   = 0x0001
@@ -90,6 +90,8 @@ def parse_payload(data: bytes) -> dict | None:
         # failing step-permissive conditions, latched by the FB on the very
         # scan the step fault rose — race-free root cause
         "fault_conditions": _s7_string(data, 704, 200),
+        # failing permissives of a healthy long dwell — live flow reason
+        "waiting_on": _s7_string(data, 906, 200),
     }
 
 
@@ -217,3 +219,10 @@ class TelemetryReceiver(DatagramProtocol):
         # Reset AFTER the status snapshot so a fault + reset arriving in the
         # same datagram stamps ack_ts on the down event that snapshot opened.
         tracker.on_reset_change(bool(bits & _BIT_RESET), ts)
+
+        # Flow wait AFTER the status snapshot so the classifier sees this
+        # datagram's availability state.
+        if active_seq is not None and active_seq in tracker.seq_indices:
+            tracker.on_waiting_snapshot(
+                active_seq, p["step"], p["waiting_on"] or None, ts,
+            )

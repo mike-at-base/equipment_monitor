@@ -239,6 +239,10 @@ def init_schema():
             "ALTER TABLE em_down_event "
             "ADD COLUMN IF NOT EXISTS ack_ts TIMESTAMPTZ"
         )
+        cur.execute(
+            "ALTER TABLE config_sequence "
+            "ADD COLUMN IF NOT EXISTS cycle_complete_step TEXT"
+        )
         for table, col in HYPERTABLES:
             try:
                 cur.execute(

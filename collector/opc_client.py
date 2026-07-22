@@ -943,6 +943,7 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                     ),
                     blocked_steps=list(seq.get("blocked_steps", []) or []),
                     starved_steps=list(seq.get("starved_steps", []) or []),
+                    cycle_complete_step=seq.get("cycle_complete_step"),
                 )
 
             if not enabled:
@@ -967,6 +968,16 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                 }
                 for s in em_cfg.get("sequences", [])
             }
+            seq_cycle_start_steps = {
+                int(s["index"]): str(s.get("cycle_start_step") or "").strip()
+                for s in em_cfg.get("sequences", [])
+                if str(s.get("cycle_start_step") or "").strip()
+            }
+            seq_cycle_complete_steps = {
+                int(s["index"]): str(s.get("cycle_complete_step") or "").strip()
+                for s in em_cfg.get("sequences", [])
+                if str(s.get("cycle_complete_step") or "").strip()
+            }
             tracker = EMStateTracker(
                 em_id=em_id,
                 station=em_cfg["station"],
@@ -975,6 +986,8 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                 seq_is_production=seq_is_production,
                 seq_blocked_steps=seq_blocked_steps,
                 seq_starved_steps=seq_starved_steps,
+                seq_cycle_start_steps=seq_cycle_start_steps,
+                seq_cycle_complete_steps=seq_cycle_complete_steps,
             )
             # Attach db_path so opc_client can build node paths
             tracker.em_db_path = em_cfg["em_db_path"]

@@ -55,7 +55,8 @@ def upsert_sequence(em_id: int, seq_index: int,
                     seq_name: str, is_production: bool,
                     cycle_start_step: str = "SEQUENCE_INITIAL_STEP",
                     blocked_steps: list[str] | None = None,
-                    starved_steps: list[str] | None = None) -> None:
+                    starved_steps: list[str] | None = None,
+                    cycle_complete_step: str | None = None) -> None:
     blocked_steps = blocked_steps or []
     starved_steps = starved_steps or []
     with Conn() as conn:
@@ -64,18 +65,19 @@ def upsert_sequence(em_id: int, seq_index: int,
             """
             INSERT INTO config_sequence
               (em_id, seq_index, seq_name, is_production, cycle_start_step,
-               blocked_steps, starved_steps)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+               blocked_steps, starved_steps, cycle_complete_step)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (em_id, seq_index) DO UPDATE
               SET seq_name      = EXCLUDED.seq_name,
                   is_production = EXCLUDED.is_production,
                   cycle_start_step = EXCLUDED.cycle_start_step,
                   blocked_steps = EXCLUDED.blocked_steps,
-                  starved_steps = EXCLUDED.starved_steps
+                  starved_steps = EXCLUDED.starved_steps,
+                  cycle_complete_step = EXCLUDED.cycle_complete_step
             """,
             (
                 em_id, seq_index, seq_name, is_production, cycle_start_step,
-                blocked_steps, starved_steps,
+                blocked_steps, starved_steps, cycle_complete_step,
             ),
         )
 

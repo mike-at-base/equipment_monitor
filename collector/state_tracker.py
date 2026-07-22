@@ -46,12 +46,23 @@ _DESC_EDGE_GUARD_MS = 250
 _INTERLOCK_REASON_MAX_AGE_S = 30
 
 
+# Direction keywords for classifying a healthy dwell ("waiting on ...") as
+# starved (waiting for something to ARRIVE) vs blocked (waiting for something
+# to LEAVE) when cycle-position doesn't decide it.
+_KW_STARVED = ("present", "available", "upstream", "infeed", "supply",
+               "arrive", "loaded", "at fixture", "at nest", "starv")
+_KW_BLOCKED = ("downstream", "outfeed", "clear", "free", "empty pos",
+               "takeaway", "unload", "exit", "occupied", "full", "block")
+
+
 class EMStateTracker:
     def __init__(self, em_id: int, station: str, em_label: str,
                  seq_indices: list[int],
                  seq_is_production: dict[int, bool] | None = None,
                  seq_blocked_steps: dict[int, set[str]] | None = None,
-                 seq_starved_steps: dict[int, set[str]] | None = None) -> None:
+                 seq_starved_steps: dict[int, set[str]] | None = None,
+                 seq_cycle_start_steps: dict[int, str] | None = None,
+                 seq_cycle_complete_steps: dict[int, str] | None = None) -> None:
         self.em_id      = em_id
         self.station    = station
         self.em_label   = em_label
@@ -59,6 +70,15 @@ class EMStateTracker:
         self._seq_is_production = seq_is_production or {}
         self._seq_blocked_steps = seq_blocked_steps or {}
         self._seq_starved_steps = seq_starved_steps or {}
+        self._seq_cycle_start = seq_cycle_start_steps or {}
+        self._seq_cycle_complete = seq_cycle_complete_steps or {}
+        # cycle phase per sequence: 'work' (start..complete) or 'exchange'
+        # (complete..next start); tracked from step edges when a
+        # cycle_complete_step is configured.
+        self._seq_phase: dict[int, str] = {}
+        # Once UDP telemetry supplies waitingOn snapshots, the deduced flow
+        # path owns em_flow_event and the config-list matcher stands down.
+        self._flow_from_telemetry = False
 
         # Active sequence — informational only; step events are tagged by
         # which stepControl[N] fired, not by reading activeSequence.
@@ -531,10 +551,15 @@ class EMStateTracker:
     def _try_open_flow_event(
         self, ts: datetime.datetime, kind: str,
         seq_idx: int, step_name: str,
+        reason_desc: str | None = None,
     ) -> None:
         if self._flow_start_ts is not None:
             return
-        reason_desc = f"{kind.title()} (reading permissives...)"
+        # Telemetry supplies the reason directly (scan-fresh waitingOn text);
+        # the OPC path opens with a placeholder and enriches asynchronously.
+        have_reason = reason_desc is not None
+        if not have_reason:
+            reason_desc = f"{kind.title()} (reading permissives...)"
         should_enrich = False
         try:
             conn = get_pool().getconn()
@@ -560,7 +585,7 @@ class EMStateTracker:
                         conn, self.em_id, ts, kind, reason_desc, seq_idx, step_name,
                     )
                     conn.commit()
-                    should_enrich = True
+                    should_enrich = not have_reason
             finally:
                 get_pool().putconn(conn)
         except Exception:
@@ -625,7 +650,77 @@ class EMStateTracker:
         except Exception:
             log.exception("close_flow_event failed em=%d", self.em_id)
 
+    @staticmethod
+    def _keyword_kind(waiting_on: str) -> str | None:
+        text = waiting_on.lower()
+        starved = any(k in text for k in _KW_STARVED)
+        blocked = any(k in text for k in _KW_BLOCKED)
+        if blocked and not starved:
+            return "blocked"
+        if starved and not blocked:
+            return "starved"
+        return None
+
+    def _classify_wait(self, seq_idx: int, step_name: str,
+                       waiting_on: str) -> str:
+        """
+        Deduce the flow kind for a healthy dwell.  Precedence:
+          1. explicit config step lists (operator override, legacy)
+          2. cycle position — dwelling AT the cycle start step means waiting
+             for a part (starved); dwelling in the exchange phase (after the
+             complete step) means waiting for takeaway (blocked)
+          3. direction keywords in the failing permissive text
+          4. generic 'wait' — mid-cycle process waits charged to the station
+        """
+        step = (step_name or "").strip()
+        if step in self._seq_blocked_steps.get(seq_idx, set()):
+            return "blocked"
+        if step in self._seq_starved_steps.get(seq_idx, set()):
+            return "starved"
+
+        start_step = (self._seq_cycle_start.get(seq_idx) or "").strip()
+        if start_step and step == start_step:
+            return "starved"
+        if self._seq_cycle_complete.get(seq_idx):
+            phase = self._seq_phase.get(seq_idx)
+            if phase == "exchange":
+                return "blocked"
+            if phase == "work":
+                return self._keyword_kind(waiting_on) or "process_wait"
+        return self._keyword_kind(waiting_on) or "wait"
+
+    def on_waiting_snapshot(self, seq_idx: int, step_name: str,
+                            waiting_on: str | None,
+                            ts: datetime.datetime) -> None:
+        """
+        UDP telemetry waitingOn update for the active sequence: the failing
+        permissives of a step the machine has been healthily dwelling in.
+        Opens/updates/closes em_flow_event with the deduced kind and the
+        scan-fresh reason text.
+        """
+        self._flow_from_telemetry = True
+
+        available = bool(self._automatic) and not self._em_fault
+        is_prod = self._seq_is_production.get(seq_idx, False)
+        if not waiting_on or not available or not is_prod:
+            self._try_close_flow_event(ts)
+            return
+
+        kind = self._classify_wait(seq_idx, step_name, waiting_on)
+        if self._flow_start_ts is not None and kind != self._flow_kind:
+            self._try_close_flow_event(ts)
+        if self._flow_start_ts is None:
+            self._try_open_flow_event(ts, kind, seq_idx, step_name,
+                                      reason_desc=waiting_on)
+        elif waiting_on != self._flow_reason_desc:
+            # conditions changed while still waiting (some perms came true)
+            self.update_flow_event_reason(waiting_on)
+
     def _check_flow_event(self, ts: datetime.datetime) -> None:
+        # Telemetry-driven deduction owns flow events once active — the
+        # config-list matcher only serves OPC-only EMs.
+        if self._flow_from_telemetry:
+            return
         if self._automatic is None or self._em_fault is None:
             return
         active_seq = self._active_seq
@@ -795,6 +890,13 @@ class EMStateTracker:
             self._step_desc[seq_idx] = None
         self._step[seq_idx]       = step_name
         self._step_start[seq_idx] = ts
+
+        # cycle phase tracking (used by the flow-wait classifier)
+        if step_name:
+            if step_name == (self._seq_cycle_complete.get(seq_idx) or ""):
+                self._seq_phase[seq_idx] = "exchange"
+            elif step_name == (self._seq_cycle_start.get(seq_idx) or ""):
+                self._seq_phase[seq_idx] = "work"
 
         if seq_idx == self._active_seq:
             self._check_flow_event(ts)

@@ -33,13 +33,13 @@ covers reliability the pragmatic way:
 
 ## Wire format
 
-One UDP datagram per event/heartbeat, 906 bytes, produced by `Serialize`
+One UDP datagram per event/heartbeat, 1108 bytes, produced by `Serialize`
 of `typeEquipmentModuleTelemetry` (S7 standard/non-optimized layout,
-big-endian, strings as `[max][len][chars...]`).  Wire version: **2**.
+big-endian, strings as `[max][len][chars...]`).  Wire version: **3**.
 
 | Offset | Type        | Field           | Notes                                   |
 |-------:|-------------|-----------------|------------------------------------------|
-| 0      | USInt       | version         | 2                                        |
+| 0      | USInt       | version         | 3                                        |
 | 1      | USInt       | msgType         | 1 = event, 2 = heartbeat                 |
 | 2      | Word        | statusBits      | see bit map below                        |
 | 4      | Word        | modeBits        | see bit map below                        |
@@ -56,6 +56,8 @@ big-endian, strings as `[max][len][chars...]`).  Wire version: **2**.
 |        |             |                 | `'; '`-separated, first-out first        |
 | 704    | String[200] | faultConditions | failing step-permissive conditions,      |
 |        |             |                 | latched on the fault scan                |
+| 906    | String[200] | waitingOn       | failing permissives of a healthy dwell   |
+|        |             |                 | past dwellCaptureDelay (live flow reason)|
 
 `statusBits`: bit0 automatic · bit1 fault · bit2 running · bit3 paused ·
 bit4 stopped · bit5 unknown · bit6 stepFaulted · bit7 interlockOk ·
@@ -74,6 +76,19 @@ bit4 endOfCycle · bit5 pauseAtHome · bit6 requestEntry.
   response time (down → ack) and repair time (ack → recovered).
 - **interlockFails** → down-event reasons carry every failing condition,
   not just the first-out.
+- **waitingOn** → deduced flow states.  No blocked/starved bits exist in
+  the PLC (they would never be maintained); instead, a healthy dwell past
+  `dwellCaptureDelay` (FB input, default 10 s) streams the active step's
+  failing permissives, and the collector classifies the wait:
+    1. explicit config step lists (override, legacy)
+    2. cycle position — dwelling AT `cycle_start_step` = **starved**;
+       dwelling in the exchange phase after `cycle_complete_step` =
+       **blocked**; mid-cycle = **process_wait** (charged to the station)
+    3. direction keywords in the permissive text ("part present",
+       "infeed" → starved; "downstream", "clear", "occupied" → blocked)
+  The permissive descriptions are the reason text — self-maintaining,
+  because operators see them on the HMI.  `cycle_complete_step` is an
+  optional per-sequence key in config.yaml next to `cycle_start_step`.
 
 ### Fault reason semantics
 

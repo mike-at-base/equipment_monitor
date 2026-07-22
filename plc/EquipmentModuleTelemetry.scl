@@ -4,7 +4,7 @@ TITLE = EM telemetry publisher (UDP push to equipment-monitor collector)
 VERSION : 0.1
 //
 // Drop-in per equipment module.  Pushes one small UDP datagram
-// (typeEquipmentModuleTelemetry, 906 bytes) to the collector whenever any
+// (typeEquipmentModuleTelemetry, 1108 bytes) to the collector whenever any
 // monitored EM value changes, plus a heartbeat snapshot every
 // heartbeatInterval.  Change detection runs every scan, so transitions
 // faster than the OPC UA sampling interval are never lost; an 8-deep send
@@ -27,6 +27,8 @@ VERSION : 0.1
       remoteIp4 : USInt;
       remotePort : UInt := 15020;
       heartbeatInterval : Time := T#1s;
+      dwellCaptureDelay : Time := T#10s; // healthy dwell in one step before
+                                         // waitingOn (flow reason) is captured
    END_VAR
 
    VAR_OUTPUT
@@ -60,7 +62,7 @@ VERSION : 0.1
       statQueueTail : Int;              // next read slot
       statQueueCount : Int;
       statTxPayload : "typeEquipmentModuleTelemetry";
-      statTxBuffer : Array[0..959] of Byte;
+      statTxBuffer : Array[0..1179] of Byte;
       statTxLen : UDInt;
       statSendReq : Bool;
    END_VAR
@@ -118,7 +120,7 @@ BEGIN
             #statAddrParam.RemoteAddress.ADDR[4] := #remoteIp4;
             #statAddrParam.RemotePort := #remotePort;
 
-            #statSnapshot.version := 2;
+            #statSnapshot.version := 3;
             #statSnapshot.stationName := #stationName;
             #statSnapshot.emLabel := #emLabel;
 
@@ -255,6 +257,43 @@ BEGIN
         #statSnapshot.faultConditions := #statFaultConditions;
     END_REGION
 
+    REGION Waiting-On Capture
+        // What is the active step waiting on?  When the machine is available
+        // and running but parked in the same step past dwellCaptureDelay, the
+        // failing branch permissives ARE the flow reason.  No blocked/starved
+        // semantics here — the collector deduces those from cycle position
+        // and this text, so nothing in the PLC needs maintaining beyond the
+        // permissive descriptions the HMI already shows.
+        #statSnapshot.waitingOn := '';
+        IF #controlInterface.status.mode.automatic
+            AND #controlInterface.status.running
+            AND NOT #tempStepFaulted
+            AND (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER")
+            AND (#controlInterface.stepControl[#tempSeqIdx].activeTime > #dwellCaptureDelay)
+        THEN
+            FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                    FOR #jj := 0 TO 15 DO
+                        IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
+                            #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
+                            IF LEN(#tempDesc) > 0 THEN
+                                IF LEN(#statSnapshot.waitingOn) = 0 THEN
+                                    #statSnapshot.waitingOn := LEFT(IN := #tempDesc, L := 200);
+                                ELSIF (FIND(IN1 := #statSnapshot.waitingOn, IN2 := #tempDesc) = 0)
+                                    AND ((LEN(#statSnapshot.waitingOn) + LEN(#tempDesc) + 2) <= 200)
+                                THEN
+                                    #statSnapshot.waitingOn := CONCAT(IN1 := #statSnapshot.waitingOn,
+                                                                      IN2 := '; ',
+                                                                      IN3 := #tempDesc);
+                                END_IF;
+                            END_IF;
+                        END_IF;
+                    END_FOR;
+                END_IF;
+            END_FOR;
+        END_IF;
+    END_REGION
+
     REGION Change Detection And Enqueue
         // stepActiveTime / plcTime / seq deliberately excluded — they change
         // every scan and would turn event push into continuous streaming.
@@ -266,7 +305,8 @@ BEGIN
             (#statSnapshot.stepDescription <> #statLastSent.stepDescription) OR
             (#statSnapshot.alarmMessage    <> #statLastSent.alarmMessage) OR
             (#statSnapshot.interlockFails  <> #statLastSent.interlockFails) OR
-            (#statSnapshot.faultConditions <> #statLastSent.faultConditions);
+            (#statSnapshot.faultConditions <> #statLastSent.faultConditions) OR
+            (#statSnapshot.waitingOn       <> #statLastSent.waitingOn);
 
         // Heartbeat: self-resetting TON emits one pulse per interval.
         #instHeartbeatTimer(IN := #enable AND NOT #instHeartbeatTimer.Q,
