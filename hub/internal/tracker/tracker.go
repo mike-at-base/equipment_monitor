@@ -277,8 +277,6 @@ func (t *EM) classify(d *wire.Datagram, alarmActive bool) (state, rtype, reason 
 	}
 
 	switch {
-	case !auto:
-		return model.StateManual, "", "Manual mode"
 	case fault:
 		if d.Bit(wire.BitStepFault) {
 			return model.StateDown, model.ReasonStepFault,
@@ -291,17 +289,23 @@ func (t *EM) classify(d *wire.Datagram, alarmActive bool) (state, rtype, reason 
 			return model.StateDown, model.ReasonFault, alarmMsg
 		}
 		return model.StateDown, model.ReasonFault, "EM fault"
-	case running && d.WaitingOn != "":
-		kind := t.classifyWait(d.ActiveSequence, d.Step, d.WaitingOn)
-		return kind, model.ReasonFlow, d.WaitingOn
-	case running:
-		return model.StateProductive, "", ""
 	case !ilkOk:
+		// A failing interlock is UNAVAILABLE with the failing conditions as
+		// the reason, regardless of the mode the machine landed in — an
+		// interlock trip often drops the EM out of automatic, and that must
+		// not be recorded as reasonless "manual" time.
 		reason := d.InterlockFails
 		if reason == "" {
 			reason = "Interlock not OK"
 		}
 		return model.StateDown, model.ReasonInterlock, reason
+	case !auto:
+		return model.StateManual, "", "Manual mode"
+	case running && d.WaitingOn != "":
+		kind := t.classifyWait(d.ActiveSequence, d.Step, d.WaitingOn)
+		return kind, model.ReasonFlow, d.WaitingOn
+	case running:
+		return model.StateProductive, "", ""
 	case paused:
 		return model.StatePaused, model.ReasonPause, "Operator pause"
 	default:

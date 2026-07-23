@@ -293,3 +293,35 @@ func TestOfflineInterval(t *testing.T) {
 		t.Fatalf("expected offline close, got %q", off.State)
 	}
 }
+
+func TestInterlockBeatsManual(t *testing.T) {
+	s := newSim()
+	s.send(AUTO|RUN|ILKOK, 0, "30", "Advance press", "", "", "", "")
+	s.advance(time.Second)
+	// interlock trip that ALSO drops the EM out of automatic — must be
+	// down/interlock with the failing conditions, never reasonless manual
+	s.send(0, 0, "30", "Advance press", "", "Air pressure OK", "", "")
+	s.advance(30 * time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "30", "Advance press", "", "", "", "")
+	last := s.cap.intervals[len(s.cap.intervals)-1]
+	if last.State != model.StateDown || last.ReasonType != model.ReasonInterlock {
+		t.Fatalf("state %q rtype %q", last.State, last.ReasonType)
+	}
+	if last.Reason != "Air pressure OK" {
+		t.Fatalf("reason %q", last.Reason)
+	}
+}
+
+func TestTrueManualStaysManual(t *testing.T) {
+	s := newSim()
+	s.send(AUTO|RUN|ILKOK, 0, "30", "Advance press", "", "", "", "")
+	s.advance(time.Second)
+	// out of automatic with a HEALTHY interlock = genuine manual mode
+	s.send(ILKOK, 0, "30", "Advance press", "", "", "", "")
+	s.advance(10 * time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "30", "Advance press", "", "", "", "")
+	last := s.cap.intervals[len(s.cap.intervals)-1]
+	if last.State != model.StateManual {
+		t.Fatalf("state %q", last.State)
+	}
+}
