@@ -73,6 +73,7 @@ VERSION : 0.1
       tempBits : Word;
       tempModeBits : Word;
       tempSeqIdx : Int;
+      tempSeqValid : Bool;
       tempStepFaulted : Bool;
       tempChanged : Bool;
       tempEnqueueEvent : Bool;
@@ -106,6 +107,7 @@ BEGIN
     // 0.1.4        2026-07-23              mwebb               fix heartbeat: IN := NOT Q self-reset consumed its own pulse (reading IEC timer Q updates state); capture Q as call output with explicit one-scan reset
     // 0.1.5        2026-07-23              mwebb               deepen send ring buffer 8 -> 16 to absorb longer bursts of same-scan changes
     // 0.1.6        2026-07-23              mwebb               fix CPU STOP: waiting-on IF combined bounds check + stepControl[] access in one AND (SCL has no short-circuit); with activeSequence=0 it read stepControl[0] -> area-length error. Split into nested IFs.
+    // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
     END_REGION
 
     REGION Initial Scan
@@ -192,7 +194,15 @@ BEGIN
         #statSnapshot.activeSequence := #tempSeqIdx;
         #tempStepFaulted := FALSE;
 
-        IF (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER") THEN
+        // Single source of truth for "is there a valid active sequence to index
+        // stepControl[] with?".  activeSequence = 0 (no sequence active) is a
+        // normal idle state.  Every stepControl[#tempSeqIdx] access in this FB
+        // is gated on #tempSeqValid via a nested IF — never as a term in the
+        // same AND as the access, because SCL does not short-circuit and would
+        // evaluate stepControl[0] anyway (area-length error -> CPU STOP).
+        #tempSeqValid := (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER");
+
+        IF #tempSeqValid THEN
             #tempStepFaulted := #controlInterface.stepControl[#tempSeqIdx].faulted;
             IF #tempStepFaulted THEN
                 #tempBits := #tempBits OR W#16#0040;
@@ -244,7 +254,7 @@ BEGIN
         // (external device alarms) no condition is failing and this stays
         // empty — the collector then uses alarmMessage as the reason.
         #instStepFaultOneShot(CLK := #tempStepFaulted);
-        IF #instStepFaultOneShot.Q THEN
+        IF #tempSeqValid AND #instStepFaultOneShot.Q THEN
             #statFaultConditions := '';
             FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
                 IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
@@ -289,7 +299,7 @@ BEGIN
         IF #controlInterface.status.mode.automatic
             AND #controlInterface.status.running
             AND NOT #tempStepFaulted
-            AND (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER")
+            AND #tempSeqValid
         THEN
             IF #controlInterface.stepControl[#tempSeqIdx].activeTime > #dwellCaptureDelay THEN
                 FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
