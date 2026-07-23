@@ -79,6 +79,17 @@ var ddl = []string{
 	    em_id INT NOT NULL,
 	    end_ts TIMESTAMPTZ NOT NULL,
 	    flag TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS down_episode (
+	    start_ts TIMESTAMPTZ NOT NULL,
+	    em_id INT NOT NULL,
+	    end_ts TIMESTAMPTZ NOT NULL,
+	    reason_type TEXT NOT NULL DEFAULT '',
+	    reason TEXT NOT NULL DEFAULT '',
+	    seq_index SMALLINT,
+	    step_name TEXT,
+	    ack_ts TIMESTAMPTZ,
+	    retries INT NOT NULL DEFAULT 0,
+	    down_ms BIGINT NOT NULL DEFAULT 0)`,
 	`CREATE TABLE IF NOT EXISTS operator_event (
 	    ts TIMESTAMPTZ NOT NULL,
 	    em_id INT NOT NULL,
@@ -90,6 +101,7 @@ var hypertables = [][2]string{
 	{"step_event", "start_ts"},
 	{"cycle", "start_ts"},
 	{"mode_interval", "start_ts"},
+	{"down_episode", "start_ts"},
 	{"operator_event", "ts"},
 }
 
@@ -99,15 +111,17 @@ var indexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_cycle_em ON cycle (em_id, start_ts DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_mode_em ON mode_interval (em_id, start_ts DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_oper_em ON operator_event (em_id, ts DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_episode_em ON down_episode (em_id, start_ts DESC)`,
 }
 
 type row struct {
-	kind byte // s=state e=step c=cycle m=mode o=operator
+	kind byte // s=state e=step c=cycle m=mode o=operator d=episode
 	si   model.StateInterval
 	se   model.StepEvent
 	cy   model.Cycle
 	mi   model.ModeInterval
 	oe   model.OperatorEvent
+	de   model.DownEpisode
 }
 
 type PG struct {
@@ -240,6 +254,7 @@ func (p *PG) AddStepEvent(v model.StepEvent)         { p.enqueue(row{kind: 'e', 
 func (p *PG) AddCycle(v model.Cycle)                 { p.enqueue(row{kind: 'c', cy: v}) }
 func (p *PG) AddModeInterval(v model.ModeInterval)   { p.enqueue(row{kind: 'm', mi: v}) }
 func (p *PG) AddOperatorEvent(v model.OperatorEvent) { p.enqueue(row{kind: 'o', oe: v}) }
+func (p *PG) AddDownEpisode(v model.DownEpisode)     { p.enqueue(row{kind: 'd', de: v}) }
 
 // Run is the writer loop; call in its own goroutine. Close ctx to flush
 // and stop.
@@ -315,6 +330,14 @@ func (p *PG) flush(rows []row) error {
 		case 'o':
 			batch.Queue(`INSERT INTO operator_event (ts, em_id, event)
 			    VALUES ($1,$2,$3)`, r.oe.Ts, r.oe.EMID, r.oe.Event)
+		case 'd':
+			batch.Queue(`INSERT INTO down_episode
+			    (start_ts, em_id, end_ts, reason_type, reason, seq_index,
+			     step_name, ack_ts, retries, down_ms)
+			    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+				r.de.StartTs, r.de.EMID, r.de.EndTs, r.de.ReasonType,
+				r.de.Reason, r.de.SeqIndex, r.de.StepName, r.de.AckTs,
+				r.de.Retries, r.de.DownMs)
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

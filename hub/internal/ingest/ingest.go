@@ -44,6 +44,13 @@ type LiveEM struct {
 	Step       string    `json:"step,omitempty"`
 	Since      time.Time `json:"since"`
 	LastSeen   time.Time `json:"last_seen"`
+	// open down episode (sticky root cause), if any
+	EpisodeOpen    bool      `json:"episode_open,omitempty"`
+	EpisodeStart   time.Time `json:"episode_start,omitzero"`
+	EpisodeRType   string    `json:"episode_reason_type,omitempty"`
+	EpisodeReason  string    `json:"episode_reason,omitempty"`
+	EpisodeStep    string    `json:"episode_step,omitempty"`
+	EpisodeRetries int       `json:"episode_retries,omitempty"`
 }
 
 func New(port int, trackers map[Key]*tracker.EM, log *slog.Logger) *Service {
@@ -56,13 +63,16 @@ func (s *Service) Snapshot(lineByHost map[string]string) []LiveEM {
 	defer s.mu.Unlock()
 	out := make([]LiveEM, 0, len(s.trackers))
 	for k, t := range s.trackers {
-		out = append(out, LiveEM{
+		le := LiveEM{
 			EMID: t.EMID(), Line: lineByHost[k.Host],
 			Station: t.Station(), EMLabel: t.EMLabel(),
 			State: t.State(), ReasonType: t.StateReasonType(),
 			Reason: t.StateReason(), Step: t.Step(),
 			Since: t.StateSince(), LastSeen: t.LastSeen(),
-		})
+		}
+		le.EpisodeOpen, le.EpisodeStart, le.EpisodeRType,
+			le.EpisodeReason, le.EpisodeStep, le.EpisodeRetries = t.Episode()
+		out = append(out, le)
 	}
 	return out
 }

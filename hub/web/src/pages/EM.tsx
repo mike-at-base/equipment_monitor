@@ -151,19 +151,20 @@ function Availability({ l, s, e }: P) {
     from = Math.min(from, st);
     spanMs[i.state] = (spanMs[i.state] ?? 0) + (en - st);
   }
-  const avail = STATE_ORDER.filter((st) => !["down", "manual", "offline", "no_data"].includes(st))
-    .reduce((a, st) => a + (spanMs[st] ?? 0), 0);
-  const down = spanMs["down"] ?? 0;
-  const pct = avail + down > 0 ? (100 * avail) / (avail + down) : null;
-  const mttr = downs.data.downs;
-  const acked = mttr.filter((d) => d.response_min != null);
+  // availability + MTTR come from the API (episode-based: retry blips and
+  // gate inter-states inside a downtime episode are NOT uptime)
+  const eps = downs.data.episodes;
+  const epMin = eps.reduce((a, e) => a + e.minutes, 0);
+  const acked = eps.filter((e) => e.response_min != null);
 
   return (
     <>
       <div className="tiles" style={{ marginTop: 16 }}>
-        <T label={`Availability (${win})`} v={pct != null ? `${pct.toFixed(1)}%` : "–"} />
-        <T label="Down events" v={`${mttr.length}`} />
-        <T label="Down minutes" v={(down / 60000).toFixed(1)} />
+        <T label={`Availability (${win})`}
+           v={downs.data.availability_pct != null ? `${downs.data.availability_pct.toFixed(1)}%` : "–"} />
+        <T label="Down episodes" v={`${eps.length}`} />
+        <T label="Down minutes" v={epMin.toFixed(1)} />
+        <T label="Retries" v={`${eps.reduce((a, e) => a + e.retries, 0)}`} />
         <T label="Avg response" v={acked.length ? `${(acked.reduce((a, d) => a + d.response_min!, 0) / acked.length).toFixed(1)} min` : "–"} />
         <T label="Avg repair" v={acked.length ? `${(acked.reduce((a, d) => a + d.repair_min!, 0) / acked.length).toFixed(1)} min` : "–"} />
       </div>
@@ -193,29 +194,38 @@ function Alarms({ l, s, e }: P) {
   const q = useAsync(() => api.downs(l, s, e, win), [l, s, e, win]);
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
-  const { downs } = q.data;
-  if (!downs.length) return <div className="empty">No down events in this window. 🎉</div>;
+  const { episodes } = q.data;
+  if (!episodes.length) return <div className="empty">No downtime episodes in this window. 🎉</div>;
   return (
     <div className="card">
-      <h2>Down / alarm history · {downs.length} events</h2>
+      <h2>Downtime episodes · {episodes.length}</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Root cause is latched at the first fault; gate openings, resets, and
+        retry attempts inside an episode are absorbed (see the Availability
+        timeline for every raw state).
+      </p>
       <div className="tablewrap">
         <table className="data">
           <thead><tr>
-            <th>Start</th><th>Type</th><th>Reason</th><th>Step</th>
+            <th>Start</th><th>Type</th><th>Root cause</th><th>Step</th>
             <th style={{ textAlign: "right" }}>Duration</th>
+            <th style={{ textAlign: "right" }}>Retries</th>
             <th style={{ textAlign: "right" }}>Response</th>
             <th style={{ textAlign: "right" }}>Repair</th>
+            <th></th>
           </tr></thead>
           <tbody>
-            {downs.map((d, i) => (
+            {episodes.map((d, i) => (
               <tr key={i}>
                 <td className="num">{fmtClock(d.start_ts)}</td>
                 <td>{d.reason_type}</td>
                 <td>{d.reason}</td>
                 <td className="num">{d.step_name}</td>
                 <td className="num">{d.minutes.toFixed(1)} min</td>
+                <td className="num">{d.retries || ""}</td>
                 <td className="num">{d.response_min != null ? `${d.response_min.toFixed(1)} min` : "–"}</td>
                 <td className="num">{d.repair_min != null ? `${d.repair_min.toFixed(1)} min` : "–"}</td>
+                <td>{d.ongoing ? <span className="chip" style={{ background: "var(--st-down)" }}>ongoing</span> : ""}</td>
               </tr>
             ))}
           </tbody>

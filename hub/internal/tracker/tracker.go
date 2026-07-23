@@ -74,6 +74,19 @@ type EM struct {
 
 	// mode windows
 	modeStart map[string]time.Time
+
+	// down episode (sticky root cause; see model.DownEpisode)
+	epOpen         bool
+	epStart        time.Time
+	epRType        string
+	epReason       string
+	epSeq          int16
+	epStep         string
+	epAck          *time.Time
+	epRetries      int
+	epDownMs       int64
+	epStandbySince time.Time
+	prevApplied    string
 }
 
 func New(cfg Config, store model.Store) *EM {
@@ -98,6 +111,10 @@ func (t *EM) StateReason() string { return t.curReason }
 func (t *EM) Step() string        { return t.stepName }
 func (t *EM) Station() string     { return t.cfg.Station }
 func (t *EM) EMLabel() string     { return t.cfg.EMLabel }
+
+func (t *EM) Episode() (open bool, start time.Time, rtype, reason, step string, retries int) {
+	return t.epOpen, t.epStart, t.epRType, t.epReason, t.epStep, t.epRetries
+}
 
 // SeqGap reports datagrams missed since the last one (0 when none/unknown).
 func (t *EM) SeqGap(seq uint32) int {
@@ -139,6 +156,9 @@ func (t *EM) Ingest(d *wire.Datagram, recvTime time.Time) {
 // tracking from the next datagram).
 func (t *EM) FlushOpen(ts time.Time) {
 	t.closeInterval(ts)
+	if t.epOpen {
+		t.closeEpisode(ts)
+	}
 	for flag, start := range t.modeStart {
 		t.store.AddModeInterval(model.ModeInterval{
 			EMID: t.cfg.EMID, Flag: flag, StartTs: start, EndTs: ts,
@@ -255,6 +275,10 @@ func (t *EM) trackReset(d *wire.Datagram, ts time.Time) {
 		if t.curState == model.StateDown && t.curAck == nil {
 			ack := ts
 			t.curAck = &ack
+		}
+		if t.epOpen && t.epAck == nil {
+			ack := ts
+			t.epAck = &ack
 		}
 	}
 	t.resetPrev = reset
@@ -396,19 +420,84 @@ func (t *EM) applyState(state, rtype, reason string, d *wire.Datagram, ts time.T
 	if t.curState == "" {
 		t.openInterval(state, rtype, reason, ts)
 		t.curSeqIdx, t.curStep = d.ActiveSequence, d.Step
-		return
-	}
-	if state == t.curState {
+	} else if state == t.curState && rtype == t.curRType {
 		// richer reason arriving while open (e.g. fault text on the next
 		// datagram, or the waiting-on set changing mid-wait)
 		if reason != "" && reason != t.curReason {
-			t.curReason, t.curRType = reason, rtype
+			t.curReason = reason
+		}
+	} else {
+		// state OR reason-type changed: close and reopen so the raw
+		// timeline shows every phase (fault, gate interlock, retry, ...)
+		t.closeInterval(ts)
+		t.openInterval(state, rtype, reason, ts)
+		t.curSeqIdx, t.curStep = d.ActiveSequence, d.Step
+	}
+	t.trackEpisode(state, rtype, reason, d, ts)
+}
+
+// trackEpisode maintains the sticky-root-cause downtime episode across
+// inter-states (gate interlocks, manual, retry-productive blips).
+func (t *EM) trackEpisode(state, rtype, reason string, d *wire.Datagram, ts time.Time) {
+	prev := t.prevApplied
+	t.prevApplied = state
+
+	if state == model.StateDown {
+		t.epStandbySince = time.Time{}
+		if !t.epOpen {
+			t.epOpen, t.epStart = true, ts
+			t.epRType, t.epReason = rtype, reason
+			t.epSeq, t.epStep = d.ActiveSequence, ""
+			if rtype == model.ReasonStepFault {
+				t.epStep = d.Step
+			}
+			t.epAck, t.epRetries, t.epDownMs = nil, 0, 0
+			return
+		}
+		if prev != model.StateDown {
+			// re-entered down after a recovery attempt: retry is not uptime
+			t.epRetries++
+		}
+		if t.epRType != model.ReasonStepFault && rtype == model.ReasonStepFault {
+			// promote: the sequence fault is the real root cause
+			t.epRType, t.epReason = rtype, reason
+			t.epSeq, t.epStep = d.ActiveSequence, d.Step
 		}
 		return
 	}
-	t.closeInterval(ts)
-	t.openInterval(state, rtype, reason, ts)
-	t.curSeqIdx, t.curStep = d.ActiveSequence, d.Step
+	if !t.epOpen {
+		return
+	}
+	switch state {
+	case model.StateProductive:
+		t.epStandbySince = time.Time{}
+		// recovered only when producing on a DIFFERENT step than the one
+		// that faulted; running the faulted step again is a retry
+		if t.epStep == "" || d.ActiveSequence != t.epSeq || d.Step != t.epStep {
+			t.closeEpisode(ts)
+		}
+	case model.StateStandby:
+		// sustained healthy standby (abandoned job) ends the episode at
+		// the point standby began
+		if t.epStandbySince.IsZero() {
+			t.epStandbySince = ts
+		} else if ts.Sub(t.epStandbySince) >= 60*time.Second {
+			t.closeEpisode(t.epStandbySince)
+		}
+	default:
+		t.epStandbySince = time.Time{}
+	}
+}
+
+func (t *EM) closeEpisode(ts time.Time) {
+	t.store.AddDownEpisode(model.DownEpisode{
+		EMID: t.cfg.EMID, StartTs: t.epStart, EndTs: ts,
+		ReasonType: t.epRType, Reason: t.epReason,
+		SeqIndex: t.epSeq, StepName: t.epStep,
+		AckTs: t.epAck, Retries: t.epRetries, DownMs: t.epDownMs,
+	})
+	t.epOpen = false
+	t.epStandbySince = time.Time{}
 }
 
 func (t *EM) openInterval(state, rtype, reason string, ts time.Time) {
@@ -419,6 +508,9 @@ func (t *EM) openInterval(state, rtype, reason string, ts time.Time) {
 func (t *EM) closeInterval(ts time.Time) {
 	if t.curState == "" {
 		return
+	}
+	if t.curState == model.StateDown && t.epOpen {
+		t.epDownMs += ts.Sub(t.curStart).Milliseconds()
 	}
 	t.store.AddStateInterval(model.StateInterval{
 		EMID: t.cfg.EMID, State: t.curState,

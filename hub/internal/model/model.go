@@ -71,6 +71,24 @@ type ModeInterval struct {
 	EndTs   time.Time
 }
 
+// DownEpisode is the sticky-root-cause downtime record: opens at the
+// first down interval, absorbs inter-states (gate interlocks, manual,
+// retry-productive blips on the faulted step), and closes only when the
+// machine is genuinely producing again. Reporting (availability, MTTR,
+// alarm pareto) reads episodes; timelines read raw state intervals.
+type DownEpisode struct {
+	EMID       int
+	StartTs    time.Time
+	EndTs      time.Time
+	ReasonType string // root cause
+	Reason     string
+	SeqIndex   int16
+	StepName   string // faulted step ("" for non-sequence episodes)
+	AckTs      *time.Time
+	Retries    int   // down re-entries after recovery attempts
+	DownMs     int64 // raw down time within the episode
+}
+
 type OperatorEvent struct {
 	EMID  int
 	Ts    time.Time
@@ -85,4 +103,5 @@ type Store interface {
 	AddCycle(Cycle)
 	AddModeInterval(ModeInterval)
 	AddOperatorEvent(OperatorEvent)
+	AddDownEpisode(DownEpisode)
 }

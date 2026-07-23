@@ -4,7 +4,10 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/mike-at-base/equipment_monitor/hub/internal/model"
 )
 
 // ── line summary (shared by /summary and /compare) ───────────────────────
@@ -25,12 +28,20 @@ type MTTR struct {
 	RepairAvgMin  *float64 `json:"repair_avg_min,omitempty"`
 }
 
+type EpisodeStats struct {
+	Count   int     `json:"count"`
+	Minutes float64 `json:"minutes"`
+	Retries int     `json:"retries"`
+	Ongoing int     `json:"ongoing"`
+}
+
 type LineSummary struct {
 	Line            string             `json:"line"`
 	From            time.Time          `json:"from"`
 	To              time.Time          `json:"to"`
 	AvailabilityPct *float64           `json:"availability_pct,omitempty"`
 	StateMin        map[string]float64 `json:"state_min"`
+	Episodes        EpisodeStats       `json:"episodes"`
 	Cycles          CycleStats         `json:"cycles"`
 	TopDownReasons  []ReasonAgg        `json:"top_down_reasons"`
 	FlowLosses      []FlowAgg          `json:"flow_losses"`
@@ -55,7 +66,7 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 	}
 	s.openContribution(idSet, from, to, stateMs)
 
-	downs, err := s.downRows(ctx, ids, byID, from, to, 5000)
+	episodes, err := s.episodeRows(ctx, ids, byID, from, to, 5000)
 	if err != nil {
 		return nil, err
 	}
@@ -77,21 +88,50 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 		EMs:            []EMSummary{},
 		StateMin:       map[string]float64{},
 		Cycles:         cycles,
-		TopDownReasons: topReasons(downs, 5),
+		TopDownReasons: topEpisodeReasons(episodes, 5),
 		FlowLosses:     flow,
 		ModeMin:        modes,
 	}
 
+	// per-EM episode minutes for episode-based availability
+	epMsByEM := map[int]int64{}
+	for _, e := range episodes {
+		for id, info := range byID {
+			if info.Station == e.Station && info.Label == e.EMLabel {
+				epMsByEM[id] += int64(e.Minutes * 60000)
+			}
+		}
+		sum.Episodes.Count++
+		sum.Episodes.Minutes = round1(sum.Episodes.Minutes + e.Minutes)
+		sum.Episodes.Retries += e.Retries
+		if e.Ongoing {
+			sum.Episodes.Ongoing++
+		}
+	}
+
 	lineMs := map[string]int64{}
+	var lineAvailRaw, lineDown, lineEp int64
 	for _, e := range l.EMs {
 		ms := stateMs[e.ID]
 		em := EMSummary{Station: e.Station, EMLabel: e.Label, Display: e.Display,
 			StateMin: map[string]float64{}}
+		var availRaw int64
 		for st, v := range ms {
 			em.StateMin[st] = round1(float64(v) / 60000.0)
 			lineMs[st] += v
+			if strings.Contains(availStates, st) {
+				availRaw += v
+			}
 		}
-		if pct, ok := availability(ms); ok {
+		down := ms[model.StateDown]
+		ep := epMsByEM[e.ID]
+		if ep < down {
+			ep = down // every raw down second belongs to some episode
+		}
+		lineAvailRaw += availRaw
+		lineDown += down
+		lineEp += ep
+		if pct, ok := episodeAvailability(availRaw, down, ep); ok {
 			p := round1(pct)
 			em.AvailabilityPct = &p
 		}
@@ -100,15 +140,15 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 	for st, v := range lineMs {
 		sum.StateMin[st] = round1(float64(v) / 60000.0)
 	}
-	if pct, ok := availability(lineMs); ok {
+	if pct, ok := episodeAvailability(lineAvailRaw, lineDown, lineEp); ok {
 		p := round1(pct)
 		sum.AvailabilityPct = &p
 	}
 
-	// MTTR decomposition
-	sum.MTTR.Downs = len(downs)
+	// MTTR decomposition — per EPISODE (sticky root cause), not raw interval
+	sum.MTTR.Downs = len(episodes)
 	var tot, resp, rep float64
-	for _, d := range downs {
+	for _, d := range episodes {
 		tot += d.Minutes
 		if d.RespMin != nil {
 			sum.MTTR.Acked++
@@ -116,8 +156,8 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 			rep += *d.RepairMin
 		}
 	}
-	if len(downs) > 0 {
-		a := round1(tot / float64(len(downs)))
+	if len(episodes) > 0 {
+		a := round1(tot / float64(len(episodes)))
 		sum.MTTR.AvgMin = &a
 	}
 	if sum.MTTR.Acked > 0 {
@@ -377,14 +417,44 @@ func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err)
 		return
 	}
-	downs, err := s.downRows(r.Context(), []int{em.ID},
-		map[int]EMInfo{em.ID: *em}, from, to, 2000)
+	byID := map[int]EMInfo{em.ID: *em}
+	episodes, err := s.episodeRows(r.Context(), []int{em.ID}, byID, from, to, 2000)
 	if err != nil {
 		httpErr(w, 500, err)
 		return
 	}
-	writeJSON(w, map[string]any{
-		"downs":       downs,
-		"top_reasons": topReasons(downs, 10),
-	})
+	raw, err := s.downRows(r.Context(), []int{em.ID}, byID, from, to, 2000)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	// episode-based availability for this EM
+	stateMs, err := s.stateMinutes(r.Context(), []int{em.ID}, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	s.openContribution(map[int]bool{em.ID: true}, from, to, stateMs)
+	var availRaw, epMs int64
+	ms := stateMs[em.ID]
+	for st, v := range ms {
+		if strings.Contains(availStates, st) {
+			availRaw += v
+		}
+	}
+	for _, e := range episodes {
+		epMs += int64(e.Minutes * 60000)
+	}
+	if down := ms[model.StateDown]; epMs < down {
+		epMs = down
+	}
+	out := map[string]any{
+		"episodes":    episodes,
+		"raw_downs":   raw,
+		"top_reasons": topEpisodeReasons(episodes, 10),
+	}
+	if pct, ok := episodeAvailability(availRaw, ms[model.StateDown], epMs); ok {
+		out["availability_pct"] = round1(pct)
+	}
+	writeJSON(w, out)
 }

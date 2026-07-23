@@ -104,6 +104,23 @@ export type CycleRow = {
   interrupted: boolean;
 };
 
+export type EpisodeRow = {
+  station: string;
+  em_label: string;
+  start_ts: string;
+  end_ts: string;
+  ongoing?: boolean;
+  minutes: number;
+  reason_type: string;
+  reason: string;
+  step_name?: string;
+  retries: number;
+  raw_down_min: number;
+  ack_ts?: string;
+  response_min?: number;
+  repair_min?: number;
+};
+
 export type DownRow = {
   station: string;
   em_label: string;
@@ -137,7 +154,8 @@ export const api = {
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?window=${win}`),
   downs: (l: string, s: string, e: string, win: string) =>
-    get<{ downs: DownRow[]; top_reasons: ReasonAgg[] }>(
+    get<{ episodes: EpisodeRow[]; raw_downs: DownRow[];
+          top_reasons: ReasonAgg[]; availability_pct?: number }>(
       `/api/v2/ems/${l}/${s}/${e}/downs?window=${win}`),
 };
 

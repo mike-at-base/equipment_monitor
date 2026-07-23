@@ -31,7 +31,10 @@ type capture struct {
 	cycles    []model.Cycle
 	modes     []model.ModeInterval
 	operator  []model.OperatorEvent
+	episodes  []model.DownEpisode
 }
+
+func (c *capture) AddDownEpisode(v model.DownEpisode) { c.episodes = append(c.episodes, v) }
 
 func (c *capture) AddStateInterval(v model.StateInterval) { c.intervals = append(c.intervals, v) }
 func (c *capture) AddStepEvent(v model.StepEvent)         { c.steps = append(c.steps, v) }
@@ -323,5 +326,95 @@ func TestTrueManualStaysManual(t *testing.T) {
 	last := s.cap.intervals[len(s.cap.intervals)-1]
 	if last.State != model.StateManual {
 		t.Fatalf("state %q", last.State)
+	}
+}
+
+// The full latch-fault story: fault, gate opened to fix it, reset (ack),
+// retry runs the faulted step and re-faults, then finally recovers.
+// One episode, root = the original sequence fault, retry time not counted
+// as recovery, raw intervals still record every phase.
+func TestDownEpisodeLatchesRootCause(t *testing.T) {
+	s := newSim()
+	s.send(AUTO|RUN|ILKOK, 0, "50", "Unclamp", "", "", "", "")
+	s.advance(time.Second)
+	// 1) sequence fault (episode opens, root locked)
+	s.send(AUTO|FAULT|STEPFLT|ILKOK, 0, "50", "Unclamp",
+		"Unclamp Timeout", "", "Clamp retracted not made", "")
+	s.advance(30 * time.Second)
+	// 2) reset pressed (ack) with the gate OPEN: fault clears, interlock
+	//    inter-state — the flip Mike observed; episode root must not move
+	s.send(AUTO|RESET, 0, "50", "Unclamp",
+		"", "Safety gate 1 not closed", "", "")
+	s.advance(60 * time.Second)
+	// 3) gate closed, retry runs the faulted step (productive blip)
+	s.send(AUTO|RUN|ILKOK, 0, "50", "Unclamp", "", "", "", "")
+	s.advance(5 * time.Second)
+	// 4) retry fails: re-fault on the same step
+	s.send(AUTO|FAULT|STEPFLT|ILKOK, 0, "50", "Unclamp",
+		"Unclamp Timeout", "", "Clamp retracted not made", "")
+	s.advance(20 * time.Second)
+	// 5) second retry works: productive on the NEXT step = recovered
+	s.send(AUTO|RUN|ILKOK, 0, "50", "Unclamp", "Unclamp Timeout", "", "", "")
+	s.advance(2 * time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "60", "Index", "Unclamp Timeout", "", "", "")
+
+	if len(s.cap.episodes) != 1 {
+		t.Fatalf("episodes: %d", len(s.cap.episodes))
+	}
+	ep := s.cap.episodes[0]
+	if ep.ReasonType != model.ReasonStepFault ||
+		ep.Reason != "Unclamp Timeout — Clamp retracted not made" {
+		t.Fatalf("root cause %q %q", ep.ReasonType, ep.Reason)
+	}
+	if ep.StepName != "50" {
+		t.Fatalf("step %q", ep.StepName)
+	}
+	// spans fault start to true recovery; the 5s retry blip did NOT end it
+	if got := ep.EndTs.Sub(ep.StartTs); got != 117*time.Second {
+		t.Fatalf("episode span %v", got)
+	}
+	if ep.Retries != 1 {
+		t.Fatalf("retries %d", ep.Retries)
+	}
+	if ep.AckTs == nil || ep.AckTs.Sub(ep.StartTs) != 30*time.Second {
+		t.Fatalf("ack %v", ep.AckTs)
+	}
+	// raw intervals kept every phase
+	kinds := []string{}
+	for _, iv := range s.cap.intervals {
+		kinds = append(kinds, iv.State+"/"+iv.ReasonType)
+	}
+	// (the final productive interval is still open, so it is not captured)
+	want := []string{"productive/", "down/step_fault", "down/interlock",
+		"productive/", "down/step_fault"}
+	if len(kinds) != len(want) {
+		t.Fatalf("raw intervals %v", kinds)
+	}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Fatalf("raw[%d] = %q, want %q (%v)", i, kinds[i], want[i], kinds)
+		}
+	}
+}
+
+func TestEpisodeClosesOnSustainedStandby(t *testing.T) {
+	s := newSim()
+	s.send(AUTO|RUN|ILKOK, 0, "50", "Unclamp", "", "", "", "")
+	s.advance(time.Second)
+	s.send(AUTO|FAULT|STEPFLT|ILKOK, 0, "50", "Unclamp", "Unclamp Timeout", "", "", "")
+	s.advance(30 * time.Second)
+	// operator stops the sequence and walks away: healthy standby
+	s.send(AUTO|ILKOK, 0, "50", "Unclamp", "Unclamp Timeout", "", "", "")
+	s.advance(30 * time.Second)
+	s.send(AUTO|ILKOK, 0, "50", "Unclamp", "Unclamp Timeout", "", "", "")
+	s.advance(35 * time.Second)
+	s.send(AUTO|ILKOK, 0, "50", "Unclamp", "Unclamp Timeout", "", "", "")
+	if len(s.cap.episodes) != 1 {
+		t.Fatalf("episodes: %d", len(s.cap.episodes))
+	}
+	// episode ends where the standby began, not when the 60s grace elapsed
+	ep := s.cap.episodes[0]
+	if got := ep.EndTs.Sub(ep.StartTs); got != 30*time.Second {
+		t.Fatalf("episode span %v", got)
 	}
 }

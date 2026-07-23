@@ -419,3 +419,121 @@ func (s *Server) flowLosses(ctx context.Context, ids []int, byID map[int]EMInfo,
 }
 
 func round1(f float64) float64 { return float64(int64(f*10+0.5)) / 10 }
+
+// ── down episodes (sticky root cause — the reporting layer) ─────────────
+
+type EpisodeRow struct {
+	Station    string     `json:"station"`
+	EMLabel    string     `json:"em_label"`
+	StartTs    time.Time  `json:"start_ts"`
+	EndTs      time.Time  `json:"end_ts"`
+	Ongoing    bool       `json:"ongoing,omitempty"`
+	Minutes    float64    `json:"minutes"`
+	ReasonType string     `json:"reason_type"`
+	Reason     string     `json:"reason"`
+	StepName   string     `json:"step_name,omitempty"`
+	Retries    int        `json:"retries"`
+	DownMin    float64    `json:"raw_down_min"`
+	AckTs      *time.Time `json:"ack_ts,omitempty"`
+	RespMin    *float64   `json:"response_min,omitempty"`
+	RepairMin  *float64   `json:"repair_min,omitempty"`
+}
+
+// episodeRows returns closed episodes from the DB plus any open episode
+// from the live trackers, window-clipped for minute math.
+func (s *Server) episodeRows(ctx context.Context, ids []int, byID map[int]EMInfo,
+	from, to time.Time, limit int) ([]EpisodeRow, error) {
+	rows, err := s.pool.Query(ctx, `
+	    SELECT em_id, start_ts, end_ts, reason_type, reason,
+	           COALESCE(step_name,''), retries, down_ms, ack_ts
+	    FROM down_episode
+	    WHERE em_id = ANY($1) AND end_ts > $2 AND start_ts < $3
+	    ORDER BY start_ts DESC LIMIT $4`, ids, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	idSet := map[int]bool{}
+	for _, id := range ids {
+		idSet[id] = true
+	}
+	out := []EpisodeRow{}
+	for rows.Next() {
+		var id, retries int
+		var downMs int64
+		var e EpisodeRow
+		if err := rows.Scan(&id, &e.StartTs, &e.EndTs, &e.ReasonType,
+			&e.Reason, &e.StepName, &retries, &downMs, &e.AckTs); err != nil {
+			return nil, err
+		}
+		info := byID[id]
+		e.Station, e.EMLabel, e.Retries = info.Station, info.Label, retries
+		e.Minutes = round1(float64(overlapMs(e.StartTs, e.EndTs, from, to)) / 60000.0)
+		e.DownMin = round1(float64(downMs) / 60000.0)
+		if e.AckTs != nil {
+			r := round1(e.AckTs.Sub(e.StartTs).Minutes())
+			p := round1(e.EndTs.Sub(*e.AckTs).Minutes())
+			e.RespMin, e.RepairMin = &r, &p
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// open episodes from live trackers
+	now := time.Now().UTC()
+	for _, le := range s.live() {
+		if !le.EpisodeOpen || !idSet[le.EMID] || !le.EpisodeStart.Before(to) {
+			continue
+		}
+		e := EpisodeRow{
+			Station: le.Station, EMLabel: le.EMLabel,
+			StartTs: le.EpisodeStart, EndTs: now, Ongoing: true,
+			ReasonType: le.EpisodeRType, Reason: le.EpisodeReason,
+			StepName: le.EpisodeStep, Retries: le.EpisodeRetries,
+		}
+		e.Minutes = round1(float64(overlapMs(e.StartTs, now, from, to)) / 60000.0)
+		out = append([]EpisodeRow{e}, out...)
+	}
+	return out, nil
+}
+
+func topEpisodeReasons(eps []EpisodeRow, n int) []ReasonAgg {
+	agg := map[string]*ReasonAgg{}
+	for _, e := range eps {
+		key := e.ReasonType + "|" + e.Reason
+		if agg[key] == nil {
+			agg[key] = &ReasonAgg{Reason: e.Reason, ReasonType: e.ReasonType}
+		}
+		agg[key].Count++
+		agg[key].Minutes = round1(agg[key].Minutes + e.Minutes)
+	}
+	out := make([]ReasonAgg, 0, len(agg))
+	for _, a := range agg {
+		out = append(out, *a)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Minutes > out[j].Minutes })
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+// episodeAvailability: unavailable time = episode spans (inter-states and
+// retry blips inside an episode are NOT uptime).  availRaw already counts
+// in-episode productive/paused blips as available and raw down time as
+// not — correct by swapping raw down for episode span.
+func episodeAvailability(availRawMs, rawDownMs, episodeMs int64) (float64, bool) {
+	blips := episodeMs - rawDownMs // in-episode time raw math called available
+	if blips < 0 {
+		blips = 0
+	}
+	avail := availRawMs - blips
+	if avail < 0 {
+		avail = 0
+	}
+	if avail+episodeMs == 0 {
+		return 0, false
+	}
+	return 100 * float64(avail) / float64(avail+episodeMs), true
+}
