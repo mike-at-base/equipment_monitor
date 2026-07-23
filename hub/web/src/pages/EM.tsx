@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Route, Routes, useParams } from "react-router-dom";
 import { api, CycleRow, fmtClock, fmtMs, fmtSince, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
-import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, useWindow } from "../components/ui";
+import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
 export default function EMPage() {
@@ -96,8 +96,11 @@ function Cycles({ l, s, e }: P) {
   const [selTs, setSelTs] = useState<string>();
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
-  const { stats, cycles } = q.data;
+  const { stats, cycles, throughput } = q.data;
   const points = [...cycles].reverse().map((c) => ({ t: Date.parse(c.start_ts), v: c.total_ms }));
+  const tputBars = throughput.map((b) => ({
+    t: Date.parse(b.bucket_ts), v: b.per_hour, label: fmtClock(b.bucket_ts).replace(/:\d\d /, " "),
+  }));
   const selected = cycles.find((c) => c.start_ts === selTs) ?? cycles[0];
   return (
     <>
@@ -113,6 +116,11 @@ function Cycles({ l, s, e }: P) {
       <div className="card">
         <h2>Cycle time trend ({win})</h2>
         <Trend points={points} unit="s" />
+      </div>
+      <div className="card">
+        <h2>Throughput ({win})</h2>
+        <p className="muted" style={{ marginTop: 0 }}>Completed cycles, as an hourly rate per time bucket.</p>
+        <VBars bars={tputBars} unit="/h" />
       </div>
       {selected && (
         <div className="card">

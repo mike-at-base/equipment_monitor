@@ -136,6 +136,45 @@ export function Trend({ points, unit }: { points: { t: number; v: number }[]; un
   );
 }
 
+// ── vertical bar chart over time (throughput) ────────────────────────────
+export function VBars({ bars, unit }: { bars: { t: number; v: number; label: string }[]; unit: string }) {
+  if (!bars.length) return <div className="empty">No data in this window.</div>;
+  const width = 1000, height = 190, padL = 40, padB = 24, padT = 8;
+  const vmax = Math.max(...bars.map((b) => b.v), 1) * 1.1;
+  const plotW = width - padL - 8, plotH = height - padB - padT;
+  const bw = plotW / bars.length;
+  const y = (v: number) => padT + plotH - (v / vmax) * plotH;
+  const labelEvery = Math.ceil(bars.length / 8);
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height }}>
+      {[0.25, 0.5, 0.75, 1].map((f) => (
+        <g key={f}>
+          <line x1={padL} x2={width - 8} y1={y(vmax * f / 1.1)} y2={y(vmax * f / 1.1)}
+                stroke="var(--conduit)" strokeWidth={1} />
+          <text x={padL - 6} y={y(vmax * f / 1.1) + 4} textAnchor="end"
+                fontSize={10} fill="var(--secondary)">{Math.round(vmax * f / 1.1)}{unit}</text>
+        </g>
+      ))}
+      {bars.map((b, i) => {
+        const x = padL + i * bw;
+        const h = padT + plotH - y(b.v);
+        return (
+          <g key={i}>
+            <rect x={x + bw * 0.12} y={y(b.v)} width={bw * 0.76} height={Math.max(h, 0)}
+                  rx={2} fill="var(--grounded)">
+              <title>{`${b.label}\n${b.v} ${unit}`}</title>
+            </rect>
+            {i % labelEvery === 0 && (
+              <text x={x + bw / 2} y={height - 8} textAnchor="middle"
+                    fontSize={10} fill="var(--secondary)">{b.label}</text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export function Loading() {
   return <div className="empty">Loading…</div>;
 }

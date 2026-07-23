@@ -359,6 +359,50 @@ func (s *Server) cycleStats(ctx context.Context, ids []int, from, to time.Time) 
 	return cs, nil
 }
 
+type ThroughputBucket struct {
+	BucketTs time.Time `json:"bucket_ts"`
+	Count    int       `json:"count"`
+	PerHour  float64   `json:"per_hour"`
+}
+
+// cycleThroughput buckets completed cycles into fixed-width time buckets and
+// reports each bucket's count and the equivalent per-hour rate. Bucket width
+// adapts to the window so a short window still yields a readable chart; the
+// per-hour rate normalizes across widths so the y-axis is comparable.
+func (s *Server) cycleThroughput(ctx context.Context, ids []int, from, to time.Time) ([]ThroughputBucket, error) {
+	span := to.Sub(from)
+	bucket := time.Hour
+	switch {
+	case span <= 2*time.Hour:
+		bucket = 10 * time.Minute
+	case span <= 12*time.Hour:
+		bucket = 30 * time.Minute
+	case span <= 3*24*time.Hour:
+		bucket = time.Hour
+	default:
+		bucket = 3 * time.Hour
+	}
+	rows, err := s.pool.Query(ctx, `
+	    SELECT time_bucket(make_interval(secs => $4), start_ts) AS b, count(*)
+	    FROM cycle
+	    WHERE em_id = ANY($1) AND start_ts >= $2 AND start_ts < $3
+	    GROUP BY b ORDER BY b`, ids, from, to, bucket.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ThroughputBucket{}
+	for rows.Next() {
+		var b ThroughputBucket
+		if err := rows.Scan(&b.BucketTs, &b.Count); err != nil {
+			return nil, err
+		}
+		b.PerHour = round1(float64(b.Count) * float64(time.Hour) / float64(bucket))
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 func (s *Server) modeMinutes(ctx context.Context, ids []int, from, to time.Time) (map[string]float64, error) {
 	rows, err := s.pool.Query(ctx, `
 	    SELECT flag,

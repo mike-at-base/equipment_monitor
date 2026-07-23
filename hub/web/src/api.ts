@@ -94,6 +94,12 @@ export type StepRow = {
   was_faulted: boolean;
 };
 
+export type ThroughputBucket = {
+  bucket_ts: string;
+  count: number;
+  per_hour: number;
+};
+
 export type CycleRow = {
   start_ts: string;
   end_ts: string;
@@ -192,7 +198,7 @@ export const api = {
     get<StepRow[]>(`/api/v2/ems/${l}/${s}/${e}/steps?from=${encodeURIComponent(from)}` +
       `&to=${encodeURIComponent(to)}&limit=500`),
   cycles: (l: string, s: string, e: string, win: string) =>
-    get<{ stats: CycleStats; cycles: CycleRow[] }>(
+    get<{ stats: CycleStats; cycles: CycleRow[]; throughput: ThroughputBucket[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?window=${win}`),
   downs: (l: string, s: string, e: string, win: string) =>
     get<{ episodes: EpisodeRow[]; raw_downs: DownRow[];

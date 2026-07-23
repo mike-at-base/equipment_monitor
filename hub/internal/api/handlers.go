@@ -377,6 +377,11 @@ func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
+	throughput, err := s.cycleThroughput(r.Context(), []int{em.ID}, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
 	rows, err := s.pool.Query(r.Context(), `
 	    SELECT start_ts, end_ts, seq_index, work_ms, exchange_ms, total_ms, interrupted
 	    FROM cycle WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
@@ -405,7 +410,7 @@ func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, v)
 	}
-	writeJSON(w, map[string]any{"stats": stats, "cycles": out})
+	writeJSON(w, map[string]any{"stats": stats, "cycles": out, "throughput": throughput})
 }
 
 func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
