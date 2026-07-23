@@ -53,6 +53,39 @@ type LiveEM struct {
 	EpisodeRetries int       `json:"episode_retries,omitempty"`
 }
 
+// BitFlag is one named status/mode bit and whether it is currently set.
+type BitFlag struct {
+	Name string `json:"name"`
+	On   bool   `json:"on"`
+}
+
+// RawEM is the last decoded datagram for one EM, exposed verbatim for the
+// engineering debug view. Kept off /live and the SSE stream (which the site
+// overview uses) so those stay lean — this is fetched per-EM on demand.
+type RawEM struct {
+	EMID           int       `json:"-"`
+	Line           string    `json:"line"`
+	Station        string    `json:"station"`
+	EMLabel        string    `json:"em_label"`
+	MsgType        uint8     `json:"msg_type"`
+	Seq            uint32    `json:"seq"`
+	ActiveSequence int16     `json:"active_sequence"`
+	Step           string    `json:"step"`
+	StepDesc       string    `json:"step_desc"`
+	StepActiveMs   int32     `json:"step_active_ms"`
+	StatusBits     uint16    `json:"status_bits"`
+	ModeBits       uint16    `json:"mode_bits"`
+	Status         []BitFlag `json:"status"`
+	Modes          []BitFlag `json:"modes"`
+	AlarmMsg       string    `json:"alarm_msg"`
+	InterlockFails string    `json:"interlock_fails"`
+	FaultConds     string    `json:"fault_conds"`
+	WaitingOn      string    `json:"waiting_on"`
+	PLCTime        time.Time `json:"plc_time,omitzero"`
+	RecvTime       time.Time `json:"recv_time"`
+	SkewMs         int64     `json:"skew_ms"`
+}
+
 func New(port int, trackers map[Key]*tracker.EM, log *slog.Logger) *Service {
 	return &Service{trackers: trackers, log: log, port: port}
 }
@@ -73,6 +106,42 @@ func (s *Service) Snapshot(lineByHost map[string]string) []LiveEM {
 		le.EpisodeOpen, le.EpisodeStart, le.EpisodeRType,
 			le.EpisodeReason, le.EpisodeStep, le.EpisodeRetries = t.Episode()
 		out = append(out, le)
+	}
+	return out
+}
+
+// RawSnapshot returns the last decoded datagram of every EM that has
+// received one, with status/mode bits decoded into named flags. Used by the
+// per-EM engineering debug endpoint.
+func (s *Service) RawSnapshot(lineByHost map[string]string) []RawEM {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]RawEM, 0, len(s.trackers))
+	for k, t := range s.trackers {
+		d, recv := t.Raw()
+		if d == nil {
+			continue
+		}
+		re := RawEM{
+			EMID: t.EMID(), Line: lineByHost[k.Host],
+			Station: t.Station(), EMLabel: t.EMLabel(),
+			MsgType: d.MsgType, Seq: d.Seq, ActiveSequence: d.ActiveSequence,
+			Step: d.Step, StepDesc: d.StepDesc, StepActiveMs: d.StepActiveMs,
+			StatusBits: d.StatusBits, ModeBits: d.ModeBits,
+			AlarmMsg: d.AlarmMsg, InterlockFails: d.InterlockFails,
+			FaultConds: d.FaultConds, WaitingOn: d.WaitingOn,
+			PLCTime: d.PLCTime, RecvTime: recv,
+		}
+		for _, f := range wire.StatusFlags {
+			re.Status = append(re.Status, BitFlag{f.Name, d.StatusBits&f.Mask != 0})
+		}
+		for _, f := range wire.ModeFlags {
+			re.Modes = append(re.Modes, BitFlag{f.Name, d.ModeBits&f.Mask != 0})
+		}
+		if !d.PLCTime.IsZero() {
+			re.SkewMs = d.PLCTime.Sub(recv).Milliseconds()
+		}
+		out = append(out, re)
 	}
 	return out
 }

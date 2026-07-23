@@ -48,6 +48,10 @@ type EM struct {
 	lastSeq  uint32
 	haveSeq  bool
 
+	// last decoded datagram + its receive time (for the raw debug view)
+	last     *wire.Datagram
+	lastRecv time.Time
+
 	// current exclusive state interval (open)
 	curState  string
 	curReason string
@@ -116,6 +120,10 @@ func (t *EM) Episode() (open bool, start time.Time, rtype, reason, step string, 
 	return t.epOpen, t.epStart, t.epRType, t.epReason, t.epStep, t.epRetries
 }
 
+// Raw returns the last decoded datagram and its receive time (nil until the
+// first datagram). Used by the engineering debug view.
+func (t *EM) Raw() (*wire.Datagram, time.Time) { return t.last, t.lastRecv }
+
 // SeqGap reports datagrams missed since the last one (0 when none/unknown).
 func (t *EM) SeqGap(seq uint32) int {
 	if !t.haveSeq {
@@ -139,6 +147,7 @@ func (t *EM) Ingest(d *wire.Datagram, recvTime time.Time) {
 		}
 	}
 	t.lastSeen = recvTime
+	t.last, t.lastRecv = d, recvTime
 	t.lastSeq, t.haveSeq = d.Seq, true
 
 	alarmActive := d.Bit(wire.BitFault) || d.Bit(wire.BitStepFault) || d.Bit(wire.BitExtAlarm)

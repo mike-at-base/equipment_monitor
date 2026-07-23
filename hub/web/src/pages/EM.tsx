@@ -1,6 +1,7 @@
+import { useEffect, useState } from "react";
 import { NavLink, Route, Routes, useParams } from "react-router-dom";
-import { api, fmtClock, fmtMs, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
-import { Bars, ErrorBox, Gantt, Loading, Trend, useAsync, useWindow } from "../components/ui";
+import { api, fmtClock, fmtMs, fmtSince, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
+import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, useWindow } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
 export default function EMPage() {
@@ -10,6 +11,7 @@ export default function EMPage() {
     { path: "cycles", name: "Cycle time" },
     { path: "availability", name: "Availability" },
     { path: "alarms", name: "Alarm history" },
+    { path: "debug", name: "Raw / debug" },
   ];
   return (
     <>
@@ -24,6 +26,7 @@ export default function EMPage() {
         <Route path="cycles" element={<Cycles l={line} s={station} e={label} />} />
         <Route path="availability" element={<Availability l={line} s={station} e={label} />} />
         <Route path="alarms" element={<Alarms l={line} s={station} e={label} />} />
+        <Route path="debug" element={<Debug l={line} s={station} e={label} />} />
         <Route path="*" element={<Steps l={line} s={station} e={label} />} />
       </Routes>
     </>
@@ -232,6 +235,178 @@ function Alarms({ l, s, e }: P) {
         </table>
       </div>
     </div>
+  );
+}
+
+// bits whose "on" state is bad (red) vs good (green); the rest are neutral
+const BAD_BITS = new Set(["fault", "step_fault", "ext_alarm", "unknown"]);
+const GOOD_BITS = new Set(["automatic", "running", "interlock_ok"]);
+
+function BitChip({ name, on, kind }: { name: string; on: boolean; kind: "status" | "mode" }) {
+  let cls = "bitchip";
+  if (on) {
+    cls += " on";
+    if (kind === "status" && BAD_BITS.has(name)) cls += " bad";
+    else if (kind === "status" && GOOD_BITS.has(name)) cls += " good";
+  }
+  return <span className={cls}>{name}</span>;
+}
+
+function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
+  return (
+    <div className="kv">
+      <span className="k">{k}</span>
+      <span className={mono ? "v mono" : "v"}>{v || "—"}</span>
+    </div>
+  );
+}
+
+// Engineering raw-data view: the last decoded datagram (auto-refreshing),
+// plus resets, mode windows, and every raw state interval (unfiltered).
+function Debug({ l, s, e }: P) {
+  const { win } = useWindow();
+  const now = useNow();
+  // poll every 2s, but keep the previous data on screen during refetch so the
+  // view doesn't flash "Loading" or lose scroll position
+  const [data, setData] = useState<Awaited<ReturnType<typeof api.debug>>>();
+  const [err, setErr] = useState<unknown>();
+  useEffect(() => {
+    setData(undefined);
+    let live = true;
+    const load = () => api.debug(l, s, e, win)
+      .then((d) => { if (live) { setData(d); setErr(undefined); } })
+      .catch((x) => { if (live) setErr(x); });
+    load();
+    const id = setInterval(load, 2000);
+    return () => { live = false; clearInterval(id); };
+  }, [l, s, e, win]);
+  if (err && !data) return <ErrorBox err={err} />;
+  if (!data) return <Loading />;
+  const { live, resets, modes, states } = data;
+
+  return (
+    <>
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <h2>Live telemetry</h2>
+          <span className="muted" style={{ fontSize: 12 }}>refreshes every 2s</span>
+        </div>
+        {!live ? (
+          <div className="empty">No datagram received yet for this EM.</div>
+        ) : (
+          <>
+            <div className="kvgrid">
+              <KV k="Seq" v={`${live.seq}`} mono />
+              <KV k="Message" v={live.msg_type === 2 ? "heartbeat" : "event"} />
+              <KV k="Active sequence" v={`${live.active_sequence}`} mono />
+              <KV k="Step" v={`${live.step}${live.step_desc ? " · " + live.step_desc : ""}`} mono />
+              <KV k="Step active" v={fmtMs(live.step_active_ms)} mono />
+              <KV k="Last datagram" v={`${fmtSince(live.recv_time, now)} ago`} />
+              <KV k="PLC clock skew"
+                  v={live.plc_time ? `${live.skew_ms} ms` : "PLC clock unset"} mono />
+            </div>
+
+            <div className="label" style={{ marginTop: 16 }}>
+              Status bits <span className="mono">0x{live.status_bits.toString(16).padStart(4, "0")}</span>
+            </div>
+            <div className="bitgrid">
+              {live.status.map((b) => <BitChip key={b.name} {...b} kind="status" />)}
+            </div>
+
+            <div className="label" style={{ marginTop: 14 }}>
+              Mode bits <span className="mono">0x{live.mode_bits.toString(16).padStart(4, "0")}</span>
+            </div>
+            <div className="bitgrid">
+              {live.modes.map((b) => <BitChip key={b.name} {...b} kind="mode" />)}
+            </div>
+
+            <div className="label" style={{ marginTop: 16 }}>Text fields</div>
+            <div className="kvgrid">
+              <KV k="Alarm message" v={live.alarm_msg} mono />
+              <KV k="Interlock fails" v={live.interlock_fails} mono />
+              <KV k="Fault conditions" v={live.fault_conds} mono />
+              <KV k="Waiting on" v={live.waiting_on} mono />
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Operator resets · {resets.length}</h2>
+        {!resets.length ? (
+          <div className="empty">No resets in this window.</div>
+        ) : (
+          <div className="tablewrap">
+            <table className="data">
+              <thead><tr><th>Time</th><th>Event</th></tr></thead>
+              <tbody>
+                {resets.map((rv, i) => (
+                  <tr key={i}><td className="num">{fmtClock(rv.ts)}</td><td>{rv.event}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Mode windows · {modes.length}</h2>
+        {!modes.length ? (
+          <div className="empty">No mode changes in this window.</div>
+        ) : (
+          <div className="tablewrap">
+            <table className="data">
+              <thead><tr>
+                <th>Flag</th><th>Start</th><th>End</th>
+                <th style={{ textAlign: "right" }}>Duration</th>
+              </tr></thead>
+              <tbody>
+                {modes.map((m, i) => (
+                  <tr key={i}>
+                    <td className="mono">{m.flag}</td>
+                    <td className="num">{fmtClock(m.start_ts)}</td>
+                    <td className="num">{fmtClock(m.end_ts)}</td>
+                    <td className="num">{m.minutes.toFixed(1)} min</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Raw state intervals · {states.length}</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Every state the machine reported, before episode collapsing — fault,
+          gate interlock, retry, and recovery each show as their own row.
+        </p>
+        {!states.length ? (
+          <div className="empty">No state intervals in this window.</div>
+        ) : (
+          <div className="tablewrap">
+            <table className="data">
+              <thead><tr>
+                <th>Start</th><th>State</th><th>Type</th><th>Reason</th><th>Step</th>
+                <th style={{ textAlign: "right" }}>Duration</th>
+              </tr></thead>
+              <tbody>
+                {states.map((st, i) => (
+                  <tr key={i}>
+                    <td className="num">{fmtClock(st.start_ts)}</td>
+                    <td><StateChip state={st.state} /></td>
+                    <td className="mono">{st.reason_type || ""}</td>
+                    <td>{st.reason}</td>
+                    <td className="num">{st.step_name}</td>
+                    <td className="num">{st.seconds < 90 ? `${st.seconds.toFixed(1)} s` : `${(st.seconds / 60).toFixed(1)} min`}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 

@@ -163,6 +163,24 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .muted { color: var(--secondary); }
 .empty { padding: 28px; text-align: center; color: var(--secondary); }
 
+/* raw / debug view */
+.mono { font-family: ui-monospace, Consolas, monospace; }
+.kvgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px 20px; margin-top: 8px; }
+.kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--conduit); }
+.kv .k { color: var(--secondary); font-size: 12px; }
+.kv .v { text-align: right; }
+.kv .v.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-word; }
+.bitgrid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.bitchip {
+  font: 600 11px ui-monospace, Consolas, monospace;
+  padding: 3px 9px; border-radius: 6px;
+  background: var(--conduit); color: var(--secondary);
+  border: 1px solid var(--subtle);
+}
+.bitchip.on { background: var(--terminal); color: var(--strike); border-color: var(--terminal); }
+.bitchip.on.bad { background: var(--st-down); border-color: var(--st-down); }
+.bitchip.on.good { background: var(--st-productive); border-color: var(--st-productive); }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }

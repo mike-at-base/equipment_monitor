@@ -30,6 +30,23 @@ const (
 	BitReset       = 0x0200
 )
 
+// statusBits, in wire order (for the raw debug view)
+var StatusFlags = []struct {
+	Name string
+	Mask uint16
+}{
+	{"automatic", BitAutomatic},
+	{"fault", BitFault},
+	{"running", BitRunning},
+	{"paused", BitPaused},
+	{"stopped", BitStopped},
+	{"unknown", BitUnknown},
+	{"step_fault", BitStepFault},
+	{"interlock_ok", BitInterlockOk},
+	{"ext_alarm", BitExtAlarm},
+	{"reset", BitReset},
+}
+
 // modeBits, in wire order
 var ModeFlags = []struct {
 	Name string

@@ -12,6 +12,7 @@
 //	GET /api/v2/ems/{line}/{station}/{label}/steps?limit=
 //	GET /api/v2/ems/{line}/{station}/{label}/cycles
 //	GET /api/v2/ems/{line}/{station}/{label}/downs
+//	GET /api/v2/ems/{line}/{station}/{label}/debug   raw telemetry + resets + modes
 //	GET /api/v2/live                           current state of every EM
 package api
 
@@ -47,15 +48,17 @@ type Server struct {
 	pool  *pgxpool.Pool
 	lines []LineInfo
 	live  func() []ingest.LiveEM
+	raw   func() []ingest.RawEM
 	tz    *time.Location
 }
 
-func New(pool *pgxpool.Pool, lines []LineInfo, live func() []ingest.LiveEM) *Server {
+func New(pool *pgxpool.Pool, lines []LineInfo,
+	live func() []ingest.LiveEM, raw func() []ingest.RawEM) *Server {
 	tz, err := time.LoadLocation(envOr("APP_TIMEZONE", "America/Chicago"))
 	if err != nil {
 		tz = time.UTC
 	}
-	return &Server{pool: pool, lines: lines, live: live, tz: tz}
+	return &Server{pool: pool, lines: lines, live: live, raw: raw, tz: tz}
 }
 
 func envOr(k, d string) string {
@@ -73,6 +76,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/steps", s.handleSteps)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/cycles", s.handleCycles)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/downs", s.handleDowns)
+	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/debug", s.handleDebug)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

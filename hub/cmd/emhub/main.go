@@ -147,6 +147,8 @@ func main() {
 	})
 	apiSrv := api.New(pg.Pool(), apiLines, func() []ingest.LiveEM {
 		return svc.Snapshot(lineByHost)
+	}, func() []ingest.RawEM {
+		return svc.RawSnapshot(lineByHost)
 	})
 	apiSrv.Register(mux)
 	mux.HandleFunc("/mcp", mcpserv.Handler(mux))

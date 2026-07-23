@@ -135,6 +135,44 @@ export type DownRow = {
   repair_min?: number;
 };
 
+export type BitFlag = { name: string; on: boolean };
+
+export type RawEM = {
+  line: string;
+  station: string;
+  em_label: string;
+  msg_type: number;
+  seq: number;
+  active_sequence: number;
+  step: string;
+  step_desc: string;
+  step_active_ms: number;
+  status_bits: number;
+  mode_bits: number;
+  status: BitFlag[];
+  modes: BitFlag[];
+  alarm_msg: string;
+  interlock_fails: string;
+  fault_conds: string;
+  waiting_on: string;
+  plc_time?: string;
+  recv_time: string;
+  skew_ms: number;
+};
+
+export type ResetEvent = { ts: string; event: string };
+export type ModeWindow = { flag: string; start_ts: string; end_ts: string; minutes: number };
+export type RawState = {
+  start_ts: string; end_ts: string; state: string;
+  reason_type: string; reason: string; step_name: string; seconds: number;
+};
+export type DebugResp = {
+  live: RawEM | null;
+  resets: ResetEvent[];
+  modes: ModeWindow[];
+  states: RawState[];
+};
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -157,6 +195,8 @@ export const api = {
     get<{ episodes: EpisodeRow[]; raw_downs: DownRow[];
           top_reasons: ReasonAgg[]; availability_pct?: number }>(
       `/api/v2/ems/${l}/${s}/${e}/downs?window=${win}`),
+  debug: (l: string, s: string, e: string, win: string) =>
+    get<DebugResp>(`/api/v2/ems/${l}/${s}/${e}/debug?window=${win}`),
 };
 
 // SSE live stream with polling fallback

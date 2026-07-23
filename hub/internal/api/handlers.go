@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mike-at-base/equipment_monitor/hub/internal/ingest"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/model"
 )
 
@@ -457,4 +458,122 @@ func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
 		out["availability_pct"] = round1(pct)
 	}
 	writeJSON(w, out)
+}
+
+// handleDebug is the engineering raw-data view: the last decoded datagram
+// (live), plus recent operator resets, mode windows, and raw state intervals
+// within the window. This is the unfiltered picture — every state the
+// machine reported, not the episode-collapsed reporting view.
+func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	from, to, err := s.window(r)
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+
+	// live raw datagram from the in-memory tracker
+	var live *ingest.RawEM
+	if s.raw != nil {
+		for _, re := range s.raw() {
+			if re.EMID == em.ID {
+				rr := re
+				live = &rr
+				break
+			}
+		}
+	}
+
+	// operator resets
+	resets := []map[string]any{}
+	rows, err := s.pool.Query(r.Context(), `
+	    SELECT ts, event FROM operator_event
+	    WHERE em_id=$1 AND ts >= $2 AND ts < $3
+	    ORDER BY ts DESC LIMIT 500`, em.ID, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	for rows.Next() {
+		var ts time.Time
+		var ev string
+		if err := rows.Scan(&ts, &ev); err != nil {
+			rows.Close()
+			httpErr(w, 500, err)
+			return
+		}
+		resets = append(resets, map[string]any{"ts": ts, "event": ev})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+
+	// mode windows (raw, not aggregated)
+	modes := []map[string]any{}
+	rows, err = s.pool.Query(r.Context(), `
+	    SELECT flag, start_ts, end_ts FROM mode_interval
+	    WHERE em_id=$1 AND end_ts > $2 AND start_ts < $3
+	    ORDER BY start_ts DESC LIMIT 500`, em.ID, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	for rows.Next() {
+		var flag string
+		var st, en time.Time
+		if err := rows.Scan(&flag, &st, &en); err != nil {
+			rows.Close()
+			httpErr(w, 500, err)
+			return
+		}
+		modes = append(modes, map[string]any{
+			"flag": flag, "start_ts": st, "end_ts": en,
+			"minutes": round1(en.Sub(st).Minutes()),
+		})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+
+	// raw state intervals (every reported phase)
+	states := []map[string]any{}
+	rows, err = s.pool.Query(r.Context(), `
+	    SELECT start_ts, end_ts, state, reason_type, reason, COALESCE(step_name,'')
+	    FROM state_interval
+	    WHERE em_id=$1 AND end_ts > $2 AND start_ts < $3
+	    ORDER BY start_ts DESC LIMIT 1000`, em.ID, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	for rows.Next() {
+		var st, en time.Time
+		var state, rtype, reason, step string
+		if err := rows.Scan(&st, &en, &state, &rtype, &reason, &step); err != nil {
+			rows.Close()
+			httpErr(w, 500, err)
+			return
+		}
+		states = append(states, map[string]any{
+			"start_ts": st, "end_ts": en, "state": state,
+			"reason_type": rtype, "reason": reason, "step_name": step,
+			"seconds": round1(en.Sub(st).Seconds()),
+		})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"live": live, "resets": resets, "modes": modes, "states": states,
+	})
 }
