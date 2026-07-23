@@ -105,6 +105,7 @@ BEGIN
     // 0.1.3        2026-07-23              mwebb               accept TCON 80A3 (connection already established in CPU, survives instance re-download) as connected
     // 0.1.4        2026-07-23              mwebb               fix heartbeat: IN := NOT Q self-reset consumed its own pulse (reading IEC timer Q updates state); capture Q as call output with explicit one-scan reset
     // 0.1.5        2026-07-23              mwebb               deepen send ring buffer 8 -> 16 to absorb longer bursts of same-scan changes
+    // 0.1.6        2026-07-23              mwebb               fix CPU STOP: waiting-on IF combined bounds check + stepControl[] access in one AND (SCL has no short-circuit); with activeSequence=0 it read stepControl[0] -> area-length error. Split into nested IFs.
     END_REGION
 
     REGION Initial Scan
@@ -280,32 +281,38 @@ BEGIN
         // and this text, so nothing in the PLC needs maintaining beyond the
         // permissive descriptions the HMI already shows.
         #statSnapshot.waitingOn := '';
+        // SCL does NOT guarantee short-circuit AND, so the bounds check and the
+        // stepControl[] access must be in SEPARATE nested IFs.  In one combined
+        // expression stepControl[#tempSeqIdx] is evaluated even when the bounds
+        // term is false, so stepControl[0] is read when no sequence is active
+        // (activeSequence = 0) -> area-length error -> CPU STOP.
         IF #controlInterface.status.mode.automatic
             AND #controlInterface.status.running
             AND NOT #tempStepFaulted
             AND (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER")
-            AND (#controlInterface.stepControl[#tempSeqIdx].activeTime > #dwellCaptureDelay)
         THEN
-            FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
-                IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
-                    FOR #jj := 0 TO 15 DO
-                        IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
-                            #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
-                            IF LEN(#tempDesc) > 0 THEN
-                                IF LEN(#statSnapshot.waitingOn) = 0 THEN
-                                    #statSnapshot.waitingOn := LEFT(IN := #tempDesc, L := 200);
-                                ELSIF (FIND(IN1 := #statSnapshot.waitingOn, IN2 := #tempDesc) = 0)
-                                    AND ((LEN(#statSnapshot.waitingOn) + LEN(#tempDesc) + 2) <= 200)
-                                THEN
-                                    #statSnapshot.waitingOn := CONCAT(IN1 := #statSnapshot.waitingOn,
-                                                                      IN2 := '; ',
-                                                                      IN3 := #tempDesc);
+            IF #controlInterface.stepControl[#tempSeqIdx].activeTime > #dwellCaptureDelay THEN
+                FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                    IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                        FOR #jj := 0 TO 15 DO
+                            IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
+                                #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
+                                IF LEN(#tempDesc) > 0 THEN
+                                    IF LEN(#statSnapshot.waitingOn) = 0 THEN
+                                        #statSnapshot.waitingOn := LEFT(IN := #tempDesc, L := 200);
+                                    ELSIF (FIND(IN1 := #statSnapshot.waitingOn, IN2 := #tempDesc) = 0)
+                                        AND ((LEN(#statSnapshot.waitingOn) + LEN(#tempDesc) + 2) <= 200)
+                                    THEN
+                                        #statSnapshot.waitingOn := CONCAT(IN1 := #statSnapshot.waitingOn,
+                                                                          IN2 := '; ',
+                                                                          IN3 := #tempDesc);
+                                    END_IF;
                                 END_IF;
                             END_IF;
-                        END_IF;
-                    END_FOR;
-                END_IF;
-            END_FOR;
+                        END_FOR;
+                    END_IF;
+                END_FOR;
+            END_IF;
         END_IF;
     END_REGION
 
