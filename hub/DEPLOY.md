@@ -38,6 +38,37 @@ That's it. Open `http://<server>:8062` for the SCADA UI.
 3. **Confirm the PLCs can route to the server** on UDP 15020 (this is the one
    thing Docker can't do for you — it's plant-network reachability).
 
+## Networking (important — read before production)
+
+emhub routes each incoming telemetry datagram to a line/EM by its **source
+IP** (matched against each line's configured PLC host in `config.yaml`).
+Docker's NAT rewrites the UDP source IP to the Docker gateway on published
+ports, so every PLC would appear to come from one address and get dropped
+("datagram for unconfigured EM").
+
+**Linux production (recommended):** run emhub with host networking so it sees
+real PLC IPs. Replace the `ports:` block on the `emhub` service with:
+
+```yaml
+    network_mode: host        # binds 8062/tcp + 15020/udp directly on the host
+```
+
+and change its DSN to reach the DB over the host loopback:
+
+```yaml
+    environment:
+      EMHUB_DSN: "postgres://monitor:${DB_PASSWORD:-monitor}@127.0.0.1:5432/emhub"
+```
+
+leaving the `timescaledb` service on the default bridge with
+`ports: ["127.0.0.1:5432:5432"]`. Host networking is Linux-only.
+
+**Docker Desktop (Windows/Mac):** fine for development and demos, but inbound
+UDP is always NAT'd and host networking attaches to the WSL2 VM, not your LAN —
+so it cannot correctly receive plant telemetry from multiple PLCs by source IP.
+For real PLC ingestion, deploy on a Linux host. (The legacy bare-`emhub.exe` on
+Windows works only because it binds the host NIC directly, with no NAT layer.)
+
 ## Configuration
 
 emhub reads `../config.yaml` (the repo-root config) for lines, EMs, and

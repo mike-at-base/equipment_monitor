@@ -43,6 +43,11 @@ services:
       EMHUB_DSN: "postgres://monitor:${DB_PASSWORD:-monitor}@timescaledb:5432/emhub"
       EMHUB_HTTP: ":8062"
       APP_TIMEZONE: ${APP_TIMEZONE:-America/Chicago}
+    # IMPORTANT: emhub routes telemetry to lines by the datagram SOURCE IP.
+    # Docker NAT rewrites that to the gateway on published ports, which breaks
+    # multi-PLC routing. The published ports below are fine for dev / a single
+    # source; for LINUX PRODUCTION use host networking so real PLC IPs are seen
+    # (comment out `ports:` and add `network_mode: host`). See DEPLOY.md.
     ports:
       - "8062:8062"          # SCADA UI + REST/MCP API (TCP)
       - "15020:15020/udp"    # PLC telemetry ingest (UDP)
