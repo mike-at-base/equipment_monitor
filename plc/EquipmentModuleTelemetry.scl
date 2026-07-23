@@ -65,6 +65,7 @@ VERSION : 0.1
       statTxBuffer : Array[0..1179] of Byte;
       statTxLen : UDInt;
       statSendReq : Bool;
+      statSendCooldown : Bool;
    END_VAR
 
    VAR_TEMP
@@ -97,6 +98,7 @@ BEGIN
         // Change Log:
         // version      date                    author              description
         // 0.1.0        2026-07-22              mwebb               first release
+    // 0.1.1        2026-07-23              mwebb               fix TUSEND edge re-arm: one-scan REQ-low cooldown between jobs (queue jammed after first send)
     END_REGION
 
     REGION Initial Scan
@@ -342,7 +344,13 @@ BEGIN
     END_REGION
 
     REGION Send Queue Drain
-        IF #connected AND NOT #statSendReq AND (#statQueueCount > 0) THEN
+        // TUSEND is edge-triggered and samples REQ only when called: after a
+        // job completes, the instruction must see one call with REQ = FALSE
+        // before the next rising edge, or the next job never starts (the
+        // queue then fills and drops).  statSendCooldown enforces that
+        // one-scan gap; worst-case throughput is one datagram per two scans,
+        // which is far beyond what one EM produces.
+        IF #connected AND NOT #statSendReq AND NOT #statSendCooldown AND (#statQueueCount > 0) THEN
             #statTxPayload := #statQueue[#statQueueTail];
             #statQueueTail := (#statQueueTail + 1) MOD 8;
             #statQueueCount := #statQueueCount - 1;
@@ -363,13 +371,17 @@ BEGIN
 
         IF #instTUSend.DONE THEN
             #statSendReq := FALSE;
-        END_IF;
-        IF #instTUSend.ERROR THEN
-            // UDP send errors are rare (no ack semantics) — drop and move on;
+            #statSendCooldown := TRUE;   //this scan's call ran with REQ high
+        ELSIF #instTUSend.ERROR THEN
+            // UDP send errors are rare (no ack semantics) - drop and move on;
             // the next heartbeat snapshot self-heals collector state.
             #statSendReq := FALSE;
+            #statSendCooldown := TRUE;
             #sendErrors := #sendErrors + 1;
             #lastError := #instTUSend.STATUS;
+        ELSIF #statSendCooldown AND NOT #statSendReq THEN
+            //this scan's call ran with REQ low - edge is re-armed
+            #statSendCooldown := FALSE;
         END_IF;
     END_REGION
 
