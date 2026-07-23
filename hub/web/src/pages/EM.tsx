@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Route, Routes, useParams } from "react-router-dom";
-import { api, fmtClock, fmtMs, fmtSince, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
+import { api, CycleRow, fmtClock, fmtMs, fmtSince, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
 import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, useWindow } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
@@ -93,10 +93,12 @@ function Steps({ l, s, e }: P) {
 function Cycles({ l, s, e }: P) {
   const { win } = useWindow();
   const q = useAsync(() => api.cycles(l, s, e, win), [l, s, e, win]);
+  const [selTs, setSelTs] = useState<string>();
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
   const { stats, cycles } = q.data;
   const points = [...cycles].reverse().map((c) => ({ t: Date.parse(c.start_ts), v: c.total_ms }));
+  const selected = cycles.find((c) => c.start_ts === selTs) ?? cycles[0];
   return (
     <>
       <div className="tiles" style={{ marginTop: 16 }}>
@@ -112,6 +114,19 @@ function Cycles({ l, s, e }: P) {
         <h2>Cycle time trend ({win})</h2>
         <Trend points={points} unit="s" />
       </div>
+      {selected && (
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+            <h2 style={{ margin: 0 }}>Step waterfall · cycle at {fmtClock(selected.start_ts)}</h2>
+            <span className="muted" style={{ fontSize: 13 }}>
+              {fmtMs(selected.total_ms)} total
+              {selected.interrupted && <> · <span style={{ color: "var(--st-down)" }}>interrupted</span></>}
+              {" · pick a row below"}
+            </span>
+          </div>
+          <CycleWaterfall l={l} s={s} e={e} cyc={selected} />
+        </div>
+      )}
       <div className="card">
         <h2>Cycles</h2>
         <div className="tablewrap">
@@ -123,7 +138,8 @@ function Cycles({ l, s, e }: P) {
             </tr></thead>
             <tbody>
               {cycles.map((c, i) => (
-                <tr key={i}>
+                <tr key={i} onClick={() => setSelTs(c.start_ts)}
+                    className={c.start_ts === selected?.start_ts ? "sel" : "clickable"}>
                   <td className="num">{fmtClock(c.start_ts)}</td>
                   <td className="num">{fmtMs(c.total_ms)}</td>
                   <td className="num">{fmtMs(c.work_ms)}</td>
@@ -136,6 +152,43 @@ function Cycles({ l, s, e }: P) {
         </div>
       </div>
     </>
+  );
+}
+
+// Per-step waterfall for one cycle: each step is a bar positioned at its
+// offset from cycle start, width = its duration. Reveals which step ate the
+// cycle time; the step that was active during a fault carries that time.
+function CycleWaterfall({ l, s, e, cyc }: P & { cyc: CycleRow }) {
+  const q = useAsync(() => api.stepsRange(l, s, e, cyc.start_ts, cyc.end_ts),
+    [l, s, e, cyc.start_ts, cyc.end_ts]);
+  if (q.err) return <ErrorBox err={q.err} />;
+  if (!q.data) return <Loading />;
+  const t0 = Date.parse(cyc.start_ts);
+  const total = Math.max(cyc.total_ms, 1);
+  const steps = q.data
+    .filter((st) => st.seq_index === cyc.seq_index)
+    .sort((a, b) => Date.parse(a.start_ts) - Date.parse(b.start_ts));
+  if (!steps.length) return <div className="empty">No step detail retained for this cycle.</div>;
+  const longest = Math.max(...steps.map((st) => st.duration_ms));
+  return (
+    <div className="waterfall">
+      {steps.map((st, i) => {
+        const offset = Math.max(0, Date.parse(st.start_ts) - t0);
+        const leftPct = Math.min(100, (100 * offset) / total);
+        const widthPct = Math.min(100 - leftPct, (100 * st.duration_ms) / total);
+        const color = st.was_faulted ? "var(--st-down)"
+          : st.duration_ms === longest ? "var(--st-starved)" : "var(--grounded)";
+        return (
+          <div className="row" key={i} title={st.description}>
+            <span className="name">{st.step} · {st.description}</span>
+            <div className="track">
+              <div className="seg" style={{ left: `${leftPct}%`, width: `${Math.max(widthPct, 0.4)}%`, background: color }} />
+            </div>
+            <span className="val">{fmtMs(st.duration_ms)}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

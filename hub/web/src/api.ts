@@ -188,6 +188,9 @@ export const api = {
     get<Interval[]>(`/api/v2/ems/${l}/${s}/${e}/intervals?window=${win}`),
   steps: (l: string, s: string, e: string, win: string, limit = 500) =>
     get<StepRow[]>(`/api/v2/ems/${l}/${s}/${e}/steps?window=${win}&limit=${limit}`),
+  stepsRange: (l: string, s: string, e: string, from: string, to: string) =>
+    get<StepRow[]>(`/api/v2/ems/${l}/${s}/${e}/steps?from=${encodeURIComponent(from)}` +
+      `&to=${encodeURIComponent(to)}&limit=500`),
   cycles: (l: string, s: string, e: string, win: string) =>
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?window=${win}`),

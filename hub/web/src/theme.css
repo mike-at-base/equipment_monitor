@@ -163,6 +163,19 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .muted { color: var(--secondary); }
 .empty { padding: 28px; text-align: center; color: var(--secondary); }
 
+/* selectable table rows (cycle picker) */
+table.data tr.clickable, table.data tr.sel { cursor: pointer; }
+table.data tr.clickable:hover td { background: var(--conduit); }
+table.data tr.sel td { background: var(--livewire); }
+
+/* step waterfall (one cycle) */
+.waterfall { display: grid; gap: 5px; margin-top: 12px; }
+.waterfall .row { display: grid; grid-template-columns: 240px 1fr 78px; gap: 10px; align-items: center; font-size: 13px; }
+.waterfall .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.waterfall .row .track { position: relative; background: var(--conduit); border-radius: 4px; height: 16px; }
+.waterfall .row .seg { position: absolute; top: 0; height: 100%; border-radius: 4px; min-width: 2px; }
+.waterfall .row .val { text-align: right; color: var(--secondary); font-variant-numeric: tabular-nums; }
+
 /* raw / debug view */
 .mono { font-family: ui-monospace, Consolas, monospace; }
 .kvgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px 20px; margin-top: 8px; }
