@@ -283,9 +283,68 @@ function Alarms({ l, s, e }: P) {
   if (!q.data) return <Loading />;
   const { episodes } = q.data;
   if (!episodes.length) return <div className="empty">No downtime episodes in this window. 🎉</div>;
+
+  // aggregate episodes by root-cause reason → occurrences + total downtime
+  const byReason = new Map<string, { count: number; minutes: number }>();
+  for (const ep of episodes) {
+    const k = ep.reason || ep.reason_type || "Unknown";
+    const a = byReason.get(k) ?? { count: 0, minutes: 0 };
+    a.count += 1; a.minutes += ep.minutes;
+    byReason.set(k, a);
+  }
+  const reasons = [...byReason.entries()].map(([reason, a]) => ({ reason, ...a }));
+  const byCount = [...reasons].sort((a, b) => b.count - a.count).slice(0, 10);
+  const byDuration = [...reasons].sort((a, b) => b.minutes - a.minutes).slice(0, 10);
+
+  // faults localized to the step they occurred on (step-fault episodes)
+  const byStep = new Map<string, number>();
+  for (const ep of episodes) if (ep.step_name) byStep.set(ep.step_name, (byStep.get(ep.step_name) ?? 0) + 1);
+  const stepBars = [...byStep.entries()]
+    .map(([step, count]) => ({ name: `Step ${step}`, value: count, color: "var(--st-down)" }))
+    .sort((a, b) => b.value - a.value).slice(0, 12);
+
+  // alarm occurrences over time (hourly buckets by episode start)
+  const hourMap = new Map<number, number>();
+  for (const ep of episodes) {
+    const d = new Date(ep.start_ts); d.setMinutes(0, 0, 0);
+    hourMap.set(d.getTime(), (hourMap.get(d.getTime()) ?? 0) + 1);
+  }
+  const overTime = [...hourMap.entries()].sort((a, b) => a[0] - b[0])
+    .map(([t, c]) => ({ t, v: c, label: fmtClock(new Date(t).toISOString()).replace(/:\d\d /, " ") }));
+
+  const intFmt = (v: number) => `${v}`;
   return (
-    <div className="card">
-      <h2>Downtime episodes · {episodes.length}</h2>
+    <>
+      <div className="card">
+        <h2>Alarms by count</h2>
+        <p className="muted" style={{ marginTop: 0 }}>How often each root cause tripped — nuisance / chronic alarms.</p>
+        <Bars wrap valueFmt={intFmt} rows={byCount.map((r) => ({
+          name: r.reason, value: r.count, color: "var(--st-down)",
+        }))} />
+      </div>
+      <div className="card">
+        <h2>Alarms by downtime</h2>
+        <p className="muted" style={{ marginTop: 0 }}>Total minutes lost to each root cause — biggest availability hits.</p>
+        <Bars wrap rows={byDuration.map((r) => ({
+          name: `${r.reason} (×${r.count})`, value: r.minutes, color: "var(--st-down)",
+        }))} />
+      </div>
+      {stepBars.length > 0 && (
+        <div className="card">
+          <h2>Faults by step</h2>
+          <p className="muted" style={{ marginTop: 0 }}>Where in the sequence faults land — points at the failing motion or device.</p>
+          <Bars valueFmt={intFmt} rows={stepBars} />
+        </div>
+      )}
+      {overTime.length > 1 && (
+        <div className="card">
+          <h2>Alarms over time</h2>
+          <p className="muted" style={{ marginTop: 0 }}>Occurrences per hour — reveals clustering at shift change, ramp-up, or after breaks.</p>
+          <VBars bars={overTime} unit="" />
+        </div>
+      )}
+      <div className="card">
+        <h2>Downtime episodes · {episodes.length}</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         Root cause is latched at the first fault; gate openings, resets, and
         retry attempts inside an episode are absorbed (see the Availability
@@ -318,7 +377,8 @@ function Alarms({ l, s, e }: P) {
           </tbody>
         </table>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
