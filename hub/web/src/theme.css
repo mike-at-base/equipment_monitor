@@ -163,6 +163,25 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .muted { color: var(--secondary); }
 .empty { padding: 28px; text-align: center; color: var(--secondary); }
 
+/* down-reason pareto (availability page) */
+.reasons { display: grid; gap: 14px; }
+.ritem { }
+.rhead { display: flex; align-items: baseline; gap: 10px; }
+.rtag {
+  font: 700 10px Inter, system-ui, sans-serif; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--strike); border-radius: 5px;
+  padding: 2px 7px; white-space: nowrap; align-self: center;
+}
+.rtitle { font-weight: 600; flex: 1; }
+.rmeta { color: var(--secondary); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rconds { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.rcond {
+  font-size: 12px; background: var(--conduit); color: var(--terminal);
+  border-radius: 5px; padding: 2px 8px;
+}
+.rtrack { background: var(--conduit); border-radius: 4px; height: 8px; margin-top: 8px; }
+.rfill { height: 100%; border-radius: 4px; }
+
 /* selectable table rows (cycle picker) */
 table.data tr.clickable, table.data tr.sel { cursor: pointer; }
 table.data tr.clickable:hover td { background: var(--conduit); }
