@@ -377,11 +377,6 @@ func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	throughput, err := s.cycleThroughput(r.Context(), []int{em.ID}, from, to)
-	if err != nil {
-		httpErr(w, 500, err)
-		return
-	}
 	rows, err := s.pool.Query(r.Context(), `
 	    SELECT start_ts, end_ts, seq_index, work_ms, exchange_ms, total_ms, interrupted
 	    FROM cycle WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
@@ -410,7 +405,28 @@ func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, v)
 	}
-	writeJSON(w, map[string]any{"stats": stats, "cycles": out, "throughput": throughput})
+	writeJSON(w, map[string]any{"stats": stats, "cycles": out})
+}
+
+// handleThroughput returns cycle counts bucketed by ?bucket=15m|30m|1h
+// (default 1h) over the window — actual completed-cycle counts, not a rate.
+func (s *Server) handleThroughput(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	from, to, err := s.window(r)
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	name, dur := parseBucket(r.URL.Query().Get("bucket"))
+	buckets, err := s.cycleThroughput(r.Context(), []int{em.ID}, from, to, dur)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, map[string]any{"bucket": name, "buckets": buckets})
 }
 
 func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {

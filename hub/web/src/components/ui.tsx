@@ -162,7 +162,7 @@ export function VBars({ bars, unit }: { bars: { t: number; v: number; label: str
           <g key={i}>
             <rect x={x + bw * 0.12} y={y(b.v)} width={bw * 0.76} height={Math.max(h, 0)}
                   rx={2} fill="var(--grounded)">
-              <title>{`${b.label}\n${b.v} ${unit}`}</title>
+              <title>{`${b.label}\n${b.v}${unit ? " " + unit : ""}`}</title>
             </rect>
             {i % labelEvery === 0 && (
               <text x={x + bw / 2} y={height - 8} textAnchor="middle"

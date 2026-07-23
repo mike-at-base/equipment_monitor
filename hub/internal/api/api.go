@@ -75,6 +75,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/intervals", s.handleIntervals)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/steps", s.handleSteps)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/cycles", s.handleCycles)
+	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/throughput", s.handleThroughput)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/downs", s.handleDowns)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/debug", s.handleDebug)
 }
@@ -362,26 +363,25 @@ func (s *Server) cycleStats(ctx context.Context, ids []int, from, to time.Time) 
 type ThroughputBucket struct {
 	BucketTs time.Time `json:"bucket_ts"`
 	Count    int       `json:"count"`
-	PerHour  float64   `json:"per_hour"`
 }
 
-// cycleThroughput buckets completed cycles into fixed-width time buckets and
-// reports each bucket's count and the equivalent per-hour rate. Bucket width
-// adapts to the window so a short window still yields a readable chart; the
-// per-hour rate normalizes across widths so the y-axis is comparable.
-func (s *Server) cycleThroughput(ctx context.Context, ids []int, from, to time.Time) ([]ThroughputBucket, error) {
-	span := to.Sub(from)
-	bucket := time.Hour
-	switch {
-	case span <= 2*time.Hour:
-		bucket = 10 * time.Minute
-	case span <= 12*time.Hour:
-		bucket = 30 * time.Minute
-	case span <= 3*24*time.Hour:
-		bucket = time.Hour
-	default:
-		bucket = 3 * time.Hour
+// bucketDurations are the toggle options the throughput chart offers.
+var bucketDurations = map[string]time.Duration{
+	"15m": 15 * time.Minute,
+	"30m": 30 * time.Minute,
+	"1h":  time.Hour,
+}
+
+func parseBucket(s string) (string, time.Duration) {
+	if d, ok := bucketDurations[s]; ok {
+		return s, d
 	}
+	return "1h", time.Hour // default: per hour
+}
+
+// cycleThroughput counts completed cycles per fixed-width time bucket.
+func (s *Server) cycleThroughput(ctx context.Context, ids []int, from, to time.Time,
+	bucket time.Duration) ([]ThroughputBucket, error) {
 	rows, err := s.pool.Query(ctx, `
 	    SELECT time_bucket(make_interval(secs => $4), start_ts) AS b, count(*)
 	    FROM cycle
@@ -397,7 +397,6 @@ func (s *Server) cycleThroughput(ctx context.Context, ids []int, from, to time.T
 		if err := rows.Scan(&b.BucketTs, &b.Count); err != nil {
 			return nil, err
 		}
-		b.PerHour = round1(float64(b.Count) * float64(time.Hour) / float64(bucket))
 		out = append(out, b)
 	}
 	return out, rows.Err()

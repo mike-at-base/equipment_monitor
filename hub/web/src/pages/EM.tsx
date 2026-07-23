@@ -96,11 +96,8 @@ function Cycles({ l, s, e }: P) {
   const [selTs, setSelTs] = useState<string>();
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
-  const { stats, cycles, throughput } = q.data;
+  const { stats, cycles } = q.data;
   const points = [...cycles].reverse().map((c) => ({ t: Date.parse(c.start_ts), v: c.total_ms }));
-  const tputBars = throughput.map((b) => ({
-    t: Date.parse(b.bucket_ts), v: b.per_hour, label: fmtClock(b.bucket_ts).replace(/:\d\d /, " "),
-  }));
   const selected = cycles.find((c) => c.start_ts === selTs) ?? cycles[0];
   return (
     <>
@@ -117,11 +114,7 @@ function Cycles({ l, s, e }: P) {
         <h2>Cycle time trend ({win})</h2>
         <Trend points={points} unit="s" />
       </div>
-      <div className="card">
-        <h2>Throughput ({win})</h2>
-        <p className="muted" style={{ marginTop: 0 }}>Completed cycles, as an hourly rate per time bucket.</p>
-        <VBars bars={tputBars} unit="/h" />
-      </div>
+      <Throughput l={l} s={s} e={e} />
       {selected && (
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
@@ -160,6 +153,36 @@ function Cycles({ l, s, e }: P) {
         </div>
       </div>
     </>
+  );
+}
+
+const BUCKETS = ["15m", "30m", "1h"];
+
+// Completed-cycle counts over the window, bucketed by a user-chosen width
+// (default 1h). Actual counts, not a rate.
+function Throughput({ l, s, e }: P) {
+  const { win } = useWindow();
+  const [bucket, setBucket] = useState("1h");
+  const q = useAsync(() => api.throughput(l, s, e, win, bucket), [l, s, e, win, bucket]);
+  const bars = (q.data?.buckets ?? []).map((b) => ({
+    t: Date.parse(b.bucket_ts), v: b.count,
+    label: fmtClock(b.bucket_ts).replace(/:\d\d /, " "),
+  }));
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <h2 style={{ margin: 0 }}>Throughput ({win})</h2>
+        <div className="winpick" role="group" aria-label="bucket size">
+          {BUCKETS.map((b) => (
+            <button key={b} className={b === bucket ? "active" : ""} onClick={() => setBucket(b)}>{b}</button>
+          ))}
+        </div>
+      </div>
+      <p className="muted" style={{ margin: "4px 0 0" }}>Completed cycles per {bucket} bucket.</p>
+      {q.err ? <ErrorBox err={q.err} />
+        : !q.data ? <Loading />
+        : <VBars bars={bars} unit="" />}
+    </div>
   );
 }
 
