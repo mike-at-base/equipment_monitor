@@ -100,6 +100,7 @@ BEGIN
         // 0.1.0        2026-07-22              mwebb               first release
     // 0.1.1        2026-07-23              mwebb               fix TUSEND edge re-arm: one-scan REQ-low cooldown between jobs (queue jammed after first send)
     // 0.1.2        2026-07-23              mwebb               TADDR_Param V20 member names (REM_IP_ADDR / REM_PORT_NR)
+    // 0.1.3        2026-07-23              mwebb               accept TCON 80A3 (connection already established in CPU, survives instance re-download) as connected
     END_REGION
 
     REGION Initial Scan
@@ -146,8 +147,15 @@ BEGIN
             #connected := TRUE;
         END_IF;
         IF #instTCon.ERROR THEN
-            #connected := FALSE;
-            #lastError := #instTCon.STATUS;
+            IF #instTCon.STATUS = W#16#80A3 THEN
+                // the CPU already holds this connection (e.g. this instance
+                // was reinitialized by a re-download while the established
+                // UDP binding survived in the CPU) - it is usable as-is
+                #connected := TRUE;
+            ELSE
+                #connected := FALSE;
+                #lastError := #instTCon.STATUS;
+            END_IF;
         END_IF;
     END_REGION
 
