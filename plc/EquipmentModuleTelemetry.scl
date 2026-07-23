@@ -99,6 +99,7 @@ BEGIN
         // version      date                    author              description
         // 0.1.0        2026-07-22              mwebb               first release
     // 0.1.1        2026-07-23              mwebb               fix TUSEND edge re-arm: one-scan REQ-low cooldown between jobs (queue jammed after first send)
+    // 0.1.2        2026-07-23              mwebb               TADDR_Param V20 member names (REM_IP_ADDR / REM_PORT_NR)
     END_REGION
 
     REGION Initial Scan
@@ -116,11 +117,11 @@ BEGIN
             #statConnParam.RemotePort := 0;
             #statConnParam.LocalPort := #localPort;
 
-            #statAddrParam.RemoteAddress.ADDR[1] := #remoteIp1;
-            #statAddrParam.RemoteAddress.ADDR[2] := #remoteIp2;
-            #statAddrParam.RemoteAddress.ADDR[3] := #remoteIp3;
-            #statAddrParam.RemoteAddress.ADDR[4] := #remoteIp4;
-            #statAddrParam.RemotePort := #remotePort;
+            #statAddrParam.REM_IP_ADDR[1] := #remoteIp1;
+            #statAddrParam.REM_IP_ADDR[2] := #remoteIp2;
+            #statAddrParam.REM_IP_ADDR[3] := #remoteIp3;
+            #statAddrParam.REM_IP_ADDR[4] := #remoteIp4;
+            #statAddrParam.REM_PORT_NR := #remotePort;
 
             #statSnapshot.version := 3;
             #statSnapshot.stationName := #stationName;
