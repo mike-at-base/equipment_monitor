@@ -295,12 +295,22 @@ function Alarms({ l, s, e }: P) {
   const reasons = [...byReason.entries()].map(([reason, a]) => ({ reason, ...a }));
   const byCount = [...reasons].sort((a, b) => b.count - a.count).slice(0, 10);
   const byDuration = [...reasons].sort((a, b) => b.minutes - a.minutes).slice(0, 10);
+  // mean time to recover per root cause = total downtime / occurrences
+  const byMttr = [...reasons].map((r) => ({ ...r, mttr: r.minutes / r.count }))
+    .sort((a, b) => b.mttr - a.mttr).slice(0, 10);
 
   // faults localized to the step they occurred on (step-fault episodes)
   const byStep = new Map<string, number>();
-  for (const ep of episodes) if (ep.step_name) byStep.set(ep.step_name, (byStep.get(ep.step_name) ?? 0) + 1);
+  const byStepMin = new Map<string, number>();
+  for (const ep of episodes) if (ep.step_name) {
+    byStep.set(ep.step_name, (byStep.get(ep.step_name) ?? 0) + 1);
+    byStepMin.set(ep.step_name, (byStepMin.get(ep.step_name) ?? 0) + ep.minutes);
+  }
   const stepBars = [...byStep.entries()]
     .map(([step, count]) => ({ name: `Step ${step}`, value: count, color: "var(--st-down)" }))
+    .sort((a, b) => b.value - a.value).slice(0, 12);
+  const stepMinBars = [...byStepMin.entries()]
+    .map(([step, minutes]) => ({ name: `Step ${step}`, value: minutes, color: "var(--st-down)" }))
     .sort((a, b) => b.value - a.value).slice(0, 12);
 
   // alarm occurrences over time (hourly buckets by episode start)
@@ -329,11 +339,25 @@ function Alarms({ l, s, e }: P) {
           name: `${r.reason} (×${r.count})`, value: r.minutes, color: "var(--st-down)",
         }))} />
       </div>
+      <div className="card">
+        <h2>Mean time to recover</h2>
+        <p className="muted" style={{ marginTop: 0 }}>Average downtime per occurrence — which alarms are hard to clear and need a recovery procedure.</p>
+        <Bars wrap rows={byMttr.map((r) => ({
+          name: `${r.reason} (×${r.count})`, value: r.mttr, color: "var(--st-down)",
+        }))} />
+      </div>
       {stepBars.length > 0 && (
         <div className="card">
           <h2>Faults by step</h2>
           <p className="muted" style={{ marginTop: 0 }}>Where in the sequence faults land — points at the failing motion or device.</p>
           <Bars valueFmt={intFmt} rows={stepBars} />
+        </div>
+      )}
+      {stepMinBars.length > 0 && (
+        <div className="card">
+          <h2>Downtime by step</h2>
+          <p className="muted" style={{ marginTop: 0 }}>Minutes lost at each step — the duration view of the failing motion or device.</p>
+          <Bars rows={stepMinBars} />
         </div>
       )}
       {overTime.length > 1 && (
