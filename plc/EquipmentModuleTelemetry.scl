@@ -7,8 +7,8 @@ VERSION : 0.1
 // (typeEquipmentModuleTelemetry, 1108 bytes) to the collector whenever any
 // monitored EM value changes, plus a heartbeat snapshot every
 // heartbeatInterval.  Change detection runs every scan, so transitions
-// faster than the OPC UA sampling interval are never lost; an 8-deep send
-// queue absorbs changes on consecutive scans while TUSEND is busy.
+// faster than the OPC UA sampling interval are never lost; a 16-deep send
+// queue absorbs bursts of changes on consecutive scans while TUSEND is busy.
 //
 // Call AFTER the EquipmentModule FB in the same OB so the snapshot sees
 // the freshest scan data.  Give every instance on a CPU a unique
@@ -57,7 +57,7 @@ VERSION : 0.1
       statSeq : UDInt;
       statSnapshot : "typeEquipmentModuleTelemetry";
       statLastSent : "typeEquipmentModuleTelemetry";
-      statQueue : Array[0..7] of "typeEquipmentModuleTelemetry";
+      statQueue : Array[0..15] of "typeEquipmentModuleTelemetry"; // depth 16 (see MOD 16 below)
       statQueueHead : Int;              // next write slot
       statQueueTail : Int;              // next read slot
       statQueueCount : Int;
@@ -104,6 +104,7 @@ BEGIN
     // 0.1.2        2026-07-23              mwebb               TADDR_Param V20 member names (REM_IP_ADDR / REM_PORT_NR)
     // 0.1.3        2026-07-23              mwebb               accept TCON 80A3 (connection already established in CPU, survives instance re-download) as connected
     // 0.1.4        2026-07-23              mwebb               fix heartbeat: IN := NOT Q self-reset consumed its own pulse (reading IEC timer Q updates state); capture Q as call output with explicit one-scan reset
+    // 0.1.5        2026-07-23              mwebb               deepen send ring buffer 8 -> 16 to absorb longer bursts of same-scan changes
     END_REGION
 
     REGION Initial Scan
@@ -350,14 +351,15 @@ BEGIN
             #statSnapshot.seq := #statSeq;
 
             // ring buffer: drop-oldest on overflow so the NEWEST state always
-            // gets through (stale intermediate steps are the acceptable loss)
-            IF #statQueueCount >= 8 THEN
-                #statQueueTail := (#statQueueTail + 1) MOD 8;
+            // gets through (stale intermediate steps are the acceptable loss).
+            // Depth 16 — must match the statQueue array bound and the MOD below.
+            IF #statQueueCount >= 16 THEN
+                #statQueueTail := (#statQueueTail + 1) MOD 16;
                 #statQueueCount := #statQueueCount - 1;
                 #queueDrops := #queueDrops + 1;
             END_IF;
             #statQueue[#statQueueHead] := #statSnapshot;
-            #statQueueHead := (#statQueueHead + 1) MOD 8;
+            #statQueueHead := (#statQueueHead + 1) MOD 16;
             #statQueueCount := #statQueueCount + 1;
         END_IF;
     END_REGION
@@ -371,7 +373,7 @@ BEGIN
         // which is far beyond what one EM produces.
         IF #connected AND NOT #statSendReq AND NOT #statSendCooldown AND (#statQueueCount > 0) THEN
             #statTxPayload := #statQueue[#statQueueTail];
-            #statQueueTail := (#statQueueTail + 1) MOD 8;
+            #statQueueTail := (#statQueueTail + 1) MOD 16;
             #statQueueCount := #statQueueCount - 1;
 
             #tempPos := 0;
