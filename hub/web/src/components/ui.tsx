@@ -42,10 +42,10 @@ export function StateChip({ state }: { state: string }) {
 }
 
 // ── horizontal bar list ──────────────────────────────────────────────────
-export function Bars({ rows }: { rows: { name: string; value: number; color?: string; suffix?: string }[] }) {
+export function Bars({ rows, wrap }: { rows: { name: string; value: number; color?: string; suffix?: string }[]; wrap?: boolean }) {
   const max = Math.max(...rows.map((r) => r.value), 0.001);
   return (
-    <div className="bars">
+    <div className={wrap ? "bars wrap" : "bars"}>
       {rows.map((r, i) => (
         <div className="row" key={i}>
           <span className="name" title={r.name}>{r.name}</span>

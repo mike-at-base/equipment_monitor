@@ -267,72 +267,12 @@ function Availability({ l, s, e }: P) {
       {downs.data.top_reasons.length > 0 && (
         <div className="card">
           <h2>Down reasons</h2>
-          <ReasonPareto reasons={downs.data.top_reasons} />
+          <Bars wrap rows={downs.data.top_reasons.map((r) => ({
+            name: `${r.reason} (×${r.count})`, value: r.minutes, color: "var(--st-down)",
+          }))} />
         </div>
       )}
     </>
-  );
-}
-
-const REASON_LABEL: Record<string, string> = {
-  step_fault: "Step fault", interlock: "Interlock", fault: "Fault",
-  paused: "Paused", flow: "Flow",
-};
-const REASON_COLOR: Record<string, string> = {
-  step_fault: "var(--st-down)", fault: "var(--st-down)",
-  interlock: "var(--terminal)", paused: "var(--st-paused)", flow: "var(--st-blocked)",
-};
-
-// PLC reasons pack several conditions into one string: a step fault reads
-// "Alarm message — condA; condB", an interlock reads "condA; condB". Split
-// them into a headline (first-out cause) and the remaining conditions.
-function parseReason(reason: string): { headline: string; conditions: string[] } {
-  const dash = reason.split(" — ");
-  let condStr = reason;
-  let headline = "";
-  if (dash.length > 1) {
-    headline = dash[0].trim();
-    condStr = dash.slice(1).join(" — ");
-  }
-  const parts = condStr.split(";").map((p) => p.trim()).filter(Boolean);
-  if (!headline) {
-    // interlock/flow: first failing condition is the headline, rest are chips
-    return { headline: parts[0] ?? reason, conditions: parts.slice(1) };
-  }
-  return { headline, conditions: parts };
-}
-
-// Down-reason pareto: type badge + first-out cause + each extra condition as
-// its own chip, ranked by downtime. No truncation — the full PLC reason is
-// legible instead of an ellipsis.
-function ReasonPareto({ reasons }: { reasons: { reason: string; reason_type: string; count: number; minutes: number }[] }) {
-  const max = Math.max(...reasons.map((r) => r.minutes), 0.001);
-  return (
-    <div className="reasons">
-      {reasons.map((r, i) => {
-        const { headline, conditions } = parseReason(r.reason);
-        const color = REASON_COLOR[r.reason_type] ?? "var(--st-down)";
-        return (
-          <div className="ritem" key={i}>
-            <div className="rhead">
-              <span className="rtag" style={{ background: color }}>
-                {REASON_LABEL[r.reason_type] ?? r.reason_type}
-              </span>
-              <span className="rtitle">{headline}</span>
-              <span className="rmeta">×{r.count} · {r.minutes.toFixed(1)} min</span>
-            </div>
-            {conditions.length > 0 && (
-              <div className="rconds">
-                {conditions.map((c, j) => <span className="rcond" key={j}>{c}</span>)}
-              </div>
-            )}
-            <div className="rtrack">
-              <div className="rfill" style={{ width: `${(100 * r.minutes) / max}%`, background: color }} />
-            </div>
-          </div>
-        );
-      })}
-    </div>
   );
 }
 
