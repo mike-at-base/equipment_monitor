@@ -74,6 +74,7 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 
 	sum := &LineSummary{
 		Line: l.Name, From: from, To: to,
+		EMs:            []EMSummary{},
 		StateMin:       map[string]float64{},
 		Cycles:         cycles,
 		TopDownReasons: topReasons(downs, 5),

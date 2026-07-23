@@ -23,6 +23,7 @@ import (
 	"github.com/mike-at-base/equipment_monitor/hub/internal/mcpserv"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/store"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/tracker"
+	"github.com/mike-at-base/equipment_monitor/hub/web"
 )
 
 func env(key, def string) string {
@@ -149,6 +150,52 @@ func main() {
 	})
 	apiSrv.Register(mux)
 	mux.HandleFunc("/mcp", mcpserv.Handler(mux))
+
+	// SSE live stream for the SCADA frontend (1 Hz snapshots)
+	mux.HandleFunc("GET /api/v2/stream", func(w http.ResponseWriter, r *http.Request) {
+		fl, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		send := func() bool {
+			payload, err := json.Marshal(svc.Snapshot(lineByHost))
+			if err != nil {
+				return false
+			}
+			if _, err := w.Write([]byte("data: ")); err != nil {
+				return false
+			}
+			if _, err := w.Write(payload); err != nil {
+				return false
+			}
+			if _, err := w.Write([]byte("\n\n")); err != nil {
+				return false
+			}
+			fl.Flush()
+			return true
+		}
+		if !send() {
+			return
+		}
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if !send() {
+					return
+				}
+			}
+		}
+	})
+
+	// SPA (embedded dist) — mounted last so /api, /mcp, /healthz win
+	mux.Handle("/", web.Handler())
 	httpAddr := env("EMHUB_HTTP", ":8060")
 	go func() {
 		log.Info("http up", "addr", httpAddr)

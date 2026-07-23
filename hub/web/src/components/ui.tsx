@@ -1,0 +1,158 @@
+import { createContext, useContext, useEffect, useState } from "react";
+import { Interval, STATE_LABEL, STATE_ORDER, stateColor } from "../api";
+
+// ── shared window (time range) context ───────────────────────────────────
+const WindowCtx = createContext<{ win: string; setWin: (w: string) => void }>({
+  win: "today", setWin: () => {},
+});
+export const WindowProvider = WindowCtx.Provider;
+export const useWindow = () => useContext(WindowCtx);
+
+const WINDOWS = ["1h", "8h", "today", "24h", "3d"];
+
+export function WindowPicker() {
+  const { win, setWin } = useWindow();
+  return (
+    <div className="winpick" role="group" aria-label="time window">
+      {WINDOWS.map((w) => (
+        <button key={w} className={w === win ? "active" : ""} onClick={() => setWin(w)}>
+          {w}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── 1 Hz clock for dwell timers ──────────────────────────────────────────
+export function useNow(): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+export function StateChip({ state }: { state: string }) {
+  return (
+    <span className="chip" style={{ background: stateColor(state) }}>
+      {STATE_LABEL[state] ?? state}
+    </span>
+  );
+}
+
+// ── horizontal bar list ──────────────────────────────────────────────────
+export function Bars({ rows }: { rows: { name: string; value: number; color?: string; suffix?: string }[] }) {
+  const max = Math.max(...rows.map((r) => r.value), 0.001);
+  return (
+    <div className="bars">
+      {rows.map((r, i) => (
+        <div className="row" key={i}>
+          <span className="name" title={r.name}>{r.name}</span>
+          <div className="track">
+            <div className="fill" style={{
+              width: `${(100 * r.value) / max}%`,
+              background: r.color ?? "var(--grounded)",
+            }} />
+          </div>
+          <span className="val">{r.value.toFixed(1)}{r.suffix ?? " min"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── SVG state gantt ──────────────────────────────────────────────────────
+export function Gantt({ rows, from, to }: {
+  rows: { label: string; intervals: Interval[] }[];
+  from: number; to: number;
+}) {
+  const width = 1000, rowH = 26, labelW = 150;
+  const span = Math.max(to - from, 1);
+  const x = (t: number) => labelW + ((t - from) / span) * (width - labelW);
+  const height = rows.length * rowH + 22;
+  const usedStates = new Set<string>();
+  rows.forEach((r) => r.intervals.forEach((iv) => usedStates.add(iv.state)));
+  return (
+    <div>
+      <svg className="gantt" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
+           style={{ height: Math.min(420, height) }}>
+        {rows.map((r, i) => (
+          <g key={r.label}>
+            <text className="rowlabel" x={0} y={i * rowH + 17}>{r.label}</text>
+            <rect x={labelW} y={i * rowH + 4} width={width - labelW} height={rowH - 8}
+                  fill="var(--conduit)" rx={3} />
+            {r.intervals.map((iv, j) => {
+              const s = Math.max(Date.parse(iv.start_ts), from);
+              const e = Math.min(Date.parse(iv.end_ts), to);
+              if (e <= s) return null;
+              return (
+                <rect key={j} x={x(s)} y={i * rowH + 4}
+                      width={Math.max(x(e) - x(s), 1.5)} height={rowH - 8} rx={2}
+                      fill={stateColor(iv.state)}>
+                  <title>{`${STATE_LABEL[iv.state] ?? iv.state}  ${new Date(s).toLocaleTimeString()} – ${new Date(e).toLocaleTimeString()}${iv.reason ? "\n" + iv.reason : ""}`}</title>
+                </rect>
+              );
+            })}
+          </g>
+        ))}
+      </svg>
+      <div className="gantt-legend">
+        {STATE_ORDER.filter((s) => usedStates.has(s)).map((s) => (
+          <span key={s}><i style={{ background: stateColor(s) }} />{STATE_LABEL[s]}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── simple SVG trend (cycle times) ───────────────────────────────────────
+export function Trend({ points, unit }: { points: { t: number; v: number }[]; unit: string }) {
+  if (points.length < 2) return <div className="empty">Not enough data for a trend.</div>;
+  const width = 1000, height = 180, pad = 40;
+  const ts = points.map((p) => p.t), vs = points.map((p) => p.v);
+  const t0 = Math.min(...ts), t1 = Math.max(...ts);
+  const vmax = Math.max(...vs) * 1.1;
+  const x = (t: number) => pad + ((t - t0) / Math.max(t1 - t0, 1)) * (width - pad - 8);
+  const y = (v: number) => height - 24 - (v / vmax) * (height - 40);
+  const d = points.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: 180 }}>
+      {[0.25, 0.5, 0.75, 1].map((f) => (
+        <g key={f}>
+          <line x1={pad} x2={width - 8} y1={y(vmax * f / 1.1)} y2={y(vmax * f / 1.1)}
+                stroke="var(--conduit)" strokeWidth={1} />
+          <text x={pad - 6} y={y(vmax * f / 1.1) + 4} textAnchor="end"
+                fontSize={10} fill="var(--secondary)">
+            {Math.round(vmax * f / 1.1 / 1000)}{unit}
+          </text>
+        </g>
+      ))}
+      <path d={d} fill="none" stroke="var(--grounded)" strokeWidth={1.6} />
+      {points.map((p, i) => (
+        <circle key={i} cx={x(p.t)} cy={y(p.v)} r={2} fill="var(--grounded)" />
+      ))}
+    </svg>
+  );
+}
+
+export function Loading() {
+  return <div className="empty">Loading…</div>;
+}
+
+export function ErrorBox({ err }: { err: unknown }) {
+  return <div className="empty">Could not load: {String(err)}</div>;
+}
+
+// tiny fetch hook
+export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): { data?: T; err?: unknown } {
+  const [state, setState] = useState<{ data?: T; err?: unknown }>({});
+  useEffect(() => {
+    let live = true;
+    setState({});
+    fn().then((data) => live && setState({ data })).catch((err) => live && setState({ err }));
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return state;
+}

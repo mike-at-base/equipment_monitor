@@ -265,7 +265,7 @@ func (s *Server) downRows(ctx context.Context, ids []int, byID map[int]EMInfo,
 		return nil, err
 	}
 	defer rows.Close()
-	var out []DownRow
+	out := []DownRow{}
 	for rows.Next() {
 		var id int
 		var d DownRow
@@ -402,7 +402,7 @@ func (s *Server) flowLosses(ctx context.Context, ids []int, byID map[int]EMInfo,
 		return nil, err
 	}
 	defer rows.Close()
-	var out []FlowAgg
+	out := []FlowAgg{}
 	for rows.Next() {
 		var id, n int
 		var st, reason string
