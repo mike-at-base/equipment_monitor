@@ -34,13 +34,16 @@ type Service struct {
 
 // LiveEM is a lock-safe snapshot of one tracker for the live API.
 type LiveEM struct {
-	Line     string    `json:"line"`
-	Station  string    `json:"station"`
-	EMLabel  string    `json:"em_label"`
-	State    string    `json:"state"`
-	Reason   string    `json:"reason,omitempty"`
-	Step     string    `json:"step,omitempty"`
-	LastSeen time.Time `json:"last_seen"`
+	EMID       int       `json:"-"`
+	Line       string    `json:"line"`
+	Station    string    `json:"station"`
+	EMLabel    string    `json:"em_label"`
+	State      string    `json:"state"`
+	ReasonType string    `json:"reason_type,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	Step       string    `json:"step,omitempty"`
+	Since      time.Time `json:"since"`
+	LastSeen   time.Time `json:"last_seen"`
 }
 
 func New(port int, trackers map[Key]*tracker.EM, log *slog.Logger) *Service {
@@ -54,12 +57,23 @@ func (s *Service) Snapshot(lineByHost map[string]string) []LiveEM {
 	out := make([]LiveEM, 0, len(s.trackers))
 	for k, t := range s.trackers {
 		out = append(out, LiveEM{
-			Line: lineByHost[k.Host], Station: t.Station(), EMLabel: t.EMLabel(),
-			State: t.State(), Reason: t.StateReason(), Step: t.Step(),
-			LastSeen: t.LastSeen(),
+			EMID: t.EMID(), Line: lineByHost[k.Host],
+			Station: t.Station(), EMLabel: t.EMLabel(),
+			State: t.State(), ReasonType: t.StateReasonType(),
+			Reason: t.StateReason(), Step: t.Step(),
+			Since: t.StateSince(), LastSeen: t.LastSeen(),
 		})
 	}
 	return out
+}
+
+// FlushAll closes all open intervals (graceful shutdown).
+func (s *Service) FlushAll(ts time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.trackers {
+		t.FlushOpen(ts)
+	}
 }
 
 func (s *Service) Run(ctx context.Context) error {

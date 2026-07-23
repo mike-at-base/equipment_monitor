@@ -15,9 +15,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"time"
 
+	"github.com/mike-at-base/equipment_monitor/hub/internal/api"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/config"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/ingest"
+	"github.com/mike-at-base/equipment_monitor/hub/internal/mcpserv"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/store"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/tracker"
 )
@@ -114,6 +117,24 @@ func main() {
 
 	svc := ingest.New(cfg.Telemetry.ListenPort, trackers, log)
 
+	// query API hierarchy (only enabled lines/EMs, with db ids)
+	var apiLines []api.LineInfo
+	for _, l := range cfg.Lines {
+		if !l.IsEnabled() {
+			continue
+		}
+		li := api.LineInfo{Name: l.Name}
+		for _, e := range l.EMs {
+			if !e.IsEnabled() {
+				continue
+			}
+			id := emIDs[l.Name][[2]string{lowerASCII(e.Station), lowerASCII(e.EMLabel)}]
+			li.EMs = append(li.EMs, api.EMInfo{ID: id, Station: e.Station,
+				Label: e.EMLabel, Display: e.DisplayName})
+		}
+		apiLines = append(apiLines, li)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -123,6 +144,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(svc.Snapshot(lineByHost))
 	})
+	apiSrv := api.New(pg.Pool(), apiLines, func() []ingest.LiveEM {
+		return svc.Snapshot(lineByHost)
+	})
+	apiSrv.Register(mux)
+	mux.HandleFunc("/mcp", mcpserv.Handler(mux))
 	httpAddr := env("EMHUB_HTTP", ":8060")
 	go func() {
 		log.Info("http up", "addr", httpAddr)
@@ -134,6 +160,7 @@ func main() {
 	if err := svc.Run(ctx); err != nil {
 		log.Error("ingest", "err", err)
 	}
+	svc.FlushAll(time.Now().UTC())
 	stop()
 	pg.Wait()
 	log.Info("emhub stopped")

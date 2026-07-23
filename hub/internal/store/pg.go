@@ -323,3 +323,6 @@ func (p *PG) flush(rows []row) error {
 }
 
 func (p *PG) Close() { p.pool.Close() }
+
+// Pool exposes the connection pool for the query API.
+func (p *PG) Pool() *pgxpool.Pool { return p.pool }

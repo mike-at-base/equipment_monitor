@@ -89,7 +89,10 @@ func New(cfg Config, store model.Store) *EM {
 	}
 }
 
-func (t *EM) LastSeen() time.Time { return t.lastSeen }
+func (t *EM) LastSeen() time.Time   { return t.lastSeen }
+func (t *EM) EMID() int             { return t.cfg.EMID }
+func (t *EM) StateSince() time.Time { return t.curStart }
+func (t *EM) StateReasonType() string { return t.curRType }
 func (t *EM) State() string       { return t.curState }
 func (t *EM) StateReason() string { return t.curReason }
 func (t *EM) Step() string        { return t.stepName }
@@ -129,6 +132,19 @@ func (t *EM) Ingest(d *wire.Datagram, recvTime time.Time) {
 	state, rtype, reason := t.classify(d, alarmActive)
 	t.applyState(state, rtype, reason, d, ts)
 	t.trackReset(d, ts)
+}
+
+// FlushOpen closes every open interval at shutdown so a restart doesn't
+// lose the state the machine was in (the successor process reopens
+// tracking from the next datagram).
+func (t *EM) FlushOpen(ts time.Time) {
+	t.closeInterval(ts)
+	for flag, start := range t.modeStart {
+		t.store.AddModeInterval(model.ModeInterval{
+			EMID: t.cfg.EMID, Flag: flag, StartTs: start, EndTs: ts,
+		})
+		delete(t.modeStart, flag)
+	}
 }
 
 // MarkOffline closes the current interval into "offline" after a heartbeat
