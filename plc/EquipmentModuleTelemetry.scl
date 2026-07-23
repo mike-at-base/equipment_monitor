@@ -66,6 +66,7 @@ VERSION : 0.1
       statTxLen : UDInt;
       statSendReq : Bool;
       statSendCooldown : Bool;
+      statHeartbeatReset : Bool;
    END_VAR
 
    VAR_TEMP
@@ -76,6 +77,7 @@ VERSION : 0.1
       tempChanged : Bool;
       tempEnqueueEvent : Bool;
       tempEnqueueHeartbeat : Bool;
+      tempHeartbeatFire : Bool;
       tempPos : DInt;
       tempRetVal : Int;
       tempSerRet : Int;
@@ -101,6 +103,7 @@ BEGIN
     // 0.1.1        2026-07-23              mwebb               fix TUSEND edge re-arm: one-scan REQ-low cooldown between jobs (queue jammed after first send)
     // 0.1.2        2026-07-23              mwebb               TADDR_Param V20 member names (REM_IP_ADDR / REM_PORT_NR)
     // 0.1.3        2026-07-23              mwebb               accept TCON 80A3 (connection already established in CPU, survives instance re-download) as connected
+    // 0.1.4        2026-07-23              mwebb               fix heartbeat: IN := NOT Q self-reset consumed its own pulse (reading IEC timer Q updates state); capture Q as call output with explicit one-scan reset
     END_REGION
 
     REGION Initial Scan
@@ -319,12 +322,19 @@ BEGIN
             (#statSnapshot.faultConditions <> #statLastSent.faultConditions) OR
             (#statSnapshot.waitingOn       <> #statLastSent.waitingOn);
 
-        // Heartbeat: self-resetting TON emits one pulse per interval.
-        #instHeartbeatTimer(IN := #enable AND NOT #instHeartbeatTimer.Q,
-                            PT := #heartbeatInterval);
+        // Heartbeat: reading an IEC timer's Q UPDATES its state, so the
+        // classic IN := NOT Q self-reset consumes its own pulse - the IN
+        // expression is the first reader to see Q rise, the call then runs
+        // with IN = FALSE, and the reset clears Q before the enqueue check
+        // reads it.  Capture Q as a call output (atomic) and reset
+        // explicitly for one scan instead.
+        #instHeartbeatTimer(IN := #enable AND NOT #statHeartbeatReset,
+                            PT := #heartbeatInterval,
+                            Q => #tempHeartbeatFire);
+        #statHeartbeatReset := #tempHeartbeatFire;
 
         #tempEnqueueEvent := #enable AND #tempChanged;
-        #tempEnqueueHeartbeat := #enable AND #instHeartbeatTimer.Q AND NOT #tempChanged;
+        #tempEnqueueHeartbeat := #enable AND #tempHeartbeatFire AND NOT #tempChanged;
 
         IF #tempEnqueueEvent OR #tempEnqueueHeartbeat THEN
             IF #tempEnqueueEvent THEN
