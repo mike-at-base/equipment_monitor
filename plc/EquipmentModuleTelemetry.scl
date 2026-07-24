@@ -112,6 +112,7 @@ BEGIN
     // 0.1.6        2026-07-23              mwebb               fix CPU STOP: waiting-on IF combined bounds check + stepControl[] access in one AND (SCL has no short-circuit); with activeSequence=0 it read stepControl[0] -> area-length error. Split into nested IFs.
     // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
     // 0.2.0        2026-07-23              mwebb               wire v4: add lineName input, appended to payload (offset 1108); collector routes on it instead of source IP (NAT-proof, enables auto-registration). v3 offsets unchanged.
+    // 0.2.1        2026-07-24              mwebb               set identity (lineName/stationName/emLabel/version) EVERY scan instead of first-scan only, so changing lineName after the FB has run takes effect without a memory reset
     END_REGION
 
     REGION Initial Scan
@@ -134,11 +135,6 @@ BEGIN
             #statAddrParam.REM_IP_ADDR[3] := #remoteIp3;
             #statAddrParam.REM_IP_ADDR[4] := #remoteIp4;
             #statAddrParam.REM_PORT_NR := #remotePort;
-
-            #statSnapshot.version := 4;
-            #statSnapshot.lineName := #lineName;
-            #statSnapshot.stationName := #stationName;
-            #statSnapshot.emLabel := #emLabel;
 
             #statFirstScan := FALSE;
         END_IF;
@@ -172,6 +168,15 @@ BEGIN
     END_REGION
 
     REGION Build Snapshot
+        // Identity refreshed every scan (not just first scan) so changing an
+        // input — e.g. wiring lineName after the FB already ran — takes effect
+        // on the next scan without a memory reset. These fields are excluded
+        // from change detection, so re-writing them never triggers an event.
+        #statSnapshot.version := 4;
+        #statSnapshot.lineName := #lineName;
+        #statSnapshot.stationName := #stationName;
+        #statSnapshot.emLabel := #emLabel;
+
         // status bits
         #tempBits := W#16#0000;
         IF #controlInterface.status.mode.automatic THEN #tempBits := #tempBits OR W#16#0001; END_IF;
