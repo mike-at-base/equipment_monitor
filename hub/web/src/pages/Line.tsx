@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, EMSummary, Interval, LiveEM, fmtSince, stateColor, STATE_LABEL } from "../api";
+import { api, EMSummary, Interval, LiveEM, fmtClock, fmtSince, stateColor, STATE_LABEL } from "../api";
 import { Bars, Gantt, Loading, ErrorBox, useAsync, useNow, useWindow } from "../components/ui";
 
 // Line view — the SCADA mimic: EM tiles in config order with live state,
@@ -68,7 +68,8 @@ export default function Line({ live }: { live: LiveEM[] }) {
         </div>
       ))}
 
-      <LineGantt line={line} ems={s.ems.map((e) => ({ station: e.station, label: e.em_label }))} />
+      <LineGantt line={line} win={win} from={s.from} to={s.to}
+        ems={s.ems.map((e) => ({ station: e.station, label: e.em_label }))} />
 
       {s.top_down_reasons.length > 0 && (
         <div className="card">
@@ -111,26 +112,30 @@ function Tile({ label, value, unit }: { label: string; value: string; unit: stri
   );
 }
 
-function LineGantt({ line, ems }: { line: string; ems: { station: string; label: string }[] }) {
+function LineGantt({ line, win, from, to, ems }: {
+  line: string; win: string; from: string; to: string;
+  ems: { station: string; label: string }[];
+}) {
   const [rows, setRows] = useState<{ label: string; intervals: Interval[] }[] | null>(null);
   const [err, setErr] = useState<unknown>();
-  const to = Date.now();
-  const from = to - 4 * 3600 * 1000;
+  const fromMs = Date.parse(from), toMs = Date.parse(to);
   useEffect(() => {
     let liveFlag = true;
+    setRows(null);
     Promise.all(ems.map((e) =>
-      api.intervals(line, e.station, e.label, "4h")
+      api.intervals(line, e.station, e.label, win)
         .then((iv) => ({ label: e.label === "main" ? e.station : `${e.station}·${e.label}`, intervals: iv }))))
       .then((r) => liveFlag && setRows(r))
       .catch((e) => liveFlag && setErr(e));
     return () => { liveFlag = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [line, ems.map((e) => e.station + e.label).join(",")]);
+  }, [line, win, ems.map((e) => e.station + e.label).join(",")]);
   if (err) return <ErrorBox err={err} />;
   return (
     <div className="card">
-      <h2>State timeline (last 4 h)</h2>
-      {rows ? <Gantt rows={rows} from={from} to={to} /> : <Loading />}
+      <h2>State timeline ({win})</h2>
+      <p className="muted" style={{ marginTop: 0 }}>{fmtClock(from)} → {fmtClock(to)}</p>
+      {rows ? <Gantt rows={rows} from={fromMs} to={toMs} /> : <Loading />}
     </div>
   );
 }

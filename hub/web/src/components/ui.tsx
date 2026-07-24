@@ -89,11 +89,20 @@ export function Gantt({ rows, from, to }: {
     <div>
       <svg className="gantt" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
            style={{ height: Math.min(420, height) }}>
+        <defs>
+          {/* diagonal hatch = "no data / not reporting", so gaps read as
+              nothing rather than a flat grey state like waiting */}
+          <pattern id="gantt-nodata" width="7" height="7" patternUnits="userSpaceOnUse"
+                   patternTransform="rotate(45)">
+            <rect width="7" height="7" fill="var(--st-no_data)" />
+            <line x1="0" y1="0" x2="0" y2="7" stroke="var(--subtle)" strokeWidth="2.5" />
+          </pattern>
+        </defs>
         {rows.map((r, i) => (
           <g key={r.label}>
             <text className="rowlabel" x={0} y={i * rowH + 17}>{r.label}</text>
             <rect x={labelW} y={i * rowH + 4} width={width - labelW} height={rowH - 8}
-                  fill="var(--conduit)" rx={3} />
+                  fill="url(#gantt-nodata)" rx={3} />
             {r.intervals.map((iv, j) => {
               const s = Math.max(Date.parse(iv.start_ts), from);
               const e = Math.min(Date.parse(iv.end_ts), to);
@@ -120,6 +129,7 @@ export function Gantt({ rows, from, to }: {
         {STATE_ORDER.filter((s) => usedStates.has(s)).map((s) => (
           <span key={s}><i style={{ background: stateColor(s) }} />{STATE_LABEL[s]}</span>
         ))}
+        <span><i className="nodata" />No data (not reporting)</span>
       </div>
     </div>
   );
