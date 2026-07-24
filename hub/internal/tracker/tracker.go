@@ -118,6 +118,11 @@ func (t *EM) Station() string     { return t.cfg.Station }
 func (t *EM) EMLabel() string     { return t.cfg.EMLabel }
 func (t *EM) Line() string        { return t.cfg.Line }
 
+// SetSequences swaps the sequence config live (an engineer edited the EM's
+// metadata). New config applies to future cycle edges; the caller must hold
+// the ingest mutex so this can't race an Ingest call.
+func (t *EM) SetSequences(seqs map[int16]SeqConfig) { t.cfg.Sequences = seqs }
+
 func (t *EM) Episode() (open bool, start time.Time, rtype, reason, step string, retries int) {
 	return t.epOpen, t.epStart, t.epRType, t.epReason, t.epStep, t.epRetries
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -597,4 +598,164 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"live": live, "resets": resets, "modes": modes, "states": states,
 	})
+}
+
+// ── EM config: review & confirm ──────────────────────────────────────────
+
+type seqConfigDTO struct {
+	Index         int16  `json:"index"`
+	Name          string `json:"name"`
+	IsProduction  bool   `json:"is_production"`
+	CycleStart    string `json:"cycle_start_step"`
+	CycleComplete string `json:"cycle_complete_step"`
+}
+
+// handleGetConfig returns an EM's current settings plus the step names
+// actually observed per sequence — everything the review & confirm screen
+// needs to fill in cycle start/complete without guessing.
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	var displayName, lineName string
+	var confirmed bool
+	var wireVer int
+	err := s.pool.QueryRow(ctx, `
+	    SELECT e.display_name, e.confirmed, e.wire_version, l.name
+	    FROM em e JOIN line l ON l.id = e.line_id WHERE e.id = $1`,
+		em.ID).Scan(&displayName, &confirmed, &wireVer, &lineName)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	seqs := []seqConfigDTO{}
+	rows, err := s.pool.Query(ctx, `
+	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step
+	    FROM sequence WHERE em_id = $1 ORDER BY seq_index`, em.ID)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	for rows.Next() {
+		var so seqConfigDTO
+		if err := rows.Scan(&so.Index, &so.Name, &so.IsProduction, &so.CycleStart, &so.CycleComplete); err != nil {
+			rows.Close()
+			httpErr(w, 500, err)
+			return
+		}
+		seqs = append(seqs, so)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	// observed steps per sequence (from recorded history) for dropdowns
+	type observed struct {
+		SeqIndex int16    `json:"seq_index"`
+		Steps    []string `json:"steps"`
+	}
+	obs := []observed{}
+	orows, err := s.pool.Query(ctx, `
+	    SELECT seq_index, array_agg(DISTINCT step_name ORDER BY step_name)
+	    FROM step_event WHERE em_id = $1 GROUP BY seq_index ORDER BY seq_index`, em.ID)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	for orows.Next() {
+		var o observed
+		if err := orows.Scan(&o.SeqIndex, &o.Steps); err != nil {
+			orows.Close()
+			httpErr(w, 500, err)
+			return
+		}
+		obs = append(obs, o)
+	}
+	orows.Close()
+	if err := orows.Err(); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"station": em.Station, "em_label": em.Label, "line": lineName,
+		"display_name": displayName, "confirmed": confirmed, "wire_version": wireVer,
+		"sequences": seqs, "observed": obs,
+	})
+}
+
+// handleSaveConfig persists the review & confirm screen: display name,
+// confirmed flag, and sequence metadata — then reloads the live tracker.
+func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		DisplayName string         `json:"display_name"`
+		Confirmed   bool           `json:"confirmed"`
+		Sequences   []seqConfigDTO `json:"sequences"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, jsonErr("invalid body: "+err.Error()))
+		return
+	}
+	ctx := r.Context()
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE em SET display_name=$1, confirmed=$2 WHERE id=$3`,
+		body.DisplayName, body.Confirmed, em.ID); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	for _, sq := range body.Sequences {
+		if _, err := s.pool.Exec(ctx, `
+		    INSERT INTO sequence (em_id, seq_index, name, is_production,
+		                          cycle_start_step, cycle_complete_step)
+		    VALUES ($1,$2,$3,$4,$5,$6)
+		    ON CONFLICT (em_id, seq_index) DO UPDATE SET
+		      name=EXCLUDED.name, is_production=EXCLUDED.is_production,
+		      cycle_start_step=EXCLUDED.cycle_start_step,
+		      cycle_complete_step=EXCLUDED.cycle_complete_step`,
+			em.ID, sq.Index, sq.Name, sq.IsProduction, sq.CycleStart, sq.CycleComplete); err != nil {
+			httpErr(w, 500, err)
+			return
+		}
+	}
+	if s.onConfig != nil {
+		s.onConfig(em.ID) // reload tracker seq config + refresh hierarchy
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handleUnconfirmed lists auto-discovered EMs awaiting an engineer's review.
+func (s *Server) handleUnconfirmed(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.pool.Query(r.Context(), `
+	    SELECT l.name, e.station, e.em_label, e.display_name, e.wire_version
+	    FROM em e JOIN line l ON l.id = e.line_id
+	    WHERE NOT e.confirmed AND e.enabled
+	    ORDER BY l.name, e.station, e.em_label`)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	defer rows.Close()
+	type row struct {
+		Line        string `json:"line"`
+		Station     string `json:"station"`
+		EMLabel     string `json:"em_label"`
+		Display     string `json:"display_name"`
+		WireVersion int    `json:"wire_version"`
+	}
+	out := []row{}
+	for rows.Next() {
+		var x row
+		if err := rows.Scan(&x.Line, &x.Station, &x.EMLabel, &x.Display, &x.WireVersion); err != nil {
+			httpErr(w, 500, err)
+			return
+		}
+		out = append(out, x)
+	}
+	writeJSON(w, out)
 }

@@ -138,6 +138,28 @@ func main() {
 
 	apiLines := buildAPILines(recs)
 
+	// onConfigChange: after a review-&-confirm save, reload the tracker's
+	// sequence config from the DB and refresh the API hierarchy so the new
+	// name/confirmed state show immediately. apiSrv is captured by reference
+	// (assigned just below) so the closure sees it when invoked.
+	var apiSrv *api.Server
+	onConfigChange := func(emID int) {
+		seqs, err := pg.SeqConfigFor(ctx, emID)
+		if err != nil {
+			log.Warn("reload seq config", "em", emID, "err", err)
+			return
+		}
+		m := map[int16]tracker.SeqConfig{}
+		for _, s := range seqs {
+			m[s.Index] = tracker.SeqConfig{Index: s.Index, IsProduction: s.IsProduction,
+				CycleStart: s.CycleStart, CycleComplete: s.CycleComplete}
+		}
+		svc.SetSequences(emID, m)
+		if r, err := pg.LoadHierarchy(ctx); err == nil {
+			apiSrv.SetLines(buildAPILines(r))
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -147,11 +169,11 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(svc.Snapshot())
 	})
-	apiSrv := api.New(pg.Pool(), apiLines, func() []ingest.LiveEM {
+	apiSrv = api.New(pg.Pool(), apiLines, func() []ingest.LiveEM {
 		return svc.Snapshot()
 	}, func() []ingest.RawEM {
 		return svc.RawSnapshot()
-	})
+	}, onConfigChange)
 	apiSrv.Register(mux)
 	mux.HandleFunc("/mcp", mcpserv.Handler(mux))
 
@@ -251,7 +273,7 @@ func buildAPILines(recs []store.LineRec) []api.LineInfo {
 		li := api.LineInfo{Name: l.Name}
 		for _, e := range l.EMs {
 			li.EMs = append(li.EMs, api.EMInfo{ID: e.ID, Station: e.Station,
-				Label: e.EMLabel, Display: e.DisplayName})
+				Label: e.EMLabel, Display: e.DisplayName, Confirmed: e.Confirmed})
 		}
 		out = append(out, li)
 	}

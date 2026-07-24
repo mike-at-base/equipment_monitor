@@ -157,6 +157,20 @@ func (s *Service) RawSnapshot() []RawEM {
 	return out
 }
 
+// SetSequences updates the live sequence config for the tracker with emID
+// (after an engineer edits/confirms the EM). Returns false if not tracked.
+func (s *Service) SetSequences(emID int, seqs map[int16]tracker.SeqConfig) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.trackers {
+		if t.EMID() == emID {
+			t.SetSequences(seqs)
+			return true
+		}
+	}
+	return false
+}
+
 // FlushAll closes all open intervals (graceful shutdown).
 func (s *Service) FlushAll(ts time.Time) {
 	s.mu.Lock()

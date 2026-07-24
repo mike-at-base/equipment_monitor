@@ -34,10 +34,11 @@ import (
 )
 
 type EMInfo struct {
-	ID      int    `json:"-"`
-	Station string `json:"station"`
-	Label   string `json:"em_label"`
-	Display string `json:"display_name"`
+	ID        int    `json:"-"`
+	Station   string `json:"station"`
+	Label     string `json:"em_label"`
+	Display   string `json:"display_name"`
+	Confirmed bool   `json:"confirmed"`
 }
 
 type LineInfo struct {
@@ -46,12 +47,13 @@ type LineInfo struct {
 }
 
 type Server struct {
-	pool    *pgxpool.Pool
-	linesMu sync.RWMutex
-	lines   []LineInfo
-	live    func() []ingest.LiveEM
-	raw     func() []ingest.RawEM
-	tz      *time.Location
+	pool     *pgxpool.Pool
+	linesMu  sync.RWMutex
+	lines    []LineInfo
+	live     func() []ingest.LiveEM
+	raw      func() []ingest.RawEM
+	onConfig func(emID int) // reload tracker + hierarchy after a config save
+	tz       *time.Location
 }
 
 // SetLines swaps the hierarchy (called by the background refresh so
@@ -69,12 +71,14 @@ func (s *Server) snapshotLines() []LineInfo {
 }
 
 func New(pool *pgxpool.Pool, lines []LineInfo,
-	live func() []ingest.LiveEM, raw func() []ingest.RawEM) *Server {
+	live func() []ingest.LiveEM, raw func() []ingest.RawEM,
+	onConfig func(emID int)) *Server {
 	tz, err := time.LoadLocation(envOr("APP_TIMEZONE", "America/Chicago"))
 	if err != nil {
 		tz = time.UTC
 	}
-	return &Server{pool: pool, lines: lines, live: live, raw: raw, tz: tz}
+	return &Server{pool: pool, lines: lines, live: live, raw: raw,
+		onConfig: onConfig, tz: tz}
 }
 
 func envOr(k, d string) string {
@@ -94,6 +98,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/throughput", s.handleThroughput)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/downs", s.handleDowns)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/debug", s.handleDebug)
+	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/config", s.handleGetConfig)
+	mux.HandleFunc("PUT /api/v2/ems/{line}/{station}/{label}/config", s.handleSaveConfig)
+	mux.HandleFunc("GET /api/v2/unconfirmed", s.handleUnconfirmed)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

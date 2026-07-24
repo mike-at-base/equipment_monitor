@@ -268,6 +268,28 @@ type LineRec struct {
 	EMs  []EMRec
 }
 
+// SeqConfigFor returns one EM's sequence config (for live tracker reload
+// after a UI edit).
+func (p *PG) SeqConfigFor(ctx context.Context, emID int) ([]SeqConfig, error) {
+	rows, err := p.pool.Query(ctx, `
+	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step
+	    FROM sequence WHERE em_id = $1 ORDER BY seq_index`, emID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SeqConfig
+	for rows.Next() {
+		var s SeqConfig
+		if err := rows.Scan(&s.Index, &s.Name, &s.IsProduction,
+			&s.CycleStart, &s.CycleComplete); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // LoadHierarchy returns the enabled lines/EMs/sequences from the DB — the
 // live source of truth (config seed + auto-discovered + UI edits).
 func (p *PG) LoadHierarchy(ctx context.Context) ([]LineRec, error) {
