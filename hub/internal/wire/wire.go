@@ -12,9 +12,8 @@ import (
 )
 
 const (
-	Version      = 4    // current wire format
-	PayloadLen   = 1142 // v4 = v3 (1108) + lineName String[32], appended
-	payloadLenV3 = 1108 // legacy: no lineName; collector routes by source IP
+	Version    = 4    // minimum + current wire format (v3 and earlier dropped)
+	PayloadLen = 1142 // v4: header + strings + lineName String[32] at offset 1108
 )
 
 // statusBits
@@ -118,12 +117,12 @@ func trimSpace(s string) string {
 // Decode parses one telemetry datagram. Returns an error for short buffers
 // or wrong wire versions (collector logs and drops).
 func Decode(b []byte) (*Datagram, error) {
-	if len(b) < payloadLenV3 {
-		return nil, fmt.Errorf("short datagram: %d bytes", len(b))
+	if len(b) < PayloadLen {
+		return nil, fmt.Errorf("short datagram: %d bytes (want >= %d)", len(b), PayloadLen)
 	}
 	ver := b[0]
-	if ver < 3 {
-		return nil, fmt.Errorf("unsupported wire version %d (min 3)", ver)
+	if ver < Version {
+		return nil, fmt.Errorf("unsupported wire version %d (want >= %d)", ver, Version)
 	}
 	d := &Datagram{
 		Version:        ver,

@@ -10,15 +10,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"time"
 
 	"github.com/mike-at-base/equipment_monitor/hub/internal/api"
-	"github.com/mike-at-base/equipment_monitor/hub/internal/config"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/ingest"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/mcpserv"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/store"
@@ -34,15 +33,7 @@ func env(key, def string) string {
 }
 
 func main() {
-	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
-	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
-
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		log.Error("config", "err", err)
-		os.Exit(1)
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -60,42 +51,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// sync config -> hierarchy tables, get em ids
-	var lineCfgs []store.LineConfig
-	for _, l := range cfg.Lines {
-		lc := store.LineConfig{Name: l.Name, Host: l.Host(), Enabled: l.IsEnabled()}
-		for _, e := range l.EMs {
-			ec := store.EMConfig{Station: e.Station, EMLabel: e.EMLabel,
-				DisplayName: e.DisplayName, Enabled: e.IsEnabled()}
-			for _, s := range e.Sequences {
-				ec.Sequences = append(ec.Sequences, store.SeqConfig{
-					Index: s.Index, Name: s.Name, IsProduction: s.IsProduction,
-					CycleStart: s.CycleStart, CycleComplete: s.CycleComplete,
-				})
-			}
-			lc.EMs = append(lc.EMs, ec)
-		}
-		lineCfgs = append(lineCfgs, lc)
-	}
-	// config.yaml is a one-time SEED now — SyncConfig inserts what's missing
-	// but never overwrites DB rows (UI edits win). The DB is the source of
-	// truth the collector and API build from.
-	if err := pg.SyncConfig(ctx, lineCfgs); err != nil {
-		log.Error("config sync", "err", err)
-		os.Exit(1)
-	}
-
-	// lineByHost supports the legacy v3 path (route by source IP); v4 datagrams
-	// self-identify their line and don't need it.
-	lineByHost := map[string]string{}
-	for _, l := range cfg.Lines {
-		if l.IsEnabled() && l.Host() != "" {
-			lineByHost[l.Host()] = l.Name
-		}
-	}
-
-	// build trackers + the query-API hierarchy from the DB (seed + any
-	// previously auto-discovered EMs survive restarts this way).
+	// The DB is the sole source of truth: EMs auto-discover from v4 telemetry
+	// and are configured/confirmed in the UI. Build the trackers + query-API
+	// hierarchy from it (auto-discovered EMs survive restarts).
 	recs, err := pg.LoadHierarchy(ctx)
 	if err != nil {
 		log.Error("load hierarchy", "err", err)
@@ -104,27 +62,29 @@ func main() {
 	trackers := map[ingest.Key]*tracker.EM{}
 	total := 0
 	for _, l := range recs {
-		for _, e := range l.EMs {
-			key := ingest.Key{Line: lowerASCII(l.Name),
-				Station: lowerASCII(e.Station), EMLabel: lowerASCII(e.EMLabel)}
-			seqs := map[int16]tracker.SeqConfig{}
-			for _, s := range e.Sequences {
-				seqs[s.Index] = tracker.SeqConfig{
-					Index: s.Index, IsProduction: s.IsProduction,
-					CycleStart: s.CycleStart, CycleComplete: s.CycleComplete,
+		for _, st := range l.Stations {
+			for _, e := range st.EMs {
+				key := ingest.Key{Line: lowerASCII(l.Name),
+					Station: lowerASCII(st.Name), EMLabel: lowerASCII(e.EMLabel)}
+				seqs := map[int16]tracker.SeqConfig{}
+				for _, s := range e.Sequences {
+					seqs[s.Index] = tracker.SeqConfig{
+						Index: s.Index, IsProduction: s.IsProduction,
+						CycleStart: s.CycleStart, CycleComplete: s.CycleComplete,
+					}
 				}
+				trackers[key] = tracker.New(tracker.Config{
+					EMID: e.ID, Line: l.Name, Station: st.Name, EMLabel: e.EMLabel, Sequences: seqs,
+				}, pg)
+				total++
 			}
-			trackers[key] = tracker.New(tracker.Config{
-				EMID: e.ID, Line: l.Name, Station: e.Station, EMLabel: e.EMLabel, Sequences: seqs,
-			}, pg)
-			total++
 		}
 	}
 	log.Info("loaded hierarchy", "lines", len(recs), "ems", total)
 
 	go pg.Run(ctx)
 
-	// discoverer: auto-register a v4 EM seen for the first time (unconfirmed).
+	// discoverer: auto-register a v4 EM (line->station->em) on first sight, unconfirmed.
 	discover := func(line, station, emLabel string, wireVer int) (*tracker.EM, error) {
 		emID, err := pg.RegisterEM(ctx, line, station, emLabel, wireVer)
 		if err != nil {
@@ -134,7 +94,7 @@ func main() {
 			EMLabel: emLabel, Sequences: map[int16]tracker.SeqConfig{}}, pg), nil
 	}
 
-	svc := ingest.New(cfg.Telemetry.ListenPort, trackers, lineByHost, discover, log)
+	svc := ingest.New(envInt("EMHUB_UDP_PORT", 15020), trackers, discover, log)
 
 	apiLines := buildAPILines(recs)
 
@@ -266,16 +226,31 @@ func lowerASCII(s string) string {
 	return string(b)
 }
 
-// buildAPILines projects the DB hierarchy into the query-API shape.
+// buildAPILines projects the DB hierarchy (line -> station -> em) into the
+// query-API shape.
 func buildAPILines(recs []store.LineRec) []api.LineInfo {
 	out := make([]api.LineInfo, 0, len(recs))
 	for _, l := range recs {
-		li := api.LineInfo{Name: l.Name}
-		for _, e := range l.EMs {
-			li.EMs = append(li.EMs, api.EMInfo{ID: e.ID, Station: e.Station,
-				Label: e.EMLabel, Display: e.DisplayName, Confirmed: e.Confirmed})
+		li := api.LineInfo{Name: l.Name, Display: l.DisplayName}
+		for _, st := range l.Stations {
+			si := api.StationInfo{Name: st.Name, Display: st.DisplayName, PLC: st.PLC}
+			for _, e := range st.EMs {
+				si.EMs = append(si.EMs, api.EMInfo{ID: e.ID, Station: st.Name,
+					Label: e.EMLabel, Display: e.DisplayName, Confirmed: e.Confirmed})
+			}
+			li.Stations = append(li.Stations, si)
 		}
 		out = append(out, li)
 	}
 	return out
+}
+
+// envInt reads an int env var with a default.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }

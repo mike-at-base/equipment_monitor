@@ -35,15 +35,32 @@ import (
 
 type EMInfo struct {
 	ID        int    `json:"-"`
-	Station   string `json:"station"`
+	Station   string `json:"station"` // owning station name (handler convenience)
 	Label     string `json:"em_label"`
 	Display   string `json:"display_name"`
 	Confirmed bool   `json:"confirmed"`
 }
 
+type StationInfo struct {
+	Name    string   `json:"name"`
+	Display string   `json:"display_name"`
+	PLC     string   `json:"plc"`
+	EMs     []EMInfo `json:"ems"`
+}
+
 type LineInfo struct {
-	Name string   `json:"name"`
-	EMs  []EMInfo `json:"ems"`
+	Name     string        `json:"name"`
+	Display  string        `json:"display_name"`
+	Stations []StationInfo `json:"stations"`
+}
+
+// EMs flattens a line's EMs across its stations (for summary aggregation).
+func (l *LineInfo) EMs() []EMInfo {
+	var out []EMInfo
+	for i := range l.Stations {
+		out = append(out, l.Stations[i].EMs...)
+	}
+	return out
 }
 
 type Server struct {
@@ -101,6 +118,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/config", s.handleGetConfig)
 	mux.HandleFunc("PUT /api/v2/ems/{line}/{station}/{label}/config", s.handleSaveConfig)
 	mux.HandleFunc("GET /api/v2/unconfirmed", s.handleUnconfirmed)
+	mux.HandleFunc("GET /api/v2/hierarchy", s.handleHierarchy)
+}
+
+// handleHierarchy returns the full line -> station -> em tree (with display
+// names + confirmed flags) for the SCADA navigation.
+func (s *Server) handleHierarchy(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.snapshotLines())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -178,9 +202,14 @@ func (s *Server) findEM(line, station, label string) (*LineInfo, *EMInfo) {
 	if l == nil {
 		return nil, nil
 	}
-	for i := range l.EMs {
-		if strings.EqualFold(l.EMs[i].Station, station) && strings.EqualFold(l.EMs[i].Label, label) {
-			return l, &l.EMs[i]
+	for si := range l.Stations {
+		if !strings.EqualFold(l.Stations[si].Name, station) {
+			continue
+		}
+		for ei := range l.Stations[si].EMs {
+			if strings.EqualFold(l.Stations[si].EMs[ei].Label, label) {
+				return l, &l.Stations[si].EMs[ei]
+			}
 		}
 	}
 	return l, nil

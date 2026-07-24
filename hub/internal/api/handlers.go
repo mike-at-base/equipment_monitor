@@ -53,10 +53,11 @@ type LineSummary struct {
 }
 
 func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Time) (*LineSummary, error) {
-	ids := make([]int, 0, len(l.EMs))
+	ems := l.EMs()
+	ids := make([]int, 0, len(ems))
 	idSet := map[int]bool{}
 	byID := map[int]EMInfo{}
-	for _, e := range l.EMs {
+	for _, e := range ems {
 		ids = append(ids, e.ID)
 		idSet[e.ID] = true
 		byID[e.ID] = e
@@ -113,7 +114,7 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 
 	lineMs := map[string]int64{}
 	var lineAvailRaw, lineDown, lineEp int64
-	for _, e := range l.EMs {
+	for _, e := range ems {
 		ms := stateMs[e.ID]
 		em := EMSummary{Station: e.Station, EMLabel: e.Label, Display: e.Display,
 			StateMin: map[string]float64{}}
@@ -193,7 +194,11 @@ func (s *Server) handleLines(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []lineOut{}
 	for _, l := range s.snapshotLines() {
-		out = append(out, lineOut{Name: l.Name, EMCount: len(l.EMs), Live: counts[l.Name]})
+		n := 0
+		for i := range l.Stations {
+			n += len(l.Stations[i].EMs)
+		}
+		out = append(out, lineOut{Name: l.Name, EMCount: n, Live: counts[l.Name]})
 	}
 	writeJSON(w, out)
 }
@@ -624,7 +629,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	var wireVer int
 	err := s.pool.QueryRow(ctx, `
 	    SELECT e.display_name, e.confirmed, e.wire_version, l.name
-	    FROM em e JOIN line l ON l.id = e.line_id WHERE e.id = $1`,
+	    FROM em e JOIN station st ON st.id = e.station_id
+	             JOIN line l ON l.id = st.line_id
+	    WHERE e.id = $1`,
 		em.ID).Scan(&displayName, &confirmed, &wireVer, &lineName)
 	if err != nil {
 		httpErr(w, 500, err)
@@ -732,10 +739,11 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 // handleUnconfirmed lists auto-discovered EMs awaiting an engineer's review.
 func (s *Server) handleUnconfirmed(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.pool.Query(r.Context(), `
-	    SELECT l.name, e.station, e.em_label, e.display_name, e.wire_version
-	    FROM em e JOIN line l ON l.id = e.line_id
+	    SELECT l.name, st.name, e.em_label, e.display_name, e.wire_version
+	    FROM em e JOIN station st ON st.id = e.station_id
+	             JOIN line l ON l.id = st.line_id
 	    WHERE NOT e.confirmed AND e.enabled
-	    ORDER BY l.name, e.station, e.em_label`)
+	    ORDER BY l.name, st.name, e.em_label`)
 	if err != nil {
 		httpErr(w, 500, err)
 		return

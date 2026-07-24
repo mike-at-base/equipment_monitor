@@ -19,9 +19,8 @@ import (
 
 const offlineAfter = 10 * time.Second
 
-// Key identifies a tracker by LINE (not source IP): v4 datagrams carry the
-// line name, and legacy v3 datagrams resolve source IP -> line via lineByHost.
-// All three parts are lower-cased.
+// Key identifies a tracker by the v4-declared (line, station, em), all
+// lower-cased. There is no source-IP routing — every datagram self-identifies.
 type Key struct {
 	Line    string
 	Station string
@@ -33,12 +32,11 @@ type Key struct {
 type Discoverer func(line, station, emLabel string, wireVer int) (*tracker.EM, error)
 
 type Service struct {
-	mu         sync.Mutex
-	trackers   map[Key]*tracker.EM
-	lineByHost map[string]string // source IP -> line name (legacy v3 routing)
-	discover   Discoverer        // nil disables auto-registration
-	log        *slog.Logger
-	port       int
+	mu       sync.Mutex
+	trackers map[Key]*tracker.EM
+	discover Discoverer // nil disables auto-registration
+	log      *slog.Logger
+	port     int
 }
 
 // LiveEM is a lock-safe snapshot of one tracker for the live API.
@@ -95,10 +93,9 @@ type RawEM struct {
 	SkewMs         int64     `json:"skew_ms"`
 }
 
-func New(port int, trackers map[Key]*tracker.EM, lineByHost map[string]string,
+func New(port int, trackers map[Key]*tracker.EM,
 	discover Discoverer, log *slog.Logger) *Service {
-	return &Service{trackers: trackers, lineByHost: lineByHost,
-		discover: discover, log: log, port: port}
+	return &Service{trackers: trackers, discover: discover, log: log, port: port}
 }
 
 // Snapshot returns the current state of every tracked EM (for /api/v2/live).
@@ -195,7 +192,7 @@ func (s *Service) Run(ctx context.Context) error {
 	go s.offlineSweeper(ctx)
 
 	buf := make([]byte, 2048)
-	unknownLogged := map[Key]bool{}
+	unknownLogged := map[string]bool{} // dedup "no lineName" warnings by source IP
 	for {
 		n, addr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -211,47 +208,36 @@ func (s *Service) Run(ctx context.Context) error {
 			s.log.Debug("bad datagram", "from", addr.IP.String(), "err", err)
 			continue
 		}
-		// Resolve the line: v4 carries it in the payload; legacy v3 maps the
-		// source IP through the config's lineByHost table.
-		lineName := d.LineName
-		if lineName == "" {
-			lineName = s.lineByHost[addr.IP.String()]
-		}
-		key := Key{strings.ToLower(lineName), strings.ToLower(d.Station), strings.ToLower(d.EMLabel)}
-		if lineName == "" {
-			if !unknownLogged[key] {
-				unknownLogged[key] = true
-				s.log.Warn("v3 datagram from unmapped source IP (no line)",
+		// v4 datagrams self-declare their line. A datagram without a lineName
+		// is a misconfigured FB (lineName input unset) — drop it and say so.
+		if d.LineName == "" {
+			if !unknownLogged[addr.IP.String()] {
+				unknownLogged[addr.IP.String()] = true
+				s.log.Warn("datagram has no lineName — dropped (set the FB's lineName input)",
 					"from", addr.IP.String(), "station", d.Station, "em", d.EMLabel)
 			}
 			continue
 		}
+		key := Key{strings.ToLower(d.LineName), strings.ToLower(d.Station), strings.ToLower(d.EMLabel)}
 
 		s.mu.Lock()
 		t, ok := s.trackers[key]
 		if !ok {
-			// Auto-register only self-identifying (v4) EMs; a v3 EM with no
-			// config entry is still dropped (can't be trusted to a line).
-			if d.LineName == "" || s.discover == nil {
+			if s.discover == nil {
 				s.mu.Unlock()
-				if !unknownLogged[key] {
-					unknownLogged[key] = true
-					s.log.Warn("datagram for unconfigured EM",
-						"line", lineName, "station", d.Station, "em", d.EMLabel)
-				}
 				continue
 			}
-			nt, err := s.discover(lineName, d.Station, d.EMLabel, int(d.Version))
+			nt, err := s.discover(d.LineName, d.Station, d.EMLabel, int(d.Version))
 			if err != nil {
 				s.mu.Unlock()
 				s.log.Error("auto-register failed",
-					"line", lineName, "station", d.Station, "em", d.EMLabel, "err", err)
+					"line", d.LineName, "station", d.Station, "em", d.EMLabel, "err", err)
 				continue
 			}
 			s.trackers[key] = nt
 			t = nt
 			s.log.Info("auto-registered EM (unconfirmed)",
-				"line", lineName, "station", d.Station, "em", d.EMLabel, "wire", d.Version)
+				"line", d.LineName, "station", d.Station, "em", d.EMLabel, "wire", d.Version)
 		}
 		if gap := t.SeqGap(d.Seq); gap > 0 {
 			s.log.Warn("missed datagrams (heartbeat self-heals)",
