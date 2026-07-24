@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	Version    = 3
-	PayloadLen = 1108
+	Version      = 4    // current wire format
+	PayloadLen   = 1142 // v4 = v3 (1108) + lineName String[32], appended
+	payloadLenV3 = 1108 // legacy: no lineName; collector routes by source IP
 )
 
 // statusBits
@@ -76,6 +77,7 @@ type Datagram struct {
 	PLCTime        time.Time // zero if PLC clock unset
 	Station        string
 	EMLabel        string
+	LineName       string // v4: PLC-declared line/site id ("" on legacy v3)
 	Step           string
 	StepDesc       string
 	AlarmMsg       string
@@ -115,11 +117,15 @@ func trimSpace(s string) string {
 // Decode parses one telemetry datagram. Returns an error for short buffers
 // or wrong wire versions (collector logs and drops).
 func Decode(b []byte) (*Datagram, error) {
-	if len(b) < PayloadLen {
+	if len(b) < payloadLenV3 {
 		return nil, fmt.Errorf("short datagram: %d bytes", len(b))
 	}
-	if b[0] != Version {
-		return nil, fmt.Errorf("wire version %d (want %d)", b[0], Version)
+	ver := b[0]
+	if ver != 3 && ver != 4 {
+		return nil, fmt.Errorf("wire version %d (want 3 or 4)", ver)
+	}
+	if ver == 4 && len(b) < PayloadLen {
+		return nil, fmt.Errorf("short v4 datagram: %d bytes", len(b))
 	}
 	d := &Datagram{
 		MsgType:        b[1],
@@ -141,13 +147,24 @@ func Decode(b []byte) (*Datagram, error) {
 	if ns > 0 {
 		d.PLCTime = time.Unix(0, int64(ns)).UTC()
 	}
+	if ver == 4 {
+		d.LineName = s7String(b, 1108, 32)
+	}
 	return d, nil
 }
 
-// BuildTest constructs a byte-exact v3 datagram the same way the Python
-// integration test (and the PLC Serialize) does. Exported for tracker tests.
+// BuildTest constructs a byte-exact datagram the same way the PLC Serialize
+// does. Exported for tracker tests; emits a v4 datagram with an empty
+// lineName. Use BuildTestLine to set the line id.
 func BuildTest(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
 	step, desc, alarm, ilk, cond, waiting string, plcTime time.Time) []byte {
+	return BuildTestLine(msgType, bits, modes, seq, activeSeq,
+		step, desc, alarm, ilk, cond, waiting, "", plcTime)
+}
+
+// BuildTestLine is BuildTest with an explicit lineName (wire v4 field).
+func BuildTestLine(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
+	step, desc, alarm, ilk, cond, waiting, lineName string, plcTime time.Time) []byte {
 
 	s7s := func(text string, max int) []byte {
 		if len(text) > max {
@@ -178,5 +195,6 @@ func BuildTest(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
 	b = append(b, s7s(ilk, 160)...)
 	b = append(b, s7s(cond, 200)...)
 	b = append(b, s7s(waiting, 200)...)
+	b = append(b, s7s(lineName, 32)...) // v4: appended after waitingOn
 	return b
 }

@@ -48,3 +48,38 @@ func TestDecodeRejects(t *testing.T) {
 		t.Fatal("wrong version accepted")
 	}
 }
+
+func TestDecodeV4LineName(t *testing.T) {
+	raw := BuildTestLine(MsgEvent, 0, 0, 1, 1, "20", "", "", "", "", "",
+		"MOD1", time.Now())
+	if len(raw) != PayloadLen || raw[0] != Version {
+		t.Fatalf("v4 payload len=%d ver=%d, want %d/%d", len(raw), raw[0], PayloadLen, Version)
+	}
+	d, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.LineName != "MOD1" {
+		t.Fatalf("lineName %q, want MOD1", d.LineName)
+	}
+}
+
+// A v4 datagram truncated to the v3 length must still decode (superset
+// layout), with lineName empty — this is the migration path where a legacy
+// v3 PLC and a v4 collector coexist.
+func TestDecodeV3BackCompat(t *testing.T) {
+	raw := BuildTestLine(MsgEvent, BitRunning, 0, 7, 1, "30", "desc", "", "", "", "",
+		"MOD1", time.Now())
+	v3 := raw[:payloadLenV3]
+	v3[0] = 3 // legacy version marker
+	d, err := Decode(v3)
+	if err != nil {
+		t.Fatalf("v3 datagram rejected: %v", err)
+	}
+	if d.LineName != "" {
+		t.Fatalf("v3 lineName should be empty, got %q", d.LineName)
+	}
+	if d.Step != "30" || !d.Bit(BitRunning) {
+		t.Fatalf("v3 core fields wrong: step=%q running=%v", d.Step, d.Bit(BitRunning))
+	}
+}

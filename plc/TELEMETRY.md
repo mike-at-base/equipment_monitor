@@ -33,13 +33,18 @@ covers reliability the pragmatic way:
 
 ## Wire format
 
-One UDP datagram per event/heartbeat, 1108 bytes, produced by `Serialize`
-of `typeEquipmentModuleTelemetry` (S7 standard/non-optimized layout,
-big-endian, strings as `[max][len][chars...]`).  Wire version: **3**.
+One UDP datagram per event/heartbeat produced by `Serialize` of
+`typeEquipmentModuleTelemetry` (S7 standard/non-optimized layout, big-endian,
+strings as `[max][len][chars...]`).  Wire version: **4** — 1142 bytes.
+
+`lineName` is appended last, so a v4 datagram is a strict superset of v3:
+every offset ≤ 1107 is byte-identical, and the collector accepts both. A v3
+PLC (no `lineName`, 1108 bytes) is routed by source IP; a v4 PLC is routed by
+the `lineName` field, which is NAT-proof and enables auto-registration.
 
 | Offset | Type        | Field           | Notes                                   |
 |-------:|-------------|-----------------|------------------------------------------|
-| 0      | USInt       | version         | 3                                        |
+| 0      | USInt       | version         | 3 (legacy) or 4                          |
 | 1      | USInt       | msgType         | 1 = event, 2 = heartbeat                 |
 | 2      | Word        | statusBits      | see bit map below                        |
 | 4      | Word        | modeBits        | see bit map below                        |
@@ -58,6 +63,8 @@ big-endian, strings as `[max][len][chars...]`).  Wire version: **3**.
 |        |             |                 | latched on the fault scan                |
 | 906    | String[200] | waitingOn       | failing permissives of a healthy dwell   |
 |        |             |                 | past dwellCaptureDelay (live flow reason)|
+| 1108   | String[32]  | lineName        | v4 only: line/site id the PLC declares   |
+|        |             |                 | (e.g. `MOD1`); collector routes on it    |
 
 `statusBits`: bit0 automatic · bit1 fault · bit2 running · bit3 paused ·
 bit4 stopped · bit5 unknown · bit6 stepFaulted · bit7 interlockOk ·

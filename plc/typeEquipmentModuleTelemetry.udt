@@ -7,11 +7,13 @@ TITLE = EM telemetry datagram payload
 // bumping VERSION and updating the collector parser.
 //
 // All fields land on even byte offsets so the serialized layout has no
-// alignment padding surprises.  Total serialized size: 1108 bytes.
+// alignment padding surprises.  Serialized size: v3 = 1108 bytes; v4 = 1142
+// (lineName appended last, so v3 byte offsets are unchanged and a v4
+// datagram is a strict superset of v3).
 //
-VERSION : 0.3
+VERSION : 0.4
    STRUCT
-      version : USInt := 3;               // wire format version
+      version : USInt := 4;               // wire format version
       msgType : USInt;                    // 1 = event, 2 = heartbeat
       statusBits : Word;                  // bit0 automatic, bit1 fault, bit2 running,
                                           // bit3 paused, bit4 stopped, bit5 unknown,
@@ -40,6 +42,12 @@ VERSION : 0.3
                                           // dwellCaptureDelay — the live flow
                                           // reason (blocked/starved deduced
                                           // collector-side); '' when not dwelling
+      lineName : String[32];              // v4: line/site id the PLC self-declares,
+                                          // e.g. 'MOD1'.  MUST be the last member
+                                          // so it serializes at offset 1108 and
+                                          // v3 offsets are unchanged.  The
+                                          // collector routes on this (not source
+                                          // IP), so it survives NAT / re-IP.
    END_STRUCT;
 
 END_TYPE

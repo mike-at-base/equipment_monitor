@@ -16,6 +16,9 @@ VERSION : 0.1
 //
    VAR_INPUT
       enable : Bool := TRUE;
+      lineName : String[32];            // line/site id, e.g. 'MOD1' — the
+                                        // collector routes telemetry on this
+                                        // (set once per PLC; survives NAT/re-IP)
       stationName : String[32];         // e.g. 'ST34000'
       emLabel : String[16] := 'main';   // e.g. 'main', 'SL01_MAG01'
       hwInterfaceId : HW_ANY;           // HW id of the PN interface (System constants)
@@ -108,6 +111,7 @@ BEGIN
     // 0.1.5        2026-07-23              mwebb               deepen send ring buffer 8 -> 16 to absorb longer bursts of same-scan changes
     // 0.1.6        2026-07-23              mwebb               fix CPU STOP: waiting-on IF combined bounds check + stepControl[] access in one AND (SCL has no short-circuit); with activeSequence=0 it read stepControl[0] -> area-length error. Split into nested IFs.
     // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
+    // 0.2.0        2026-07-23              mwebb               wire v4: add lineName input, appended to payload (offset 1108); collector routes on it instead of source IP (NAT-proof, enables auto-registration). v3 offsets unchanged.
     END_REGION
 
     REGION Initial Scan
@@ -131,7 +135,8 @@ BEGIN
             #statAddrParam.REM_IP_ADDR[4] := #remoteIp4;
             #statAddrParam.REM_PORT_NR := #remotePort;
 
-            #statSnapshot.version := 3;
+            #statSnapshot.version := 4;
+            #statSnapshot.lineName := #lineName;
             #statSnapshot.stationName := #stationName;
             #statSnapshot.emLabel := #emLabel;
 
