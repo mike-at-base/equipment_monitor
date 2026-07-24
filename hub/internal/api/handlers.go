@@ -10,6 +10,7 @@ import (
 
 	"github.com/mike-at-base/equipment_monitor/hub/internal/ingest"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/model"
+	"github.com/mike-at-base/equipment_monitor/hub/internal/store"
 )
 
 // ── line summary (shared by /summary and /compare) ───────────────────────
@@ -609,11 +610,13 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 // ── EM config: review & confirm ──────────────────────────────────────────
 
 type seqConfigDTO struct {
-	Index         int16  `json:"index"`
-	Name          string `json:"name"`
-	IsProduction  bool   `json:"is_production"`
-	CycleStart    string `json:"cycle_start_step"`
-	CycleComplete string `json:"cycle_complete_step"`
+	Index         int16    `json:"index"`
+	Name          string   `json:"name"`
+	IsProduction  bool     `json:"is_production"`
+	CycleStart    string   `json:"cycle_start_step"`
+	CycleComplete string   `json:"cycle_complete_step"`
+	StarvedSteps  []string `json:"starved_steps"`
+	BlockedSteps  []string `json:"blocked_steps"`
 }
 
 // handleGetConfig returns an EM's current settings plus the step names
@@ -640,7 +643,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	seqs := []seqConfigDTO{}
 	rows, err := s.pool.Query(ctx, `
-	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step
+	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step,
+	           starved_steps, blocked_steps
 	    FROM sequence WHERE em_id = $1 ORDER BY seq_index`, em.ID)
 	if err != nil {
 		httpErr(w, 500, err)
@@ -648,11 +652,14 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	for rows.Next() {
 		var so seqConfigDTO
-		if err := rows.Scan(&so.Index, &so.Name, &so.IsProduction, &so.CycleStart, &so.CycleComplete); err != nil {
+		var starved, blocked string
+		if err := rows.Scan(&so.Index, &so.Name, &so.IsProduction, &so.CycleStart,
+			&so.CycleComplete, &starved, &blocked); err != nil {
 			rows.Close()
 			httpErr(w, 500, err)
 			return
 		}
+		so.StarvedSteps, so.BlockedSteps = store.SplitSteps(starved), store.SplitSteps(blocked)
 		seqs = append(seqs, so)
 	}
 	rows.Close()
@@ -720,13 +727,17 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	for _, sq := range body.Sequences {
 		if _, err := s.pool.Exec(ctx, `
 		    INSERT INTO sequence (em_id, seq_index, name, is_production,
-		                          cycle_start_step, cycle_complete_step)
-		    VALUES ($1,$2,$3,$4,$5,$6)
+		                          cycle_start_step, cycle_complete_step,
+		                          starved_steps, blocked_steps)
+		    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		    ON CONFLICT (em_id, seq_index) DO UPDATE SET
 		      name=EXCLUDED.name, is_production=EXCLUDED.is_production,
 		      cycle_start_step=EXCLUDED.cycle_start_step,
-		      cycle_complete_step=EXCLUDED.cycle_complete_step`,
-			em.ID, sq.Index, sq.Name, sq.IsProduction, sq.CycleStart, sq.CycleComplete); err != nil {
+		      cycle_complete_step=EXCLUDED.cycle_complete_step,
+		      starved_steps=EXCLUDED.starved_steps,
+		      blocked_steps=EXCLUDED.blocked_steps`,
+			em.ID, sq.Index, sq.Name, sq.IsProduction, sq.CycleStart, sq.CycleComplete,
+			store.JoinSteps(sq.StarvedSteps), store.JoinSteps(sq.BlockedSteps)); err != nil {
 			httpErr(w, 500, err)
 			return
 		}

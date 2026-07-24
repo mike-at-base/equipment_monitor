@@ -69,6 +69,8 @@ export type SeqConfig = {
   is_production: boolean;
   cycle_start_step: string;
   cycle_complete_step: string;
+  starved_steps: string[];
+  blocked_steps: string[];
 };
 
 export type EMConfig = {

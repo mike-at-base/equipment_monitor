@@ -68,10 +68,7 @@ func main() {
 					Station: lowerASCII(st.Name), EMLabel: lowerASCII(e.EMLabel)}
 				seqs := map[int16]tracker.SeqConfig{}
 				for _, s := range e.Sequences {
-					seqs[s.Index] = tracker.SeqConfig{
-						Index: s.Index, IsProduction: s.IsProduction,
-						CycleStart: s.CycleStart, CycleComplete: s.CycleComplete,
-					}
+					seqs[s.Index] = toSeqConfig(s)
 				}
 				trackers[key] = tracker.New(tracker.Config{
 					EMID: e.ID, Line: l.Name, Station: st.Name, EMLabel: e.EMLabel, Sequences: seqs,
@@ -111,8 +108,7 @@ func main() {
 		}
 		m := map[int16]tracker.SeqConfig{}
 		for _, s := range seqs {
-			m[s.Index] = tracker.SeqConfig{Index: s.Index, IsProduction: s.IsProduction,
-				CycleStart: s.CycleStart, CycleComplete: s.CycleComplete}
+			m[s.Index] = toSeqConfig(s)
 		}
 		svc.SetSequences(emID, m)
 		if r, err := pg.LoadHierarchy(ctx); err == nil {
@@ -243,6 +239,23 @@ func buildAPILines(recs []store.LineRec) []api.LineInfo {
 		out = append(out, li)
 	}
 	return out
+}
+
+// toSeqConfig maps a stored sequence config to the tracker's form, turning
+// the step lists into lookup sets.
+func toSeqConfig(s store.SeqConfig) tracker.SeqConfig {
+	toSet := func(xs []string) map[string]bool {
+		m := make(map[string]bool, len(xs))
+		for _, x := range xs {
+			m[x] = true
+		}
+		return m
+	}
+	return tracker.SeqConfig{
+		Index: s.Index, IsProduction: s.IsProduction,
+		CycleStart: s.CycleStart, CycleComplete: s.CycleComplete,
+		StarvedSteps: toSet(s.StarvedSteps), BlockedSteps: toSet(s.BlockedSteps),
+	}
 }
 
 // envInt reads an int env var with a default.

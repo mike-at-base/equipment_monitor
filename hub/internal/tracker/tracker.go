@@ -31,6 +31,8 @@ type SeqConfig struct {
 	IsProduction  bool
 	CycleStart    string
 	CycleComplete string
+	StarvedSteps  map[string]bool // dwell here waiting -> starved (authoritative)
+	BlockedSteps  map[string]bool // dwell here waiting -> blocked (authoritative)
 }
 
 type Config struct {
@@ -370,6 +372,16 @@ func composeFaultReason(alarmMsg, conds string) string {
 
 func (t *EM) classifyWait(seq int16, step, waitingOn string) string {
 	sc, known := t.cfg.Sequences[seq]
+	// Explicitly configured starved/blocked steps are authoritative — they
+	// override the cycle-position + keyword deduction below.
+	if known {
+		if sc.StarvedSteps[step] {
+			return model.StateStarved
+		}
+		if sc.BlockedSteps[step] {
+			return model.StateBlocked
+		}
+	}
 	if known && sc.CycleStart != "" && step == sc.CycleStart {
 		return model.StateStarved
 	}

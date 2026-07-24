@@ -194,6 +194,15 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .cfg-seq-head { font-weight: 600; font-variant-numeric: tabular-nums; }
 .cfg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 16px; align-items: end; }
 .cfg-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.cfg-flow { margin-top: 12px; border-top: 1px solid var(--conduit); padding-top: 10px; display: grid; gap: 10px; }
+.cfg-flow-row { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; }
+.cfg-flow-label { font-size: 12px; color: var(--secondary); font-weight: 600; }
+.cfg-flow-label em { font-weight: 400; font-style: normal; opacity: .8; }
+.stepchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.stepchip { font: 600 12px ui-monospace, Consolas, monospace; padding: 3px 9px; border-radius: 6px; background: var(--conduit); color: var(--secondary); border: 1px solid var(--subtle); cursor: pointer; }
+.stepchip:hover { border-color: var(--secondary); }
+.stepchip.on.starved { background: var(--st-starved); color: var(--terminal); border-color: var(--st-starved); }
+.stepchip.on.blocked { background: var(--st-blocked); color: var(--strike); border-color: var(--st-blocked); }
 .btn-primary { background: var(--livewire); color: var(--grounded); border: 1px solid var(--livewire); border-radius: 9999px; padding: 8px 22px; font: 600 14px Inter, system-ui, sans-serif; cursor: pointer; }
 .btn-primary:hover { filter: brightness(0.97); }
 .btn-primary:disabled { opacity: .6; cursor: default; }

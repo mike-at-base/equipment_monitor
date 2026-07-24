@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -60,6 +61,8 @@ var ddl = []string{
 	    is_production BOOL NOT NULL DEFAULT FALSE,
 	    cycle_start_step TEXT NOT NULL DEFAULT '',
 	    cycle_complete_step TEXT NOT NULL DEFAULT '',
+	    starved_steps TEXT NOT NULL DEFAULT '',
+	    blocked_steps TEXT NOT NULL DEFAULT '',
 	    UNIQUE (em_id, seq_index))`,
 	`CREATE TABLE IF NOT EXISTS state_interval (
 	    start_ts TIMESTAMPTZ NOT NULL,
@@ -121,6 +124,12 @@ var hypertables = [][2]string{
 	{"operator_event", "ts"},
 }
 
+// migrations bring an existing DB up to the current schema (idempotent).
+var migrations = []string{
+	`ALTER TABLE sequence ADD COLUMN IF NOT EXISTS starved_steps TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE sequence ADD COLUMN IF NOT EXISTS blocked_steps TEXT NOT NULL DEFAULT ''`,
+}
+
 var indexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_station_line ON station (line_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_em_station ON em (station_id)`,
@@ -166,6 +175,11 @@ func (p *PG) InitSchema(ctx context.Context) error {
 	for _, stmt := range ddl {
 		if _, err := p.pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("ddl: %w", err)
+		}
+	}
+	for _, stmt := range migrations {
+		if _, err := p.pool.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("migration: %w", err)
 		}
 	}
 	for _, ht := range hypertables {
@@ -239,7 +253,8 @@ type LineRec struct {
 // after a UI edit).
 func (p *PG) SeqConfigFor(ctx context.Context, emID int) ([]SeqConfig, error) {
 	rows, err := p.pool.Query(ctx, `
-	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step
+	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step,
+	           starved_steps, blocked_steps
 	    FROM sequence WHERE em_id = $1 ORDER BY seq_index`, emID)
 	if err != nil {
 		return nil, err
@@ -248,10 +263,12 @@ func (p *PG) SeqConfigFor(ctx context.Context, emID int) ([]SeqConfig, error) {
 	var out []SeqConfig
 	for rows.Next() {
 		var s SeqConfig
+		var starved, blocked string
 		if err := rows.Scan(&s.Index, &s.Name, &s.IsProduction,
-			&s.CycleStart, &s.CycleComplete); err != nil {
+			&s.CycleStart, &s.CycleComplete, &starved, &blocked); err != nil {
 			return nil, err
 		}
+		s.StarvedSteps, s.BlockedSteps = SplitSteps(starved), SplitSteps(blocked)
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -264,7 +281,8 @@ func (p *PG) LoadHierarchy(ctx context.Context) ([]LineRec, error) {
 	// the tree (no held pointers into growing slices).
 	seqByEM := map[int][]SeqConfig{}
 	seqRows, err := p.pool.Query(ctx, `
-	    SELECT em_id, seq_index, name, is_production, cycle_start_step, cycle_complete_step
+	    SELECT em_id, seq_index, name, is_production, cycle_start_step, cycle_complete_step,
+	           starved_steps, blocked_steps
 	    FROM sequence ORDER BY em_id, seq_index`)
 	if err != nil {
 		return nil, err
@@ -272,11 +290,13 @@ func (p *PG) LoadHierarchy(ctx context.Context) ([]LineRec, error) {
 	for seqRows.Next() {
 		var emID int
 		var s SeqConfig
+		var starved, blocked string
 		if err := seqRows.Scan(&emID, &s.Index, &s.Name, &s.IsProduction,
-			&s.CycleStart, &s.CycleComplete); err != nil {
+			&s.CycleStart, &s.CycleComplete, &starved, &blocked); err != nil {
 			seqRows.Close()
 			return nil, err
 		}
+		s.StarvedSteps, s.BlockedSteps = SplitSteps(starved), SplitSteps(blocked)
 		seqByEM[emID] = append(seqByEM[emID], s)
 	}
 	seqRows.Close()
@@ -338,6 +358,30 @@ type SeqConfig struct {
 	Name                      string
 	IsProduction              bool
 	CycleStart, CycleComplete string
+	StarvedSteps              []string // steps that mean "waiting on upstream"
+	BlockedSteps              []string // steps that mean "waiting on downstream"
+}
+
+// SplitSteps / JoinSteps convert between the comma-delimited step lists stored
+// in the DB and []string. Empty string -> empty slice (not [""]).
+func SplitSteps(s string) []string {
+	out := []string{}
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func JoinSteps(steps []string) string {
+	clean := make([]string, 0, len(steps))
+	for _, s := range steps {
+		if s = strings.TrimSpace(s); s != "" {
+			clean = append(clean, s)
+		}
+	}
+	return strings.Join(clean, ",")
 }
 
 func lower(s string) string {

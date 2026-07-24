@@ -605,6 +605,7 @@ function Config({ l, s, e }: P) {
       .sort((a, b) => a - b);
     setSeqs(idxs.map((idx) => c.sequences.find((x) => x.index === idx) ?? {
       index: idx, name: "", is_production: false, cycle_start_step: "", cycle_complete_step: "",
+      starved_steps: [], blocked_steps: [],
     }));
   }, [q.data]);
 
@@ -619,6 +620,26 @@ function Config({ l, s, e }: P) {
     if (current) set.add(current);
     return [...set].sort();
   };
+  // every step relevant to a sequence (observed + already configured), so a
+  // previously-tagged step still shows even if not observed this window
+  const stepUniverse = (sq: SeqConfig) => {
+    const set = new Set(observed[sq.index] ?? []);
+    [sq.cycle_start_step, sq.cycle_complete_step].forEach((x) => x && set.add(x));
+    sq.starved_steps.forEach((x) => set.add(x));
+    sq.blocked_steps.forEach((x) => set.add(x));
+    return [...set].sort();
+  };
+  // toggle a step into starved/blocked (mutually exclusive: added to one is
+  // removed from the other; clicking its current tag clears it)
+  const toggleStep = (i: number, kind: "starved" | "blocked", step: string) =>
+    setSeqs((cur) => cur.map((sq, j) => {
+      if (j !== i) return sq;
+      const had = kind === "starved" ? sq.starved_steps.includes(step) : sq.blocked_steps.includes(step);
+      const starved = sq.starved_steps.filter((x) => x !== step);
+      const blocked = sq.blocked_steps.filter((x) => x !== step);
+      if (!had) (kind === "starved" ? starved : blocked).push(step);
+      return { ...sq, starved_steps: starved, blocked_steps: blocked };
+    }));
   const save = () => {
     setSaving(true); setSaved(false); setSaveErr(undefined);
     api.saveEMConfig(l, s, e, { display_name: displayName, confirmed, sequences: seqs })
@@ -668,6 +689,31 @@ function Config({ l, s, e }: P) {
               Production sequence
             </label>
           </div>
+
+          {stepUniverse(sq).length > 0 && (
+            <div className="cfg-flow">
+              <div className="cfg-flow-row">
+                <span className="cfg-flow-label">Starved at <em>(waiting on upstream)</em></span>
+                <div className="stepchips">
+                  {stepUniverse(sq).map((step) => (
+                    <button type="button" key={step}
+                      className={`stepchip${sq.starved_steps.includes(step) ? " on starved" : ""}`}
+                      onClick={() => toggleStep(i, "starved", step)}>{step}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="cfg-flow-row">
+                <span className="cfg-flow-label">Blocked at <em>(waiting on downstream)</em></span>
+                <div className="stepchips">
+                  {stepUniverse(sq).map((step) => (
+                    <button type="button" key={step}
+                      className={`stepchip${sq.blocked_steps.includes(step) ? " on blocked" : ""}`}
+                      onClick={() => toggleStep(i, "blocked", step)}>{step}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       ))}
 
