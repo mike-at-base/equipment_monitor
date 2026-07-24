@@ -50,8 +50,36 @@ export type EMSummary = {
   station: string;
   em_label: string;
   display_name: string;
+  confirmed: boolean;
   availability_pct?: number;
   state_min: Record<string, number>;
+};
+
+export type Unconfirmed = {
+  line: string;
+  station: string;
+  em_label: string;
+  display_name: string;
+  wire_version: number;
+};
+
+export type SeqConfig = {
+  index: number;
+  name: string;
+  is_production: boolean;
+  cycle_start_step: string;
+  cycle_complete_step: string;
+};
+
+export type EMConfig = {
+  station: string;
+  em_label: string;
+  line: string;
+  display_name: string;
+  confirmed: boolean;
+  wire_version: number;
+  sequences: SeqConfig[];
+  observed: { seq_index: number; steps: string[] }[];
 };
 
 export type LineSummary = {
@@ -184,6 +212,16 @@ async function get<T>(path: string): Promise<T> {
   return r.json();
 }
 
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
 export const api = {
   lines: () => get<LineRollup[]>("/api/v2/lines"),
   live: () => get<LiveEM[]>("/api/v2/live"),
@@ -208,6 +246,12 @@ export const api = {
       `/api/v2/ems/${l}/${s}/${e}/downs?window=${win}`),
   debug: (l: string, s: string, e: string, win: string) =>
     get<DebugResp>(`/api/v2/ems/${l}/${s}/${e}/debug?window=${win}`),
+  unconfirmed: () => get<Unconfirmed[]>("/api/v2/unconfirmed"),
+  emConfig: (l: string, s: string, e: string) =>
+    get<EMConfig>(`/api/v2/ems/${l}/${s}/${e}/config`),
+  saveEMConfig: (l: string, s: string, e: string,
+    body: { display_name: string; confirmed: boolean; sequences: SeqConfig[] }) =>
+    put<{ ok: boolean }>(`/api/v2/ems/${l}/${s}/${e}/config`, body),
 };
 
 // SSE live stream with polling fallback

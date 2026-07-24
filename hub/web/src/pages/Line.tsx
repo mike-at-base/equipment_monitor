@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, Interval, LiveEM, fmtSince, stateColor, STATE_LABEL } from "../api";
+import { api, EMSummary, Interval, LiveEM, fmtSince, stateColor, STATE_LABEL } from "../api";
 import { Bars, Gantt, Loading, ErrorBox, useAsync, useNow, useWindow } from "../components/ui";
 
 // Line view — the SCADA mimic: EM tiles in config order with live state,
@@ -32,34 +32,41 @@ export default function Line({ live }: { live: LiveEM[] }) {
         <Tile label="Blocked" value={(s.state_min["blocked"] ?? 0).toFixed(1)} unit=" min" />
       </div>
 
-      <div className="grid ems" style={{ marginTop: 16 }}>
-        {s.ems.map((em) => {
-          const lv = liveByKey[`${em.station}|${em.em_label}`.toLowerCase()];
-          const st = lv?.state || "no_data";
-          return (
-            <Link key={`${em.station}/${em.em_label}`}
-                  to={`/em/${line}/${em.station}/${em.em_label}`}>
-              <div className="emtile">
-                <div className="head" style={{ background: stateColor(st) }}>
-                  <span className="station" style={{ color: "var(--strike)" }}>{em.station}</span>
-                  <span className="st">{STATE_LABEL[st] ?? st}</span>
-                </div>
-                <div className="body">
-                  <div className="em">{em.display_name || em.em_label}
-                    {em.em_label !== "main" ? ` · ${em.em_label}` : ""}</div>
-                  <div className="step">{lv?.step ? `step ${lv.step}` : "—"}</div>
-                  {lv?.since && <div className="dwell">in state {fmtSince(lv.since, now)}</div>}
-                  {lv?.reason && <div className="reason" title={lv.reason}>{lv.reason}</div>}
-                  <div className="kvrow" style={{ marginTop: 6 }}>
-                    <span>avail</span>
-                    <b>{em.availability_pct != null ? `${em.availability_pct.toFixed(1)}%` : "–"}</b>
+      {groupByStation(s.ems).map(([station, ems]) => (
+        <div className="station-group" key={station}>
+          <div className="station-head">{station}</div>
+          <div className="grid ems">
+            {ems.map((em) => {
+              const lv = liveByKey[`${em.station}|${em.em_label}`.toLowerCase()];
+              const st = lv?.state || "no_data";
+              return (
+                <Link key={`${em.station}/${em.em_label}`}
+                      to={`/em/${line}/${em.station}/${em.em_label}`}>
+                  <div className={`emtile${em.confirmed ? "" : " unconfirmed"}`}>
+                    <div className="head" style={{ background: stateColor(st) }}>
+                      <span className="station" style={{ color: "var(--strike)" }}>
+                        {em.display_name || em.em_label}
+                        {em.em_label !== "main" && em.display_name ? "" : em.em_label !== "main" ? ` · ${em.em_label}` : ""}
+                      </span>
+                      <span className="st">{STATE_LABEL[st] ?? st}</span>
+                    </div>
+                    <div className="body">
+                      {!em.confirmed && <span className="chip-unconfirmed">unconfirmed</span>}
+                      <div className="step">{lv?.step ? `step ${lv.step}` : "—"}</div>
+                      {lv?.since && <div className="dwell">in state {fmtSince(lv.since, now)}</div>}
+                      {lv?.reason && <div className="reason" title={lv.reason}>{lv.reason}</div>}
+                      <div className="kvrow" style={{ marginTop: 6 }}>
+                        <span>avail</span>
+                        <b>{em.availability_pct != null ? `${em.availability_pct.toFixed(1)}%` : "–"}</b>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            </Link>
-          );
-        })}
-      </div>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      ))}
 
       <LineGantt line={line} ems={s.ems.map((e) => ({ station: e.station, label: e.em_label }))} />
 
@@ -82,6 +89,17 @@ export default function Line({ live }: { live: LiveEM[] }) {
       )}
     </>
   );
+}
+
+// group a line's EMs by their station, preserving first-seen order
+function groupByStation(ems: EMSummary[]): [string, EMSummary[]][] {
+  const m = new Map<string, EMSummary[]>();
+  for (const em of ems) {
+    const arr = m.get(em.station) ?? [];
+    arr.push(em);
+    m.set(em.station, arr);
+  }
+  return [...m.entries()];
 }
 
 function Tile({ label, value, unit }: { label: string; value: string; unit: string }) {

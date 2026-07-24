@@ -167,6 +167,37 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .muted { color: var(--secondary); }
 .empty { padding: 28px; text-align: center; color: var(--secondary); }
 
+/* review banner (unconfirmed EMs) */
+.reviewbanner { background: var(--strike); border: 1px solid var(--st-starved); border-radius: 16px; padding: 14px 18px; }
+.rb-head { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+.rb-count { background: var(--st-starved); color: var(--terminal); border-radius: 9999px; min-width: 24px; height: 24px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+.rb-list { display: grid; gap: 6px; margin-top: 10px; }
+.rb-item { display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; border: 1px solid var(--subtle); border-radius: 10px; font-size: 13px; }
+.rb-item:hover { border-color: var(--livewire); }
+.rb-go { color: var(--grounded); font-weight: 600; }
+
+/* station grouping on the line view */
+.station-group { margin-top: 18px; }
+.station-head { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--secondary); padding: 0 2px 8px; border-bottom: 1px solid var(--subtle); margin-bottom: 12px; }
+
+/* unconfirmed indicators */
+.emtile.unconfirmed { border-color: var(--st-starved); border-style: dashed; }
+.chip-unconfirmed { display: inline-block; background: var(--st-starved); color: var(--terminal); border-radius: 6px; padding: 1px 7px; font-size: 11px; font-weight: 700; }
+
+/* config / review & confirm form */
+.cfg-sub { font-size: 15px; font-weight: 600; margin: 20px 0 8px; }
+.cfg-field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; max-width: 420px; }
+.cfg-field label { font-size: 12px; color: var(--secondary); font-weight: 600; }
+.cfg-field input, .cfg-field select { border: 1px solid var(--subtle); border-radius: 8px; padding: 7px 10px; font: inherit; background: var(--strike); color: var(--terminal); }
+.cfg-field input:focus, .cfg-field select:focus { outline: 2px solid var(--grounded); outline-offset: 0; border-color: var(--grounded); }
+.cfg-seq { border: 1px solid var(--subtle); border-radius: 12px; padding: 12px 14px; margin-top: 10px; }
+.cfg-seq-head { font-weight: 600; font-variant-numeric: tabular-nums; }
+.cfg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 16px; align-items: end; }
+.cfg-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.btn-primary { background: var(--livewire); color: var(--grounded); border: 1px solid var(--livewire); border-radius: 9999px; padding: 8px 22px; font: 600 14px Inter, system-ui, sans-serif; cursor: pointer; }
+.btn-primary:hover { filter: brightness(0.97); }
+.btn-primary:disabled { opacity: .6; cursor: default; }
+
 /* selectable table rows (cycle picker) */
 table.data tr.clickable, table.data tr.sel { cursor: pointer; }
 table.data tr.clickable:hover td { background: var(--conduit); }

@@ -9,11 +9,38 @@ export default function Site({ live }: { live: LiveEM[] }) {
   if (lines.err) return <ErrorBox err={lines.err} />;
   if (!lines.data) return <Loading />;
   return (
-    <div className="grid lines" style={{ marginTop: 16 }}>
-      {lines.data.map((l) => (
-        <LineCard key={l.name} name={l.name} emCount={l.em_count} win={win}
-          live={live.filter((e) => e.line === l.name)} />
-      ))}
+    <>
+      <ReviewBanner />
+      <div className="grid lines" style={{ marginTop: 16 }}>
+        {lines.data.map((l) => (
+          <LineCard key={l.name} name={l.name} emCount={l.em_count} win={win}
+            live={live.filter((e) => e.line === l.name)} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+// Auto-discovered EMs awaiting an engineer's review — links to each one's
+// Config tab to confirm identity + cycle metadata.
+function ReviewBanner() {
+  const q = useAsync(() => api.unconfirmed(), []);
+  const items = q.data ?? [];
+  if (!items.length) return null;
+  return (
+    <div className="reviewbanner" style={{ marginTop: 16 }}>
+      <div className="rb-head">
+        <span className="rb-count">{items.length}</span>
+        <span>equipment module{items.length > 1 ? "s" : ""} discovered — review to confirm</span>
+      </div>
+      <div className="rb-list">
+        {items.map((u, i) => (
+          <Link key={i} className="rb-item" to={`/em/${u.line}/${u.station}/${u.em_label}/config`}>
+            <span><b>{u.line}</b> / {u.station}{u.em_label !== "main" ? ` · ${u.em_label}` : ""}</span>
+            <span className="rb-go">review →</span>
+          </Link>
+        ))}
+      </div>
     </div>
   );
 }

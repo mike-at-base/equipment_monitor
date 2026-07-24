@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Route, Routes, useParams } from "react-router-dom";
-import { api, CycleRow, fmtClock, fmtMs, fmtSince, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
+import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
 import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
@@ -12,6 +12,7 @@ export default function EMPage() {
     { path: "availability", name: "Availability" },
     { path: "alarms", name: "Alarm history" },
     { path: "debug", name: "Raw / debug" },
+    { path: "config", name: "Config" },
   ];
   return (
     <>
@@ -27,6 +28,7 @@ export default function EMPage() {
         <Route path="availability" element={<Availability l={line} s={station} e={label} />} />
         <Route path="alarms" element={<Alarms l={line} s={station} e={label} />} />
         <Route path="debug" element={<Debug l={line} s={station} e={label} />} />
+        <Route path="config" element={<Config l={line} s={station} e={label} />} />
         <Route path="*" element={<Steps l={line} s={station} e={label} />} />
       </Routes>
     </>
@@ -575,6 +577,111 @@ function Debug({ l, s, e }: P) {
         )}
       </div>
     </>
+  );
+}
+
+// Review & confirm: name the EM, set per-sequence cycle metadata (cycle
+// start/complete chosen from steps actually observed), and confirm it. Saving
+// persists to the DB and live-reloads the tracker.
+function Config({ l, s, e }: P) {
+  const q = useAsync(() => api.emConfig(l, s, e), [l, s, e]);
+  const [displayName, setDisplayName] = useState("");
+  const [confirmed, setConfirmed] = useState(false);
+  const [seqs, setSeqs] = useState<SeqConfig[]>([]);
+  const [observed, setObserved] = useState<Record<number, string[]>>({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveErr, setSaveErr] = useState<unknown>();
+
+  useEffect(() => {
+    if (!q.data) return;
+    const c = q.data;
+    setDisplayName(c.display_name);
+    setConfirmed(c.confirmed);
+    const obs: Record<number, string[]> = {};
+    for (const o of c.observed) obs[o.seq_index] = o.steps;
+    setObserved(obs);
+    const idxs = [...new Set([...c.sequences.map((x) => x.index), ...c.observed.map((o) => o.seq_index)])]
+      .sort((a, b) => a - b);
+    setSeqs(idxs.map((idx) => c.sequences.find((x) => x.index === idx) ?? {
+      index: idx, name: "", is_production: false, cycle_start_step: "", cycle_complete_step: "",
+    }));
+  }, [q.data]);
+
+  if (q.err) return <ErrorBox err={q.err} />;
+  if (!q.data) return <Loading />;
+  const c = q.data;
+
+  const setSeq = (i: number, patch: Partial<SeqConfig>) =>
+    setSeqs((cur) => cur.map((sq, j) => (j === i ? { ...sq, ...patch } : sq)));
+  const stepOpts = (idx: number, current: string) => {
+    const set = new Set(observed[idx] ?? []);
+    if (current) set.add(current);
+    return [...set].sort();
+  };
+  const save = () => {
+    setSaving(true); setSaved(false); setSaveErr(undefined);
+    api.saveEMConfig(l, s, e, { display_name: displayName, confirmed, sequences: seqs })
+      .then(() => setSaved(true)).catch(setSaveErr).finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="card">
+      <h2>Review &amp; confirm</h2>
+      <p className="muted" style={{ marginTop: 0 }}>
+        {c.line} / {c.station}{c.em_label !== "main" ? ` · ${c.em_label}` : ""} · wire v{c.wire_version}
+        {!c.confirmed && <span className="chip-unconfirmed" style={{ marginLeft: 8 }}>unconfirmed</span>}
+      </p>
+
+      <div className="cfg-field">
+        <label>Display name</label>
+        <input value={displayName} onChange={(ev) => setDisplayName(ev.target.value)} placeholder={c.em_label} />
+      </div>
+
+      <h3 className="cfg-sub">Sequences</h3>
+      {seqs.length === 0 && <div className="muted">No sequences observed yet — run the machine, then reload.</div>}
+      {seqs.map((sq, i) => (
+        <div className="cfg-seq" key={sq.index}>
+          <div className="cfg-seq-head">Sequence {sq.index}</div>
+          <div className="cfg-grid">
+            <div className="cfg-field">
+              <label>Name</label>
+              <input value={sq.name} onChange={(ev) => setSeq(i, { name: ev.target.value })} placeholder="e.g. Run" />
+            </div>
+            <div className="cfg-field">
+              <label>Cycle start step</label>
+              <select value={sq.cycle_start_step} onChange={(ev) => setSeq(i, { cycle_start_step: ev.target.value })}>
+                <option value="">—</option>
+                {stepOpts(sq.index, sq.cycle_start_step).map((x) => <option key={x} value={x}>{x}</option>)}
+              </select>
+            </div>
+            <div className="cfg-field">
+              <label>Cycle complete step</label>
+              <select value={sq.cycle_complete_step} onChange={(ev) => setSeq(i, { cycle_complete_step: ev.target.value })}>
+                <option value="">—</option>
+                {stepOpts(sq.index, sq.cycle_complete_step).map((x) => <option key={x} value={x}>{x}</option>)}
+              </select>
+            </div>
+            <label className="cfg-check">
+              <input type="checkbox" checked={sq.is_production}
+                     onChange={(ev) => setSeq(i, { is_production: ev.target.checked })} />
+              Production sequence
+            </label>
+          </div>
+        </div>
+      ))}
+
+      <label className="cfg-check" style={{ marginTop: 16 }}>
+        <input type="checkbox" checked={confirmed} onChange={(ev) => setConfirmed(ev.target.checked)} />
+        Confirmed — identity and configuration verified
+      </label>
+
+      <div style={{ marginTop: 16, display: "flex", gap: 12, alignItems: "center" }}>
+        <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+        {saved && <span style={{ color: "var(--st-productive)" }}>Saved ✓</span>}
+        {saveErr != null && <span style={{ color: "var(--st-down)" }}>Save failed: {String(saveErr)}</span>}
+      </div>
+    </div>
   );
 }
 

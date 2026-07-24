@@ -18,6 +18,7 @@ type EMSummary struct {
 	Station         string             `json:"station"`
 	EMLabel         string             `json:"em_label"`
 	Display         string             `json:"display_name"`
+	Confirmed       bool               `json:"confirmed"`
 	AvailabilityPct *float64           `json:"availability_pct,omitempty"`
 	StateMin        map[string]float64 `json:"state_min"`
 }
@@ -117,7 +118,7 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 	for _, e := range ems {
 		ms := stateMs[e.ID]
 		em := EMSummary{Station: e.Station, EMLabel: e.Label, Display: e.Display,
-			StateMin: map[string]float64{}}
+			Confirmed: e.Confirmed, StateMin: map[string]float64{}}
 		var availRaw int64
 		for st, v := range ms {
 			em.StateMin[st] = round1(float64(v) / 60000.0)
