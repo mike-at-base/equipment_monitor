@@ -320,6 +320,22 @@ func (s *Server) handleIntervals(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, v)
 	}
+	// append the current OPEN interval (held in memory, not yet in the DB) so
+	// the timeline reaches "now" instead of stopping at the last closed one.
+	stateFilter := r.URL.Query().Get("state")
+	now := time.Now().UTC()
+	for _, le := range s.live() {
+		if le.EMID != em.ID || le.State == "" || le.Since.IsZero() || !le.Since.Before(to) {
+			continue
+		}
+		if stateFilter != "" && le.State != stateFilter {
+			continue
+		}
+		out = append(out, iv{
+			StartTs: le.Since, EndTs: now, State: le.State,
+			ReasonType: le.ReasonType, Reason: le.Reason, StepName: le.Step,
+		})
+	}
 	writeJSON(w, out)
 }
 
@@ -478,10 +494,20 @@ func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
 	if down := ms[model.StateDown]; epMs < down {
 		epMs = down
 	}
+	// per-state minutes, window-clipped and including the current open
+	// interval — so the UI's "time by state" is authoritative and the
+	// window/no-data accounting is correct.
+	stateMin := map[string]float64{}
+	for st, v := range ms {
+		stateMin[st] = round1(float64(v) / 60000.0)
+	}
 	out := map[string]any{
+		"from":        from,
+		"to":          to,
 		"episodes":    episodes,
 		"raw_downs":   raw,
 		"top_reasons": topEpisodeReasons(episodes, 10),
+		"state_min":   stateMin,
 	}
 	if pct, ok := episodeAvailability(availRaw, ms[model.StateDown], epMs); ok {
 		out["availability_pct"] = round1(pct)

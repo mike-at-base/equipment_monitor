@@ -66,6 +66,14 @@ export function Bars({ rows, wrap, valueFmt }: {
   );
 }
 
+// axis tick label: time for short windows, date+time when spanning >~a day
+function fmtTick(ms: number, spanMs: number): string {
+  const d = new Date(ms);
+  return spanMs > 26 * 3600 * 1000
+    ? d.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 // ── SVG state gantt ──────────────────────────────────────────────────────
 export function Gantt({ rows, from, to }: {
   rows: { label: string; intervals: Interval[] }[];
@@ -101,6 +109,13 @@ export function Gantt({ rows, from, to }: {
           </g>
         ))}
       </svg>
+      {/* time axis as HTML (the SVG is non-uniformly scaled, so text there
+          would stretch); aligned under the plot area, which starts at labelW */}
+      <div className="gantt-axis" style={{ marginLeft: `${(labelW / width) * 100}%` }}>
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+          <span key={f}>{fmtTick(from + span * f, span)}</span>
+        ))}
+      </div>
       <div className="gantt-legend">
         {STATE_ORDER.filter((s) => usedStates.has(s)).map((s) => (
           <span key={s}><i style={{ background: stateColor(s) }} />{STATE_LABEL[s]}</span>

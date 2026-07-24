@@ -232,16 +232,18 @@ function Availability({ l, s, e }: P) {
   if (iv.err) return <ErrorBox err={iv.err} />;
   if (!iv.data || !downs.data) return <Loading />;
 
-  const now = Date.now();
-  const spanMs: Record<string, number> = {};
-  let from = now;
-  for (const i of iv.data) {
-    const st = Date.parse(i.start_ts), en = Date.parse(i.end_ts);
-    from = Math.min(from, st);
-    spanMs[i.state] = (spanMs[i.state] ?? 0) + (en - st);
-  }
-  // availability + MTTR come from the API (episode-based: retry blips and
-  // gate inter-states inside a downtime episode are NOT uptime)
+  // window bounds come from the API (the same [from,to] the numbers use), so
+  // the timeline spans the exact requested window, not just the intervals.
+  const from = Date.parse(downs.data.from);
+  const to = Date.parse(downs.data.to);
+  const windowMin = (to - from) / 60000;
+
+  // time-by-state is the API's window-clipped state_min (includes the live
+  // open interval). Any remainder is time the EM wasn't reporting → "no data".
+  const stateMin = downs.data.state_min;
+  const coveredMin = Object.values(stateMin).reduce((a, b) => a + b, 0);
+  const noDataMin = Math.max(0, windowMin - coveredMin);
+
   const eps = downs.data.episodes;
   const epMin = eps.reduce((a, e) => a + e.minutes, 0);
   const acked = eps.filter((e) => e.response_min != null);
@@ -258,13 +260,20 @@ function Availability({ l, s, e }: P) {
         <T label="Avg repair" v={acked.length ? `${(acked.reduce((a, d) => a + d.repair_min!, 0) / acked.length).toFixed(1)} min` : "–"} />
       </div>
       <div className="card">
-        <h2>State timeline ({win})</h2>
-        <Gantt rows={[{ label: s, intervals: iv.data }]} from={from} to={now} />
+        <h2>State timeline</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          {fmtClock(downs.data.from)} → {fmtClock(downs.data.to)}
+        </p>
+        <Gantt rows={[{ label: s, intervals: iv.data }]} from={from} to={to} />
       </div>
       <div className="card">
-        <h2>Time by state</h2>
-        <Bars rows={STATE_ORDER.filter((st) => spanMs[st])
-          .map((st) => ({ name: STATE_LABEL[st], value: spanMs[st] / 60000, color: stateColor(st) }))} />
+        <h2>Time by state <span className="muted" style={{ fontSize: 13, fontWeight: 400 }}>
+          ({coveredMin.toFixed(1)} of {windowMin.toFixed(0)} min reported)</span></h2>
+        <Bars rows={[
+          ...STATE_ORDER.filter((st) => stateMin[st])
+            .map((st) => ({ name: STATE_LABEL[st], value: stateMin[st], color: stateColor(st) })),
+          ...(noDataMin > 0.1 ? [{ name: "No data (not reporting)", value: noDataMin, color: "var(--st-no_data)" }] : []),
+        ]} />
       </div>
       {downs.data.top_reasons.length > 0 && (
         <div className="card">

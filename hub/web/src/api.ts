@@ -248,8 +248,9 @@ export const api = {
     get<{ bucket: string; buckets: ThroughputBucket[] }>(
       `/api/v2/ems/${l}/${s}/${e}/throughput?window=${win}&bucket=${bucket}`),
   downs: (l: string, s: string, e: string, win: string) =>
-    get<{ episodes: EpisodeRow[]; raw_downs: DownRow[];
-          top_reasons: ReasonAgg[]; availability_pct?: number }>(
+    get<{ from: string; to: string; episodes: EpisodeRow[]; raw_downs: DownRow[];
+          top_reasons: ReasonAgg[]; availability_pct?: number;
+          state_min: Record<string, number> }>(
       `/api/v2/ems/${l}/${s}/${e}/downs?window=${win}`),
   debug: (l: string, s: string, e: string, win: string) =>
     get<DebugResp>(`/api/v2/ems/${l}/${s}/${e}/debug?window=${win}`),
