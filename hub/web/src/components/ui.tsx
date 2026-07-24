@@ -224,3 +224,26 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): { data?: T; 
   }, deps);
   return state;
 }
+
+// default background-refresh cadence for historical/aggregate views
+export const REFRESH_MS = 15000;
+
+// like useAsync but re-fetches on an interval, KEEPING the current data during
+// each refetch — no loading flash, no scroll jump. Clears (shows Loading) only
+// when deps change; ignores transient poll errors once data is present.
+export function usePolledAsync<T>(fn: () => Promise<T>, deps: unknown[],
+  intervalMs = REFRESH_MS): { data?: T; err?: unknown } {
+  const [state, setState] = useState<{ data?: T; err?: unknown }>({});
+  useEffect(() => {
+    let live = true;
+    setState({});
+    const load = () => fn()
+      .then((data) => { if (live) setState({ data }); })
+      .catch((err) => { if (live) setState((s) => (s.data ? s : { err })); });
+    load();
+    const id = setInterval(load, intervalMs);
+    return () => { live = false; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, intervalMs]);
+  return state;
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
-import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, useWindow, VBars } from "../components/ui";
+import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
 export default function EMPage() {
@@ -39,7 +39,7 @@ type P = { l: string; s: string; e: string };
 
 function Steps({ l, s, e }: P) {
   const { win } = useWindow();
-  const q = useAsync(() => api.steps(l, s, e, win, 800), [l, s, e, win]);
+  const q = usePolledAsync(() => api.steps(l, s, e, win, 800), [l, s, e, win]);
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
   const steps = q.data;
@@ -94,7 +94,7 @@ function Steps({ l, s, e }: P) {
 
 function Cycles({ l, s, e }: P) {
   const { win } = useWindow();
-  const q = useAsync(() => api.cycles(l, s, e, win), [l, s, e, win]);
+  const q = usePolledAsync(() => api.cycles(l, s, e, win), [l, s, e, win]);
   const [selTs, setSelTs] = useState<string>();
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
@@ -165,7 +165,7 @@ const BUCKETS = ["15m", "30m", "1h"];
 function Throughput({ l, s, e }: P) {
   const { win } = useWindow();
   const [bucket, setBucket] = useState("1h");
-  const q = useAsync(() => api.throughput(l, s, e, win, bucket), [l, s, e, win, bucket]);
+  const q = usePolledAsync(() => api.throughput(l, s, e, win, bucket), [l, s, e, win, bucket]);
   const bars = (q.data?.buckets ?? []).map((b) => ({
     t: Date.parse(b.bucket_ts), v: b.count,
     label: fmtClock(b.bucket_ts).replace(/:\d\d /, " "),
@@ -227,8 +227,8 @@ function CycleWaterfall({ l, s, e, cyc }: P & { cyc: CycleRow }) {
 
 function Availability({ l, s, e }: P) {
   const { win } = useWindow();
-  const iv = useAsync(() => api.intervals(l, s, e, win), [l, s, e, win]);
-  const downs = useAsync(() => api.downs(l, s, e, win), [l, s, e, win]);
+  const iv = usePolledAsync(() => api.intervals(l, s, e, win), [l, s, e, win]);
+  const downs = usePolledAsync(() => api.downs(l, s, e, win), [l, s, e, win]);
   if (iv.err) return <ErrorBox err={iv.err} />;
   if (!iv.data || !downs.data) return <Loading />;
 
@@ -289,7 +289,7 @@ function Availability({ l, s, e }: P) {
 
 function Alarms({ l, s, e }: P) {
   const { win } = useWindow();
-  const q = useAsync(() => api.downs(l, s, e, win), [l, s, e, win]);
+  const q = usePolledAsync(() => api.downs(l, s, e, win), [l, s, e, win]);
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
   const { episodes } = q.data;

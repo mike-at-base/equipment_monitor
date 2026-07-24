@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, EMSummary, Interval, LiveEM, fmtClock, fmtSince, stateColor, STATE_LABEL } from "../api";
-import { Bars, Gantt, Loading, ErrorBox, useAsync, useNow, useWindow } from "../components/ui";
+import { Bars, Gantt, Loading, ErrorBox, REFRESH_MS, usePolledAsync, useNow, useWindow } from "../components/ui";
 
 // Line view — the SCADA mimic: EM tiles in config order with live state,
 // step, dwell, reason; state gantt of the whole line below.
@@ -9,7 +9,7 @@ export default function Line({ live }: { live: LiveEM[] }) {
   const { line = "" } = useParams();
   const { win } = useWindow();
   const now = useNow();
-  const sum = useAsync(() => api.summary(line, win), [line, win]);
+  const sum = usePolledAsync(() => api.summary(line, win), [line, win]);
 
   const liveByKey: Record<string, LiveEM> = {};
   for (const e of live.filter((e) => e.line === line)) {
@@ -122,12 +122,14 @@ function LineGantt({ line, win, from, to, ems }: {
   useEffect(() => {
     let liveFlag = true;
     setRows(null);
-    Promise.all(ems.map((e) =>
+    const load = () => Promise.all(ems.map((e) =>
       api.intervals(line, e.station, e.label, win)
         .then((iv) => ({ label: e.label === "main" ? e.station : `${e.station}·${e.label}`, intervals: iv }))))
       .then((r) => liveFlag && setRows(r))
       .catch((e) => liveFlag && setErr(e));
-    return () => { liveFlag = false; };
+    load();
+    const id = setInterval(load, REFRESH_MS); // keep the timeline current
+    return () => { liveFlag = false; clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [line, win, ems.map((e) => e.station + e.label).join(",")]);
   if (err) return <ErrorBox err={err} />;

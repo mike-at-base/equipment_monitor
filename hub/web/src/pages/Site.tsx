@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, LiveEM, Unconfirmed, STATE_ORDER, stateColor, STATE_LABEL } from "../api";
-import { useAsync, useWindow, Loading, ErrorBox } from "../components/ui";
+import { REFRESH_MS, usePolledAsync, useWindow, Loading, ErrorBox } from "../components/ui";
 
 // Site overview: one card per line — live state strip + windowed KPIs.
 export default function Site({ live }: { live: LiveEM[] }) {
   const { win } = useWindow();
-  const lines = useAsync(() => api.lines(), []);
+  const lines = usePolledAsync(() => api.lines(), []);
   if (lines.err) return <ErrorBox err={lines.err} />;
   if (!lines.data) return <Loading />;
   return (
@@ -27,7 +27,11 @@ export default function Site({ live }: { live: LiveEM[] }) {
 function ReviewBanner() {
   const [items, setItems] = useState<Unconfirmed[] | null>(null);
   const load = () => api.unconfirmed().then(setItems).catch(() => setItems([]));
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const id = setInterval(load, REFRESH_MS); // surface newly discovered EMs
+    return () => clearInterval(id);
+  }, []);
   if (!items || !items.length) return null;
   const dismiss = (u: Unconfirmed) => {
     if (!window.confirm(`Delete ${u.line} / ${u.station}${u.em_label !== "main" ? " · " + u.em_label : ""} and all its data? This can't be undone.`)) return;
@@ -57,7 +61,7 @@ function ReviewBanner() {
 function LineCard({ name, emCount, win, live }: {
   name: string; emCount: number; win: string; live: LiveEM[];
 }) {
-  const sum = useAsync(() => api.summary(name, win), [name, win]);
+  const sum = usePolledAsync(() => api.summary(name, win), [name, win]);
   const counts: Record<string, number> = {};
   for (const e of live) counts[e.state || "no_data"] = (counts[e.state || "no_data"] ?? 0) + 1;
   const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
