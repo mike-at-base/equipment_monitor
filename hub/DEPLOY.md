@@ -38,49 +38,28 @@ That's it. Open `http://<server>:8062` for the SCADA UI.
 3. **Confirm the PLCs can route to the server** on UDP 15020 (this is the one
    thing Docker can't do for you — it's plant-network reachability).
 
-## Networking (important — read before production)
+## Networking
 
-emhub routes each incoming telemetry datagram to a line/EM by its **source
-IP** (matched against each line's configured PLC host in `config.yaml`).
-Docker's NAT rewrites the UDP source IP to the Docker gateway on published
-ports, so every PLC would appear to come from one address and get dropped
-("datagram for unconfigured EM").
+Each telemetry datagram self-identifies its `(line, station, em)` in the
+payload (wire v4), so the collector does **not** depend on the source IP.
+Docker's NAT on published ports is therefore fine — plain **bridge networking
+works on Linux and Windows**, no host networking required. Just make sure:
 
-**Linux production (recommended):** run emhub with host networking so it sees
-real PLC IPs. Replace the `ports:` block on the `emhub` service with:
+- **UDP 15020** is open on the host firewall and the PLCs can route to it.
+- **TCP 8062** is reachable for whoever views the UI.
 
-```yaml
-    network_mode: host        # binds 8062/tcp + 15020/udp directly on the host
+```bash
+sudo ufw allow 15020/udp
+sudo ufw allow 8062/tcp
 ```
-
-and change its DSN to reach the DB over the host loopback:
-
-```yaml
-    environment:
-      EMHUB_DSN: "postgres://monitor:${DB_PASSWORD:-monitor}@127.0.0.1:5432/emhub"
-```
-
-leaving the `timescaledb` service on the default bridge with
-`ports: ["127.0.0.1:5432:5432"]`. Host networking is Linux-only.
-
-**Docker Desktop (Windows/Mac):** fine for development and demos, but inbound
-UDP is always NAT'd and host networking attaches to the WSL2 VM, not your LAN —
-so it cannot correctly receive plant telemetry from multiple PLCs by source IP.
-For real PLC ingestion, deploy on a Linux host. (The legacy bare-`emhub.exe` on
-Windows works only because it binds the host NIC directly, with no NAT layer.)
 
 ## Configuration
 
-emhub reads `../config.yaml` (the repo-root config) for lines, EMs, and
-`telemetry.listen_port`. It's bind-mounted read-only, so edit it on the host
-and re-sync with:
-
-```bash
-docker compose restart emhub
-```
-
-emhub upserts the hierarchy and auto-creates its schema on startup — no manual
-migrations.
+There is no hierarchy config file. EMs **auto-discover** from their telemetry
+(each PLC's FB declares its `lineName`) and land in an *unconfirmed* state;
+an engineer then reviews and confirms each one in the UI (name, line/station,
+cycle metadata). The database is the single source of truth. The UDP listen
+port is set via `EMHUB_UDP_PORT` (default 15020).
 
 ## Operations
 
