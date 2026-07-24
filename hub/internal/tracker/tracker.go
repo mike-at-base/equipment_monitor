@@ -200,9 +200,11 @@ func (t *EM) trackSteps(d *wire.Datagram, ts time.Time) {
 	if seq <= 0 {
 		return
 	}
-	if _, known := t.cfg.Sequences[seq]; !known {
-		return
-	}
+	// Record step events for ANY active sequence, even one with no cycle
+	// config yet — otherwise an auto-discovered EM records no step history,
+	// and the review screen has no observed steps to offer for cycle
+	// start/complete. Cycle-edge detection (trackCycleEdges) is what needs
+	// the config, and it no-ops when cycle_start_step is unset.
 	if d.Bit(wire.BitStepFault) {
 		t.stepFaulted = true
 	}
