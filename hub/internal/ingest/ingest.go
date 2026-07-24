@@ -19,17 +19,26 @@ import (
 
 const offlineAfter = 10 * time.Second
 
+// Key identifies a tracker by LINE (not source IP): v4 datagrams carry the
+// line name, and legacy v3 datagrams resolve source IP -> line via lineByHost.
+// All three parts are lower-cased.
 type Key struct {
-	Host    string
+	Line    string
 	Station string
 	EMLabel string
 }
 
+// Discoverer creates+persists a tracker for an EM seen live for the first
+// time (v4 auto-registration). Returns the new tracker to add to the map.
+type Discoverer func(line, station, emLabel string, wireVer int) (*tracker.EM, error)
+
 type Service struct {
-	mu       sync.Mutex
-	trackers map[Key]*tracker.EM
-	log      *slog.Logger
-	port     int
+	mu         sync.Mutex
+	trackers   map[Key]*tracker.EM
+	lineByHost map[string]string // source IP -> line name (legacy v3 routing)
+	discover   Discoverer        // nil disables auto-registration
+	log        *slog.Logger
+	port       int
 }
 
 // LiveEM is a lock-safe snapshot of one tracker for the live API.
@@ -86,18 +95,20 @@ type RawEM struct {
 	SkewMs         int64     `json:"skew_ms"`
 }
 
-func New(port int, trackers map[Key]*tracker.EM, log *slog.Logger) *Service {
-	return &Service{trackers: trackers, log: log, port: port}
+func New(port int, trackers map[Key]*tracker.EM, lineByHost map[string]string,
+	discover Discoverer, log *slog.Logger) *Service {
+	return &Service{trackers: trackers, lineByHost: lineByHost,
+		discover: discover, log: log, port: port}
 }
 
 // Snapshot returns the current state of every tracked EM (for /api/v2/live).
-func (s *Service) Snapshot(lineByHost map[string]string) []LiveEM {
+func (s *Service) Snapshot() []LiveEM {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]LiveEM, 0, len(s.trackers))
-	for k, t := range s.trackers {
+	for _, t := range s.trackers {
 		le := LiveEM{
-			EMID: t.EMID(), Line: lineByHost[k.Host],
+			EMID: t.EMID(), Line: t.Line(),
 			Station: t.Station(), EMLabel: t.EMLabel(),
 			State: t.State(), ReasonType: t.StateReasonType(),
 			Reason: t.StateReason(), Step: t.Step(),
@@ -113,17 +124,17 @@ func (s *Service) Snapshot(lineByHost map[string]string) []LiveEM {
 // RawSnapshot returns the last decoded datagram of every EM that has
 // received one, with status/mode bits decoded into named flags. Used by the
 // per-EM engineering debug endpoint.
-func (s *Service) RawSnapshot(lineByHost map[string]string) []RawEM {
+func (s *Service) RawSnapshot() []RawEM {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]RawEM, 0, len(s.trackers))
-	for k, t := range s.trackers {
+	for _, t := range s.trackers {
 		d, recv := t.Raw()
 		if d == nil {
 			continue
 		}
 		re := RawEM{
-			EMID: t.EMID(), Line: lineByHost[k.Host],
+			EMID: t.EMID(), Line: t.Line(),
 			Station: t.Station(), EMLabel: t.EMLabel(),
 			MsgType: d.MsgType, Seq: d.Seq, ActiveSequence: d.ActiveSequence,
 			Step: d.Step, StepDesc: d.StepDesc, StepActiveMs: d.StepActiveMs,
@@ -186,17 +197,48 @@ func (s *Service) Run(ctx context.Context) error {
 			s.log.Debug("bad datagram", "from", addr.IP.String(), "err", err)
 			continue
 		}
-		key := Key{addr.IP.String(), strings.ToLower(d.Station), strings.ToLower(d.EMLabel)}
-		t, ok := s.trackers[key]
-		if !ok {
+		// Resolve the line: v4 carries it in the payload; legacy v3 maps the
+		// source IP through the config's lineByHost table.
+		lineName := d.LineName
+		if lineName == "" {
+			lineName = s.lineByHost[addr.IP.String()]
+		}
+		key := Key{strings.ToLower(lineName), strings.ToLower(d.Station), strings.ToLower(d.EMLabel)}
+		if lineName == "" {
 			if !unknownLogged[key] {
 				unknownLogged[key] = true
-				s.log.Warn("datagram for unconfigured EM",
-					"from", key.Host, "station", d.Station, "em", d.EMLabel)
+				s.log.Warn("v3 datagram from unmapped source IP (no line)",
+					"from", addr.IP.String(), "station", d.Station, "em", d.EMLabel)
 			}
 			continue
 		}
+
 		s.mu.Lock()
+		t, ok := s.trackers[key]
+		if !ok {
+			// Auto-register only self-identifying (v4) EMs; a v3 EM with no
+			// config entry is still dropped (can't be trusted to a line).
+			if d.LineName == "" || s.discover == nil {
+				s.mu.Unlock()
+				if !unknownLogged[key] {
+					unknownLogged[key] = true
+					s.log.Warn("datagram for unconfigured EM",
+						"line", lineName, "station", d.Station, "em", d.EMLabel)
+				}
+				continue
+			}
+			nt, err := s.discover(lineName, d.Station, d.EMLabel, int(d.Version))
+			if err != nil {
+				s.mu.Unlock()
+				s.log.Error("auto-register failed",
+					"line", lineName, "station", d.Station, "em", d.EMLabel, "err", err)
+				continue
+			}
+			s.trackers[key] = nt
+			t = nt
+			s.log.Info("auto-registered EM (unconfirmed)",
+				"line", lineName, "station", d.Station, "em", d.EMLabel, "wire", d.Version)
+		}
 		if gap := t.SeqGap(d.Seq); gap > 0 {
 			s.log.Warn("missed datagrams (heartbeat self-heals)",
 				"station", d.Station, "em", d.EMLabel, "gap", gap)

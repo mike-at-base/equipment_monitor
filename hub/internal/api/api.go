@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,11 +46,26 @@ type LineInfo struct {
 }
 
 type Server struct {
-	pool  *pgxpool.Pool
-	lines []LineInfo
-	live  func() []ingest.LiveEM
-	raw   func() []ingest.RawEM
-	tz    *time.Location
+	pool    *pgxpool.Pool
+	linesMu sync.RWMutex
+	lines   []LineInfo
+	live    func() []ingest.LiveEM
+	raw     func() []ingest.RawEM
+	tz      *time.Location
+}
+
+// SetLines swaps the hierarchy (called by the background refresh so
+// auto-discovered EMs appear without a restart).
+func (s *Server) SetLines(lines []LineInfo) {
+	s.linesMu.Lock()
+	s.lines = lines
+	s.linesMu.Unlock()
+}
+
+func (s *Server) snapshotLines() []LineInfo {
+	s.linesMu.RLock()
+	defer s.linesMu.RUnlock()
+	return s.lines
 }
 
 func New(pool *pgxpool.Pool, lines []LineInfo,
@@ -141,9 +157,10 @@ func httpErr(w http.ResponseWriter, code int, err error) {
 }
 
 func (s *Server) findLine(name string) *LineInfo {
-	for i := range s.lines {
-		if strings.EqualFold(s.lines[i].Name, name) {
-			return &s.lines[i]
+	lines := s.snapshotLines()
+	for i := range lines {
+		if strings.EqualFold(lines[i].Name, name) {
+			return &lines[i]
 		}
 	}
 	return nil

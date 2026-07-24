@@ -35,6 +35,8 @@ var ddl = []string{
 	    em_label TEXT NOT NULL,
 	    display_name TEXT NOT NULL DEFAULT '',
 	    enabled BOOL NOT NULL DEFAULT TRUE,
+	    confirmed BOOL NOT NULL DEFAULT FALSE,
+	    wire_version INT NOT NULL DEFAULT 0,
 	    UNIQUE (line_id, station, em_label))`,
 	`CREATE TABLE IF NOT EXISTS sequence (
 	    id SERIAL PRIMARY KEY,
@@ -105,6 +107,17 @@ var hypertables = [][2]string{
 	{"operator_event", "ts"},
 }
 
+// migrations bring existing databases (created before a column existed) up to
+// the current schema. Idempotent; run after ddl.
+var migrations = []string{
+	// DEFAULT TRUE backfills rows that predate auto-discovery — they were all
+	// manually configured, hence confirmed. Fresh installs use the CREATE TABLE
+	// default (FALSE); both insert paths (SyncConfig / RegisterEM) set it
+	// explicitly, so the column default only affects this one-time backfill.
+	`ALTER TABLE em ADD COLUMN IF NOT EXISTS confirmed BOOL NOT NULL DEFAULT TRUE`,
+	`ALTER TABLE em ADD COLUMN IF NOT EXISTS wire_version INT NOT NULL DEFAULT 0`,
+}
+
 var indexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_state_em ON state_interval (em_id, start_ts DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_step_em ON step_event (em_id, seq_index, start_ts DESC)`,
@@ -150,6 +163,11 @@ func (p *PG) InitSchema(ctx context.Context) error {
 			return fmt.Errorf("ddl: %w", err)
 		}
 	}
+	for _, stmt := range migrations {
+		if _, err := p.pool.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("migration: %w", err)
+		}
+	}
 	for _, ht := range hypertables {
 		_, err := p.pool.Exec(ctx, fmt.Sprintf(
 			`SELECT create_hypertable('%s','%s', if_not_exists => TRUE)`, ht[0], ht[1]))
@@ -165,47 +183,150 @@ func (p *PG) InitSchema(ctx context.Context) error {
 	return nil
 }
 
-// SyncConfig upserts the hierarchy and returns em ids keyed by
-// (lower(station), lower(em_label)) per line name.
-func (p *PG) SyncConfig(ctx context.Context, lines []LineConfig) (map[string]map[[2]string]int, error) {
-	out := map[string]map[[2]string]int{}
+// SyncConfig SEEDS the hierarchy from config.yaml: it inserts lines/EMs/
+// sequences that don't exist yet (config EMs are confirmed) but never
+// overwrites existing rows — the DB is the source of truth once running, so
+// UI edits survive restarts and config.yaml is a one-time seed. plc_host is
+// kept current because the legacy v3 path still routes by it.
+func (p *PG) SyncConfig(ctx context.Context, lines []LineConfig) error {
 	for _, l := range lines {
 		var lineID int
 		err := p.pool.QueryRow(ctx, `
 		    INSERT INTO line (name, plc_host, enabled) VALUES ($1,$2,$3)
-		    ON CONFLICT (name) DO UPDATE SET plc_host=$2, enabled=$3
+		    ON CONFLICT (name) DO UPDATE SET plc_host=EXCLUDED.plc_host
 		    RETURNING id`, l.Name, l.Host, l.Enabled).Scan(&lineID)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out[l.Name] = map[[2]string]int{}
 		for _, e := range l.EMs {
 			var emID int
+			// DO UPDATE SET station=... is a no-op that only lets RETURNING fire
+			// on conflict; it deliberately does NOT touch display_name / enabled
+			// / confirmed so UI edits are preserved.
 			err := p.pool.QueryRow(ctx, `
-			    INSERT INTO em (line_id, station, em_label, display_name, enabled)
-			    VALUES ($1,$2,$3,$4,$5)
+			    INSERT INTO em (line_id, station, em_label, display_name, enabled, confirmed)
+			    VALUES ($1,$2,$3,$4,$5,TRUE)
 			    ON CONFLICT (line_id, station, em_label)
-			    DO UPDATE SET display_name=$4, enabled=$5
+			    DO UPDATE SET station=EXCLUDED.station
 			    RETURNING id`,
 				lineID, e.Station, e.EMLabel, e.DisplayName, e.Enabled).Scan(&emID)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			out[l.Name][[2]string{lower(e.Station), lower(e.EMLabel)}] = emID
 			for _, s := range e.Sequences {
 				_, err := p.pool.Exec(ctx, `
 				    INSERT INTO sequence (em_id, seq_index, name, is_production,
 				                          cycle_start_step, cycle_complete_step)
 				    VALUES ($1,$2,$3,$4,$5,$6)
-				    ON CONFLICT (em_id, seq_index) DO UPDATE SET
-				      name=$3, is_production=$4, cycle_start_step=$5,
-				      cycle_complete_step=$6`,
+				    ON CONFLICT (em_id, seq_index) DO NOTHING`,
 					emID, s.Index, s.Name, s.IsProduction, s.CycleStart, s.CycleComplete)
 				if err != nil {
-					return nil, err
+					return err
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// RegisterEM upserts a line + EM discovered live from a v4 datagram and
+// returns its id. New EMs are enabled (so they're tracked and visible) but
+// UNCONFIRMED until an engineer vets the identity in the UI. wire_version is
+// refreshed each call; nothing else on an existing row is touched.
+func (p *PG) RegisterEM(ctx context.Context, lineName, station, emLabel string, wireVer int) (int, error) {
+	var lineID int
+	if err := p.pool.QueryRow(ctx, `
+	    INSERT INTO line (name, plc_host, enabled) VALUES ($1,'',TRUE)
+	    ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name
+	    RETURNING id`, lineName).Scan(&lineID); err != nil {
+		return 0, err
+	}
+	var emID int
+	err := p.pool.QueryRow(ctx, `
+	    INSERT INTO em (line_id, station, em_label, enabled, confirmed, wire_version)
+	    VALUES ($1,$2,$3,TRUE,FALSE,$4)
+	    ON CONFLICT (line_id, station, em_label)
+	    DO UPDATE SET wire_version=EXCLUDED.wire_version
+	    RETURNING id`, lineID, station, emLabel, wireVer).Scan(&emID)
+	return emID, err
+}
+
+// EMRec / LineRec describe the persisted hierarchy the collector rebuilds
+// trackers and the query API from at startup and on refresh.
+type EMRec struct {
+	ID          int
+	Station     string
+	EMLabel     string
+	DisplayName string
+	Confirmed   bool
+	Sequences   []SeqConfig
+}
+
+type LineRec struct {
+	Name string
+	Host string
+	EMs  []EMRec
+}
+
+// LoadHierarchy returns the enabled lines/EMs/sequences from the DB — the
+// live source of truth (config seed + auto-discovered + UI edits).
+func (p *PG) LoadHierarchy(ctx context.Context) ([]LineRec, error) {
+	rows, err := p.pool.Query(ctx, `
+	    SELECT l.name, l.plc_host, e.id, e.station, e.em_label, e.display_name, e.confirmed
+	    FROM line l JOIN em e ON e.line_id = l.id
+	    WHERE l.enabled AND e.enabled
+	    ORDER BY l.name, e.station, e.em_label`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	order := []string{}
+	byName := map[string]*LineRec{}
+	emByID := map[int]*EMRec{}
+	for rows.Next() {
+		var lineName, host string
+		var em EMRec
+		if err := rows.Scan(&lineName, &host, &em.ID, &em.Station, &em.EMLabel,
+			&em.DisplayName, &em.Confirmed); err != nil {
+			return nil, err
+		}
+		lr := byName[lineName]
+		if lr == nil {
+			lr = &LineRec{Name: lineName, Host: host}
+			byName[lineName] = lr
+			order = append(order, lineName)
+		}
+		lr.EMs = append(lr.EMs, em)
+		emByID[em.ID] = &lr.EMs[len(lr.EMs)-1]
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// attach sequences
+	sr, err := p.pool.Query(ctx, `
+	    SELECT em_id, seq_index, name, is_production, cycle_start_step, cycle_complete_step
+	    FROM sequence ORDER BY em_id, seq_index`)
+	if err != nil {
+		return nil, err
+	}
+	defer sr.Close()
+	for sr.Next() {
+		var emID int
+		var s SeqConfig
+		if err := sr.Scan(&emID, &s.Index, &s.Name, &s.IsProduction,
+			&s.CycleStart, &s.CycleComplete); err != nil {
+			return nil, err
+		}
+		if e := emByID[emID]; e != nil {
+			e.Sequences = append(e.Sequences, s)
+		}
+	}
+	if err := sr.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]LineRec, 0, len(order))
+	for _, n := range order {
+		out = append(out, *byName[n])
 	}
 	return out, nil
 }

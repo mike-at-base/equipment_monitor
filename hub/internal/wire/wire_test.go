@@ -83,3 +83,20 @@ func TestDecodeV3BackCompat(t *testing.T) {
 		t.Fatalf("v3 core fields wrong: step=%q running=%v", d.Step, d.Bit(BitRunning))
 	}
 }
+
+// Forward compatibility: a newer PLC (higher version, at least the length this
+// build knows) must still decode — the collector reads the fields it knows
+// and ignores anything newer appended past them.
+func TestDecodeForwardCompat(t *testing.T) {
+	raw := BuildTestLine(MsgEvent, 0, 0, 1, 1, "40", "", "", "", "", "",
+		"MOD2", time.Now())
+	raw[0] = 9                         // pretend a future wire version
+	raw = append(raw, 0xAA, 0xBB, 0xCC) // extra trailing bytes we don't understand
+	d, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("future version rejected: %v", err)
+	}
+	if d.Version != 9 || d.LineName != "MOD2" || d.Step != "40" {
+		t.Fatalf("forward decode: ver=%d line=%q step=%q", d.Version, d.LineName, d.Step)
+	}
+}

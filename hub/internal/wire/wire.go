@@ -68,6 +68,7 @@ const (
 )
 
 type Datagram struct {
+	Version        uint8 // wire version byte (informational / fleet visibility)
 	MsgType        uint8
 	StatusBits     uint16
 	ModeBits       uint16
@@ -121,13 +122,11 @@ func Decode(b []byte) (*Datagram, error) {
 		return nil, fmt.Errorf("short datagram: %d bytes", len(b))
 	}
 	ver := b[0]
-	if ver != 3 && ver != 4 {
-		return nil, fmt.Errorf("wire version %d (want 3 or 4)", ver)
-	}
-	if ver == 4 && len(b) < PayloadLen {
-		return nil, fmt.Errorf("short v4 datagram: %d bytes", len(b))
+	if ver < 3 {
+		return nil, fmt.Errorf("unsupported wire version %d (min 3)", ver)
 	}
 	d := &Datagram{
+		Version:        ver,
 		MsgType:        b[1],
 		StatusBits:     binary.BigEndian.Uint16(b[2:]),
 		ModeBits:       binary.BigEndian.Uint16(b[4:]),
@@ -147,7 +146,12 @@ func Decode(b []byte) (*Datagram, error) {
 	if ns > 0 {
 		d.PLCTime = time.Unix(0, int64(ns)).UTC()
 	}
-	if ver == 4 {
+	// Append-only layout: decode trailing fields when the datagram is long
+	// enough to hold them. A newer PLC (higher version, longer payload) is
+	// read up to the fields this build knows and the rest ignored; an older
+	// one simply lacks them. Keeps the collector forward- and
+	// backward-compatible across FB versions without a per-version allowlist.
+	if len(b) >= PayloadLen {
 		d.LineName = s7String(b, 1108, 32)
 	}
 	return d, nil

@@ -77,28 +77,36 @@ func main() {
 		}
 		lineCfgs = append(lineCfgs, lc)
 	}
-	emIDs, err := pg.SyncConfig(ctx, lineCfgs)
-	if err != nil {
+	// config.yaml is a one-time SEED now — SyncConfig inserts what's missing
+	// but never overwrites DB rows (UI edits win). The DB is the source of
+	// truth the collector and API build from.
+	if err := pg.SyncConfig(ctx, lineCfgs); err != nil {
 		log.Error("config sync", "err", err)
 		os.Exit(1)
 	}
 
-	// build trackers keyed by (source ip, station, em label)
-	trackers := map[ingest.Key]*tracker.EM{}
+	// lineByHost supports the legacy v3 path (route by source IP); v4 datagrams
+	// self-identify their line and don't need it.
 	lineByHost := map[string]string{}
-	total := 0
 	for _, l := range cfg.Lines {
-		if !l.IsEnabled() || l.Host() == "" {
-			continue
+		if l.IsEnabled() && l.Host() != "" {
+			lineByHost[l.Host()] = l.Name
 		}
-		lineByHost[l.Host()] = l.Name
+	}
+
+	// build trackers + the query-API hierarchy from the DB (seed + any
+	// previously auto-discovered EMs survive restarts this way).
+	recs, err := pg.LoadHierarchy(ctx)
+	if err != nil {
+		log.Error("load hierarchy", "err", err)
+		os.Exit(1)
+	}
+	trackers := map[ingest.Key]*tracker.EM{}
+	total := 0
+	for _, l := range recs {
 		for _, e := range l.EMs {
-			if !e.IsEnabled() {
-				continue
-			}
-			key := ingest.Key{Host: l.Host(),
+			key := ingest.Key{Line: lowerASCII(l.Name),
 				Station: lowerASCII(e.Station), EMLabel: lowerASCII(e.EMLabel)}
-			emID := emIDs[l.Name][[2]string{lowerASCII(e.Station), lowerASCII(e.EMLabel)}]
 			seqs := map[int16]tracker.SeqConfig{}
 			for _, s := range e.Sequences {
 				seqs[s.Index] = tracker.SeqConfig{
@@ -107,34 +115,28 @@ func main() {
 				}
 			}
 			trackers[key] = tracker.New(tracker.Config{
-				EMID: emID, Station: e.Station, EMLabel: e.EMLabel, Sequences: seqs,
+				EMID: e.ID, Line: l.Name, Station: e.Station, EMLabel: e.EMLabel, Sequences: seqs,
 			}, pg)
 			total++
 		}
 	}
-	log.Info("configured", "lines", len(lineCfgs), "ems", total)
+	log.Info("loaded hierarchy", "lines", len(recs), "ems", total)
 
 	go pg.Run(ctx)
 
-	svc := ingest.New(cfg.Telemetry.ListenPort, trackers, log)
-
-	// query API hierarchy (only enabled lines/EMs, with db ids)
-	var apiLines []api.LineInfo
-	for _, l := range cfg.Lines {
-		if !l.IsEnabled() {
-			continue
+	// discoverer: auto-register a v4 EM seen for the first time (unconfirmed).
+	discover := func(line, station, emLabel string, wireVer int) (*tracker.EM, error) {
+		emID, err := pg.RegisterEM(ctx, line, station, emLabel, wireVer)
+		if err != nil {
+			return nil, err
 		}
-		li := api.LineInfo{Name: l.Name}
-		for _, e := range l.EMs {
-			if !e.IsEnabled() {
-				continue
-			}
-			id := emIDs[l.Name][[2]string{lowerASCII(e.Station), lowerASCII(e.EMLabel)}]
-			li.EMs = append(li.EMs, api.EMInfo{ID: id, Station: e.Station,
-				Label: e.EMLabel, Display: e.DisplayName})
-		}
-		apiLines = append(apiLines, li)
+		return tracker.New(tracker.Config{EMID: emID, Line: line, Station: station,
+			EMLabel: emLabel, Sequences: map[int16]tracker.SeqConfig{}}, pg), nil
 	}
+
+	svc := ingest.New(cfg.Telemetry.ListenPort, trackers, lineByHost, discover, log)
+
+	apiLines := buildAPILines(recs)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -143,15 +145,32 @@ func main() {
 	})
 	mux.HandleFunc("GET /api/v2/live", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(svc.Snapshot(lineByHost))
+		_ = json.NewEncoder(w).Encode(svc.Snapshot())
 	})
 	apiSrv := api.New(pg.Pool(), apiLines, func() []ingest.LiveEM {
-		return svc.Snapshot(lineByHost)
+		return svc.Snapshot()
 	}, func() []ingest.RawEM {
-		return svc.RawSnapshot(lineByHost)
+		return svc.RawSnapshot()
 	})
 	apiSrv.Register(mux)
 	mux.HandleFunc("/mcp", mcpserv.Handler(mux))
+
+	// keep the query-API hierarchy fresh so auto-discovered EMs appear without
+	// a restart (DB is the source of truth).
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if r, err := pg.LoadHierarchy(ctx); err == nil {
+					apiSrv.SetLines(buildAPILines(r))
+				}
+			}
+		}
+	}()
 
 	// SSE live stream for the SCADA frontend (1 Hz snapshots)
 	mux.HandleFunc("GET /api/v2/stream", func(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +184,7 @@ func main() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		send := func() bool {
-			payload, err := json.Marshal(svc.Snapshot(lineByHost))
+			payload, err := json.Marshal(svc.Snapshot())
 			if err != nil {
 				return false
 			}
@@ -223,4 +242,18 @@ func lowerASCII(s string) string {
 		}
 	}
 	return string(b)
+}
+
+// buildAPILines projects the DB hierarchy into the query-API shape.
+func buildAPILines(recs []store.LineRec) []api.LineInfo {
+	out := make([]api.LineInfo, 0, len(recs))
+	for _, l := range recs {
+		li := api.LineInfo{Name: l.Name}
+		for _, e := range l.EMs {
+			li.EMs = append(li.EMs, api.EMInfo{ID: e.ID, Station: e.Station,
+				Label: e.EMLabel, Display: e.DisplayName})
+		}
+		out = append(out, li)
+	}
+	return out
 }

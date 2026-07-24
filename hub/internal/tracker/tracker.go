@@ -35,6 +35,7 @@ type SeqConfig struct {
 
 type Config struct {
 	EMID      int
+	Line      string // original-case line name (for display; key is lower-cased)
 	Station   string
 	EMLabel   string
 	Sequences map[int16]SeqConfig
@@ -115,6 +116,7 @@ func (t *EM) StateReason() string { return t.curReason }
 func (t *EM) Step() string        { return t.stepName }
 func (t *EM) Station() string     { return t.cfg.Station }
 func (t *EM) EMLabel() string     { return t.cfg.EMLabel }
+func (t *EM) Line() string        { return t.cfg.Line }
 
 func (t *EM) Episode() (open bool, start time.Time, rtype, reason, step string, retries int) {
 	return t.epOpen, t.epStart, t.epRType, t.epReason, t.epStep, t.epRetries

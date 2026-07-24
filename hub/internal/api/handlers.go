@@ -191,7 +191,7 @@ func (s *Server) handleLines(w http.ResponseWriter, r *http.Request) {
 		Live    map[string]int `json:"live_states"`
 	}
 	out := []lineOut{}
-	for _, l := range s.lines {
+	for _, l := range s.snapshotLines() {
 		out = append(out, lineOut{Name: l.Name, EMCount: len(l.EMs), Live: counts[l.Name]})
 	}
 	writeJSON(w, out)
