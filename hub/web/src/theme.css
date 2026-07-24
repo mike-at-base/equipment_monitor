@@ -198,11 +198,29 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .cfg-flow-row { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: start; }
 .cfg-flow-label { font-size: 12px; color: var(--secondary); font-weight: 600; }
 .cfg-flow-label em { font-weight: 400; font-style: normal; opacity: .8; }
-.stepchips { display: flex; flex-wrap: wrap; gap: 6px; }
-.stepchip { font: 600 12px ui-monospace, Consolas, monospace; padding: 3px 9px; border-radius: 6px; background: var(--conduit); color: var(--secondary); border: 1px solid var(--subtle); cursor: pointer; }
-.stepchip:hover { border-color: var(--secondary); }
+.stepchip { display: inline-flex; align-items: center; gap: 5px; font: 600 12px ui-monospace, Consolas, monospace; padding: 3px 8px; border-radius: 6px; background: var(--conduit); color: var(--secondary); border: 1px solid var(--subtle); }
 .stepchip.on.starved { background: var(--st-starved); color: var(--terminal); border-color: var(--st-starved); }
 .stepchip.on.blocked { background: var(--st-blocked); color: var(--strike); border-color: var(--st-blocked); }
+.chip-x { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; opacity: .7; }
+.chip-x:hover { opacity: 1; }
+
+/* search-to-add step picker (scales to hundreds of steps) */
+.steppick { display: grid; gap: 6px; }
+.steppick-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 24px; }
+.steppick-search { position: relative; max-width: 340px; }
+.steppick-search input { width: 100%; border: 1px solid var(--subtle); border-radius: 8px; padding: 6px 10px; font: inherit; }
+.steppick-search input:focus { outline: 2px solid var(--grounded); border-color: var(--grounded); }
+.steppick-menu { position: absolute; z-index: 5; left: 0; right: 0; margin-top: 2px; background: var(--strike); border: 1px solid var(--subtle); border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.12); max-height: 240px; overflow: auto; }
+.steppick-opt { display: block; width: 100%; text-align: left; border: none; background: transparent; padding: 7px 10px; font: 13px ui-monospace, Consolas, monospace; cursor: pointer; }
+.steppick-opt:hover { background: var(--conduit); }
+
+.btn-danger { background: var(--strike); color: var(--st-down); border: 1px solid var(--st-down); border-radius: 9999px; padding: 8px 18px; font: 600 14px Inter, system-ui, sans-serif; cursor: pointer; }
+.btn-danger:hover { background: var(--st-down); color: var(--strike); }
+
+/* review banner item with dismiss */
+.rb-info { display: flex; justify-content: space-between; align-items: center; flex: 1; gap: 12px; }
+.rb-dismiss { border: 1px solid var(--subtle); background: var(--strike); color: var(--secondary); border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.rb-dismiss:hover { border-color: var(--st-down); color: var(--st-down); }
 .btn-primary { background: var(--livewire); color: var(--grounded); border: 1px solid var(--livewire); border-radius: 9999px; padding: 8px 22px; font: 600 14px Inter, system-ui, sans-serif; cursor: pointer; }
 .btn-primary:hover { filter: brightness(0.97); }
 .btn-primary:disabled { opacity: .6; cursor: default; }

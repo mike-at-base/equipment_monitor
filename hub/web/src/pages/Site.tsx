@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, LiveEM, STATE_ORDER, stateColor, STATE_LABEL } from "../api";
+import { api, LiveEM, Unconfirmed, STATE_ORDER, stateColor, STATE_LABEL } from "../api";
 import { useAsync, useWindow, Loading, ErrorBox } from "../components/ui";
 
 // Site overview: one card per line — live state strip + windowed KPIs.
@@ -21,12 +22,17 @@ export default function Site({ live }: { live: LiveEM[] }) {
   );
 }
 
-// Auto-discovered EMs awaiting an engineer's review — links to each one's
-// Config tab to confirm identity + cycle metadata.
+// Auto-discovered EMs awaiting an engineer's review — confirm in the Config
+// tab, or dismiss a phantom (e.g. a lineName typo) right here.
 function ReviewBanner() {
-  const q = useAsync(() => api.unconfirmed(), []);
-  const items = q.data ?? [];
-  if (!items.length) return null;
+  const [items, setItems] = useState<Unconfirmed[] | null>(null);
+  const load = () => api.unconfirmed().then(setItems).catch(() => setItems([]));
+  useEffect(() => { load(); }, []);
+  if (!items || !items.length) return null;
+  const dismiss = (u: Unconfirmed) => {
+    if (!window.confirm(`Delete ${u.line} / ${u.station}${u.em_label !== "main" ? " · " + u.em_label : ""} and all its data? This can't be undone.`)) return;
+    api.deleteEM(u.line, u.station, u.em_label).then(load);
+  };
   return (
     <div className="reviewbanner" style={{ marginTop: 16 }}>
       <div className="rb-head">
@@ -35,10 +41,13 @@ function ReviewBanner() {
       </div>
       <div className="rb-list">
         {items.map((u, i) => (
-          <Link key={i} className="rb-item" to={`/em/${u.line}/${u.station}/${u.em_label}/config`}>
-            <span><b>{u.line}</b> / {u.station}{u.em_label !== "main" ? ` · ${u.em_label}` : ""}</span>
-            <span className="rb-go">review →</span>
-          </Link>
+          <div key={i} className="rb-item">
+            <Link className="rb-info" to={`/em/${u.line}/${u.station}/${u.em_label}/config`}>
+              <span><b>{u.line}</b> / {u.station}{u.em_label !== "main" ? ` · ${u.em_label}` : ""}</span>
+              <span className="rb-go">review →</span>
+            </Link>
+            <button className="rb-dismiss" onClick={() => dismiss(u)}>dismiss</button>
+          </div>
         ))}
       </div>
     </div>

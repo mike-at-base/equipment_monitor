@@ -748,6 +748,18 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// handleDeleteEM removes an EM (and its data) — used to dismiss a phantom.
+func (s *Server) handleDeleteEM(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	if s.onDelete != nil {
+		s.onDelete(em.ID)
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 // handleUnconfirmed lists auto-discovered EMs awaiting an engineer's review.
 func (s *Server) handleUnconfirmed(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.pool.Query(r.Context(), `

@@ -249,6 +249,38 @@ type LineRec struct {
 	Stations    []StationRec
 }
 
+// DeleteEM removes an EM and its data — used to dismiss an auto-discovered
+// phantom (e.g. from a lineName typo). Deletes history (keyed by em_id),
+// the em row (sequences cascade), and any station/line left empty.
+func (p *PG) DeleteEM(ctx context.Context, emID int) error {
+	for _, tbl := range []string{"state_interval", "step_event", "cycle",
+		"mode_interval", "down_episode", "operator_event"} {
+		if _, err := p.pool.Exec(ctx, "DELETE FROM "+tbl+" WHERE em_id=$1", emID); err != nil {
+			return err
+		}
+	}
+	var stationID int
+	if err := p.pool.QueryRow(ctx,
+		`DELETE FROM em WHERE id=$1 RETURNING station_id`, emID).Scan(&stationID); err != nil {
+		return err
+	}
+	var lineID int
+	err := p.pool.QueryRow(ctx,
+		`DELETE FROM station WHERE id=$1
+		   AND NOT EXISTS (SELECT 1 FROM em WHERE station_id=$1)
+		 RETURNING line_id`, stationID).Scan(&lineID)
+	if err == pgx.ErrNoRows {
+		return nil // station still has other EMs
+	}
+	if err != nil {
+		return err
+	}
+	_, err = p.pool.Exec(ctx,
+		`DELETE FROM line WHERE id=$1
+		   AND NOT EXISTS (SELECT 1 FROM station WHERE line_id=$1)`, lineID)
+	return err
+}
+
 // SeqConfigFor returns one EM's sequence config (for live tracker reload
 // after a UI edit).
 func (p *PG) SeqConfigFor(ctx context.Context, emID int) ([]SeqConfig, error) {

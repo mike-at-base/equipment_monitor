@@ -168,6 +168,19 @@ func (s *Service) SetSequences(emID int, seqs map[int16]tracker.SeqConfig) bool 
 	return false
 }
 
+// RemoveEM drops the tracker for emID (after its EM is deleted). If a
+// datagram for it arrives again it simply re-registers.
+func (s *Service) RemoveEM(emID int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, t := range s.trackers {
+		if t.EMID() == emID {
+			delete(s.trackers, k)
+			return
+		}
+	}
+}
+
 // FlushAll closes all open intervals (graceful shutdown).
 func (s *Service) FlushAll(ts time.Time) {
 	s.mu.Lock()

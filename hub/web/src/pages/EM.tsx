@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Route, Routes, useParams } from "react-router-dom";
+import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
 import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, useWindow, VBars } from "../components/ui";
 
@@ -592,6 +592,7 @@ function Config({ l, s, e }: P) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveErr, setSaveErr] = useState<unknown>();
+  const nav = useNavigate();
 
   useEffect(() => {
     if (!q.data) return;
@@ -615,11 +616,6 @@ function Config({ l, s, e }: P) {
 
   const setSeq = (i: number, patch: Partial<SeqConfig>) =>
     setSeqs((cur) => cur.map((sq, j) => (j === i ? { ...sq, ...patch } : sq)));
-  const stepOpts = (idx: number, current: string) => {
-    const set = new Set(observed[idx] ?? []);
-    if (current) set.add(current);
-    return [...set].sort();
-  };
   // every step relevant to a sequence (observed + already configured), so a
   // previously-tagged step still shows even if not observed this window
   const stepUniverse = (sq: SeqConfig) => {
@@ -644,6 +640,10 @@ function Config({ l, s, e }: P) {
     setSaving(true); setSaved(false); setSaveErr(undefined);
     api.saveEMConfig(l, s, e, { display_name: displayName, confirmed, sequences: seqs })
       .then(() => setSaved(true)).catch(setSaveErr).finally(() => setSaving(false));
+  };
+  const del = () => {
+    if (!window.confirm(`Delete ${c.station}${c.em_label !== "main" ? " · " + c.em_label : ""} and all its data? This can't be undone.`)) return;
+    api.deleteEM(l, s, e).then(() => nav("/")).catch(setSaveErr);
   };
 
   return (
@@ -671,18 +671,19 @@ function Config({ l, s, e }: P) {
             </div>
             <div className="cfg-field">
               <label>Cycle start step</label>
-              <select value={sq.cycle_start_step} onChange={(ev) => setSeq(i, { cycle_start_step: ev.target.value })}>
-                <option value="">—</option>
-                {stepOpts(sq.index, sq.cycle_start_step).map((x) => <option key={x} value={x}>{x}</option>)}
-              </select>
+              <input list={`steps-${sq.index}`} value={sq.cycle_start_step}
+                     onChange={(ev) => setSeq(i, { cycle_start_step: ev.target.value })}
+                     placeholder="type to search…" />
             </div>
             <div className="cfg-field">
               <label>Cycle complete step</label>
-              <select value={sq.cycle_complete_step} onChange={(ev) => setSeq(i, { cycle_complete_step: ev.target.value })}>
-                <option value="">—</option>
-                {stepOpts(sq.index, sq.cycle_complete_step).map((x) => <option key={x} value={x}>{x}</option>)}
-              </select>
+              <input list={`steps-${sq.index}`} value={sq.cycle_complete_step}
+                     onChange={(ev) => setSeq(i, { cycle_complete_step: ev.target.value })}
+                     placeholder="type to search…" />
             </div>
+            <datalist id={`steps-${sq.index}`}>
+              {stepUniverse(sq).map((x) => <option key={x} value={x} />)}
+            </datalist>
             <label className="cfg-check">
               <input type="checkbox" checked={sq.is_production}
                      onChange={(ev) => setSeq(i, { is_production: ev.target.checked })} />
@@ -690,30 +691,18 @@ function Config({ l, s, e }: P) {
             </label>
           </div>
 
-          {stepUniverse(sq).length > 0 && (
-            <div className="cfg-flow">
-              <div className="cfg-flow-row">
-                <span className="cfg-flow-label">Starved at <em>(waiting on upstream)</em></span>
-                <div className="stepchips">
-                  {stepUniverse(sq).map((step) => (
-                    <button type="button" key={step}
-                      className={`stepchip${sq.starved_steps.includes(step) ? " on starved" : ""}`}
-                      onClick={() => toggleStep(i, "starved", step)}>{step}</button>
-                  ))}
-                </div>
-              </div>
-              <div className="cfg-flow-row">
-                <span className="cfg-flow-label">Blocked at <em>(waiting on downstream)</em></span>
-                <div className="stepchips">
-                  {stepUniverse(sq).map((step) => (
-                    <button type="button" key={step}
-                      className={`stepchip${sq.blocked_steps.includes(step) ? " on blocked" : ""}`}
-                      onClick={() => toggleStep(i, "blocked", step)}>{step}</button>
-                  ))}
-                </div>
-              </div>
+          <div className="cfg-flow">
+            <div className="cfg-flow-row">
+              <span className="cfg-flow-label">Starved at <em>(waiting on upstream)</em></span>
+              <StepPicker options={stepUniverse(sq)} selected={sq.starved_steps} cls="starved"
+                onAdd={(x) => toggleStep(i, "starved", x)} onRemove={(x) => toggleStep(i, "starved", x)} />
             </div>
-          )}
+            <div className="cfg-flow-row">
+              <span className="cfg-flow-label">Blocked at <em>(waiting on downstream)</em></span>
+              <StepPicker options={stepUniverse(sq)} selected={sq.blocked_steps} cls="blocked"
+                onAdd={(x) => toggleStep(i, "blocked", x)} onRemove={(x) => toggleStep(i, "blocked", x)} />
+            </div>
+          </div>
         </div>
       ))}
 
@@ -725,7 +714,46 @@ function Config({ l, s, e }: P) {
       <div style={{ marginTop: 16, display: "flex", gap: 12, alignItems: "center" }}>
         <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
         {saved && <span style={{ color: "var(--st-productive)" }}>Saved ✓</span>}
-        {saveErr != null && <span style={{ color: "var(--st-down)" }}>Save failed: {String(saveErr)}</span>}
+        {saveErr != null && <span style={{ color: "var(--st-down)" }}>Failed: {String(saveErr)}</span>}
+        <span style={{ flex: 1 }} />
+        <button className="btn-danger" onClick={del}>Delete EM</button>
+      </div>
+    </div>
+  );
+}
+
+// Search-to-add step picker: shows only the selected steps as removable chips
+// and adds via a type-to-filter box, so it scales to hundreds of long-named
+// steps without a wall of chips.
+function StepPicker({ options, selected, cls, onAdd, onRemove }: {
+  options: string[]; selected: string[]; cls: "starved" | "blocked";
+  onAdd: (s: string) => void; onRemove: (s: string) => void;
+}) {
+  const [q, setQ] = useState("");
+  const matches = q.trim()
+    ? options.filter((o) => !selected.includes(o) && o.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 10)
+    : [];
+  return (
+    <div className="steppick">
+      <div className="steppick-chips">
+        {selected.length === 0 && <span className="muted" style={{ fontSize: 12 }}>none</span>}
+        {selected.map((st) => (
+          <span key={st} className={`stepchip on ${cls}`}>
+            {st}
+            <button type="button" className="chip-x" onClick={() => onRemove(st)} aria-label="remove">×</button>
+          </span>
+        ))}
+      </div>
+      <div className="steppick-search">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="type to add a step…" />
+        {matches.length > 0 && (
+          <div className="steppick-menu">
+            {matches.map((m) => (
+              <button type="button" key={m} className="steppick-opt"
+                      onClick={() => { onAdd(m); setQ(""); }}>{m}</button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

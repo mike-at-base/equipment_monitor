@@ -70,6 +70,7 @@ type Server struct {
 	live     func() []ingest.LiveEM
 	raw      func() []ingest.RawEM
 	onConfig func(emID int) // reload tracker + hierarchy after a config save
+	onDelete func(emID int) // remove tracker + rows + refresh after a delete
 	tz       *time.Location
 }
 
@@ -89,13 +90,13 @@ func (s *Server) snapshotLines() []LineInfo {
 
 func New(pool *pgxpool.Pool, lines []LineInfo,
 	live func() []ingest.LiveEM, raw func() []ingest.RawEM,
-	onConfig func(emID int)) *Server {
+	onConfig func(emID int), onDelete func(emID int)) *Server {
 	tz, err := time.LoadLocation(envOr("APP_TIMEZONE", "America/Chicago"))
 	if err != nil {
 		tz = time.UTC
 	}
 	return &Server{pool: pool, lines: lines, live: live, raw: raw,
-		onConfig: onConfig, tz: tz}
+		onConfig: onConfig, onDelete: onDelete, tz: tz}
 }
 
 func envOr(k, d string) string {
@@ -117,6 +118,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/debug", s.handleDebug)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/config", s.handleGetConfig)
 	mux.HandleFunc("PUT /api/v2/ems/{line}/{station}/{label}/config", s.handleSaveConfig)
+	mux.HandleFunc("DELETE /api/v2/ems/{line}/{station}/{label}", s.handleDeleteEM)
 	mux.HandleFunc("GET /api/v2/unconfirmed", s.handleUnconfirmed)
 	mux.HandleFunc("GET /api/v2/hierarchy", s.handleHierarchy)
 }

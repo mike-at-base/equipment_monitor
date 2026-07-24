@@ -224,6 +224,11 @@ async function put<T>(path: string, body: unknown): Promise<T> {
   return r.json();
 }
 
+async function del(path: string): Promise<void> {
+  const r = await fetch(path, { method: "DELETE" });
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+}
+
 export const api = {
   lines: () => get<LineRollup[]>("/api/v2/lines"),
   live: () => get<LiveEM[]>("/api/v2/live"),
@@ -254,6 +259,7 @@ export const api = {
   saveEMConfig: (l: string, s: string, e: string,
     body: { display_name: string; confirmed: boolean; sequences: SeqConfig[] }) =>
     put<{ ok: boolean }>(`/api/v2/ems/${l}/${s}/${e}/config`, body),
+  deleteEM: (l: string, s: string, e: string) => del(`/api/v2/ems/${l}/${s}/${e}`),
 };
 
 // SSE live stream with polling fallback

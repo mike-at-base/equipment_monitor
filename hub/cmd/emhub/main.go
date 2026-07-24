@@ -116,6 +116,18 @@ func main() {
 		}
 	}
 
+	// onDelete: dismiss a phantom EM — drop its tracker, delete its rows, and
+	// refresh the hierarchy so it disappears from the UI.
+	onDelete := func(emID int) {
+		svc.RemoveEM(emID)
+		if err := pg.DeleteEM(ctx, emID); err != nil {
+			log.Warn("delete em", "em", emID, "err", err)
+		}
+		if r, err := pg.LoadHierarchy(ctx); err == nil {
+			apiSrv.SetLines(buildAPILines(r))
+		}
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -129,7 +141,7 @@ func main() {
 		return svc.Snapshot()
 	}, func() []ingest.RawEM {
 		return svc.RawSnapshot()
-	}, onConfigChange)
+	}, onConfigChange, onDelete)
 	apiSrv.Register(mux)
 	mux.HandleFunc("/mcp", mcpserv.Handler(mux))
 
