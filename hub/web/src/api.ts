@@ -55,6 +55,8 @@ export type EMSummary = {
   state_min: Record<string, number>;
 };
 
+export type Shift = { dow: number; start_min: number; end_min: number };
+
 export type Unconfirmed = {
   line: string;
   station: string;
@@ -261,6 +263,10 @@ export const api = {
     body: { display_name: string; confirmed: boolean; sequences: SeqConfig[] }) =>
     put<{ ok: boolean }>(`/api/v2/ems/${l}/${s}/${e}/config`, body),
   deleteEM: (l: string, s: string, e: string) => del(`/api/v2/ems/${l}/${s}/${e}`),
+  getSchedule: (line: string) =>
+    get<{ line: string; shifts: Shift[] }>(`/api/v2/lines/${encodeURIComponent(line)}/schedule`),
+  saveSchedule: (line: string, shifts: Shift[]) =>
+    put<{ ok: boolean }>(`/api/v2/lines/${encodeURIComponent(line)}/schedule`, { shifts }),
 };
 
 // SSE live stream with polling fallback

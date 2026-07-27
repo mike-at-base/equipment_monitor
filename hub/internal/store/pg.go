@@ -64,6 +64,17 @@ var ddl = []string{
 	    starved_steps TEXT NOT NULL DEFAULT '',
 	    blocked_steps TEXT NOT NULL DEFAULT '',
 	    UNIQUE (em_id, seq_index))`,
+	// per-line weekly production schedule: one row per shift. dow 0=Sunday..6,
+	// start/end are minutes from local midnight (0..1440, end exclusive).
+	// Multiple rows per (line, dow) express multiple shifts; breaks are the
+	// gaps between them. Overnight shifts are entered as two rows.
+	`CREATE TABLE IF NOT EXISTS schedule_shift (
+	    id SERIAL PRIMARY KEY,
+	    line_id INT NOT NULL REFERENCES line(id) ON DELETE CASCADE,
+	    dow SMALLINT NOT NULL,
+	    start_min SMALLINT NOT NULL,
+	    end_min SMALLINT NOT NULL,
+	    UNIQUE (line_id, dow, start_min))`,
 	`CREATE TABLE IF NOT EXISTS state_interval (
 	    start_ts TIMESTAMPTZ NOT NULL,
 	    em_id INT NOT NULL,

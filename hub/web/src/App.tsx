@@ -5,6 +5,7 @@ import { WindowPicker, WindowProvider } from "./components/ui";
 import Site from "./pages/Site";
 import Line from "./pages/Line";
 import EMPage from "./pages/EM";
+import Schedule from "./pages/Schedule";
 import "./theme.css";
 
 export default function App() {
@@ -33,6 +34,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Site live={live} />} />
             <Route path="/line/:line" element={<Line live={live} />} />
+            <Route path="/line/:line/schedule" element={<Schedule />} />
             <Route path="/em/:line/:station/:label/*" element={<EMPage />} />
           </Routes>
         </div>
@@ -46,6 +48,7 @@ function Crumbs() {
     <Routes>
       <Route path="/" element={null} />
       <Route path="/line/:line" element={<LineCrumb />} />
+      <Route path="/line/:line/schedule" element={<ScheduleCrumb />} />
       <Route path="/em/:line/:station/:label/*" element={<EMCrumb />} />
     </Routes>
   );
@@ -56,6 +59,16 @@ function LineCrumb() {
   return (
     <nav className="crumbs">
       <Link to="/">Site</Link><span>/</span><b>{line}</b>
+    </nav>
+  );
+}
+
+function ScheduleCrumb() {
+  const { line } = useParams();
+  return (
+    <nav className="crumbs">
+      <Link to="/">Site</Link><span>/</span>
+      <Link to={`/line/${line}`}>{line}</Link><span>/</span><b>Schedule</b>
     </nav>
   );
 }

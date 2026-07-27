@@ -786,6 +786,78 @@ func (s *Server) handleDeleteEM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
+// ── production schedule (per line) ───────────────────────────────────────
+
+// Shift is one production window: minutes from local midnight [start,end) on
+// day-of-week dow (0=Sunday .. 6=Saturday).
+type Shift struct {
+	Dow      int16 `json:"dow"`
+	StartMin int16 `json:"start_min"`
+	EndMin   int16 `json:"end_min"`
+}
+
+func (s *Server) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
+	line := r.PathValue("line")
+	rows, err := s.pool.Query(r.Context(), `
+	    SELECT sh.dow, sh.start_min, sh.end_min
+	    FROM schedule_shift sh JOIN line l ON l.id = sh.line_id
+	    WHERE l.name = $1 ORDER BY sh.dow, sh.start_min`, line)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	defer rows.Close()
+	shifts := []Shift{}
+	for rows.Next() {
+		var sh Shift
+		if err := rows.Scan(&sh.Dow, &sh.StartMin, &sh.EndMin); err != nil {
+			httpErr(w, 500, err)
+			return
+		}
+		shifts = append(shifts, sh)
+	}
+	writeJSON(w, map[string]any{"line": line, "shifts": shifts})
+}
+
+// handleSaveSchedule replaces a line's weekly shifts with the posted set.
+func (s *Server) handleSaveSchedule(w http.ResponseWriter, r *http.Request) {
+	line := r.PathValue("line")
+	var body struct {
+		Shifts []Shift `json:"shifts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, jsonErr("invalid body: "+err.Error()))
+		return
+	}
+	ctx := r.Context()
+	var lineID int
+	if err := s.pool.QueryRow(ctx, `
+	    INSERT INTO line (name) VALUES ($1)
+	    ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id`,
+		line).Scan(&lineID); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM schedule_shift WHERE line_id=$1`, lineID); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	for _, sh := range body.Shifts {
+		if sh.EndMin <= sh.StartMin || sh.StartMin < 0 || sh.EndMin > 1440 || sh.Dow < 0 || sh.Dow > 6 {
+			continue // skip invalid rows
+		}
+		if _, err := s.pool.Exec(ctx, `
+		    INSERT INTO schedule_shift (line_id, dow, start_min, end_min)
+		    VALUES ($1,$2,$3,$4)
+		    ON CONFLICT (line_id, dow, start_min) DO UPDATE SET end_min=EXCLUDED.end_min`,
+			lineID, sh.Dow, sh.StartMin, sh.EndMin); err != nil {
+			httpErr(w, 500, err)
+			return
+		}
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
 // handleUnconfirmed lists auto-discovered EMs awaiting an engineer's review.
 func (s *Server) handleUnconfirmed(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.pool.Query(r.Context(), `

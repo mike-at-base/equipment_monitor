@@ -121,6 +121,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v2/ems/{line}/{station}/{label}", s.handleDeleteEM)
 	mux.HandleFunc("GET /api/v2/unconfirmed", s.handleUnconfirmed)
 	mux.HandleFunc("GET /api/v2/hierarchy", s.handleHierarchy)
+	mux.HandleFunc("GET /api/v2/lines/{line}/schedule", s.handleGetSchedule)
+	mux.HandleFunc("PUT /api/v2/lines/{line}/schedule", s.handleSaveSchedule)
 }
 
 // handleHierarchy returns the full line -> station -> em tree (with display

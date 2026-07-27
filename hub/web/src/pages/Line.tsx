@@ -22,7 +22,10 @@ export default function Line({ live }: { live: LiveEM[] }) {
 
   return (
     <>
-      <div className="tiles" style={{ marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <Link to={`/line/${line}/schedule`} className="linkbtn">Edit production schedule →</Link>
+      </div>
+      <div className="tiles" style={{ marginTop: 8 }}>
         <Tile label={`Availability (${win})`}
           value={s.availability_pct != null ? `${s.availability_pct.toFixed(1)}` : "–"} unit="%" />
         <Tile label="Cycles" value={`${s.cycles.count}`} unit={s.cycles.per_hour ? ` · ${s.cycles.per_hour}/h` : ""} />

@@ -169,6 +169,23 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .muted { color: var(--secondary); }
 .empty { padding: 28px; text-align: center; color: var(--secondary); }
 
+/* text link-button */
+.linkbtn { color: var(--grounded); font-weight: 600; font-size: 13px; }
+.linkbtn:hover { text-decoration: underline; }
+
+/* production schedule editor */
+.sched { display: grid; gap: 8px; margin-top: 8px; }
+.sched-day { display: grid; grid-template-columns: 130px 1fr; gap: 12px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--conduit); }
+.sched-dayhead { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
+.sched-copy { align-self: flex-start; border: none; background: transparent; color: var(--grounded); font-size: 11px; cursor: pointer; padding: 0; }
+.sched-copy:hover { text-decoration: underline; }
+.sched-shifts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sched-shift { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--subtle); border-radius: 8px; padding: 4px 8px; }
+.sched-shift.bad { border-color: var(--st-down); }
+.sched-shift input[type=time] { border: none; font: inherit; background: transparent; color: var(--terminal); }
+.sched-add { border: 1px dashed var(--subtle); background: transparent; color: var(--secondary); border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.sched-add:hover { border-color: var(--grounded); color: var(--grounded); }
+
 /* review banner (unconfirmed EMs) */
 .reviewbanner { background: var(--strike); border: 1px solid var(--st-starved); border-radius: 16px; padding: 14px 18px; }
 .rb-head { display: flex; align-items: center; gap: 10px; font-weight: 600; }
