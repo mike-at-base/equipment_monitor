@@ -98,12 +98,23 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 		ModeMin:        modes,
 	}
 
-	// per-EM episode minutes for episode-based availability
+	// production ranges for this line (the whole window if unscheduled) — E10
+	// availability is measured over production time only.
+	ranges, err := s.lineProductionRanges(ctx, l.Name, from, to)
+	if err != nil {
+		return nil, err
+	}
+	agg, err := s.prodStateAgg(ctx, ids, from, to, idSet, ranges)
+	if err != nil {
+		return nil, err
+	}
+
+	// per-EM episode minutes WITHIN production (episode-based availability)
 	epMsByEM := map[int]int64{}
 	for _, e := range episodes {
 		for id, info := range byID {
 			if info.Station == e.Station && info.Label == e.EMLabel {
-				epMsByEM[id] += int64(e.Minutes * 60000)
+				epMsByEM[id] += intersectMs(e.StartTs, e.EndTs, ranges)
 			}
 		}
 		sum.Episodes.Count++
@@ -115,28 +126,28 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 	}
 
 	lineMs := map[string]int64{}
-	var lineAvailRaw, lineDown, lineEp int64
+	var lineAvail, lineDown, lineEp int64
 	for _, e := range ems {
-		ms := stateMs[e.ID]
 		em := EMSummary{Station: e.Station, EMLabel: e.Label, Display: e.Display,
 			Confirmed: e.Confirmed, StateMin: map[string]float64{}}
-		var availRaw int64
-		for st, v := range ms {
+		// StateMin is the wall-clock time-by-state breakdown (display only)
+		for st, v := range stateMs[e.ID] {
 			em.StateMin[st] = round1(float64(v) / 60000.0)
 			lineMs[st] += v
-			if strings.Contains(availStates, st) {
-				availRaw += v
-			}
 		}
-		down := ms[model.StateDown]
+		// availability numerator/denominator are production-clipped
+		a := agg[e.ID]
+		if a == nil {
+			a = &availAgg{}
+		}
 		ep := epMsByEM[e.ID]
-		if ep < down {
-			ep = down // every raw down second belongs to some episode
+		if ep < a.down {
+			ep = a.down // every down second belongs to some episode
 		}
-		lineAvailRaw += availRaw
-		lineDown += down
+		lineAvail += a.avail
+		lineDown += a.down
 		lineEp += ep
-		if pct, ok := episodeAvailability(availRaw, down, ep); ok {
+		if pct, ok := episodeAvailability(a.avail, a.down, ep); ok {
 			p := round1(pct)
 			em.AvailabilityPct = &p
 		}
@@ -145,7 +156,7 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 	for st, v := range lineMs {
 		sum.StateMin[st] = round1(float64(v) / 60000.0)
 	}
-	if pct, ok := episodeAvailability(lineAvailRaw, lineDown, lineEp); ok {
+	if pct, ok := episodeAvailability(lineAvail, lineDown, lineEp); ok {
 		p := round1(pct)
 		sum.AvailabilityPct = &p
 	}
@@ -474,42 +485,53 @@ func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	// episode-based availability for this EM
+	// time-by-state (wall-clock, incl. the live open interval) for display
 	stateMs, err := s.stateMinutes(r.Context(), []int{em.ID}, from, to)
 	if err != nil {
 		httpErr(w, 500, err)
 		return
 	}
 	s.openContribution(map[int]bool{em.ID: true}, from, to, stateMs)
-	var availRaw, epMs int64
 	ms := stateMs[em.ID]
-	for st, v := range ms {
-		if strings.Contains(availStates, st) {
-			availRaw += v
-		}
-	}
-	for _, e := range episodes {
-		epMs += int64(e.Minutes * 60000)
-	}
-	if down := ms[model.StateDown]; epMs < down {
-		epMs = down
-	}
-	// per-state minutes, window-clipped and including the current open
-	// interval — so the UI's "time by state" is authoritative and the
-	// window/no-data accounting is correct.
 	stateMin := map[string]float64{}
 	for st, v := range ms {
 		stateMin[st] = round1(float64(v) / 60000.0)
 	}
-	out := map[string]any{
-		"from":        from,
-		"to":          to,
-		"episodes":    episodes,
-		"raw_downs":   raw,
-		"top_reasons": topEpisodeReasons(episodes, 10),
-		"state_min":   stateMin,
+
+	// availability is production-clipped (E10): numerator/denominator measured
+	// over the line's production ranges within [from,to].
+	ranges, err := s.lineProductionRanges(r.Context(), r.PathValue("line"), from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
 	}
-	if pct, ok := episodeAvailability(availRaw, ms[model.StateDown], epMs); ok {
+	agg, err := s.prodStateAgg(r.Context(), []int{em.ID}, from, to, map[int]bool{em.ID: true}, ranges)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	a := agg[em.ID]
+	if a == nil {
+		a = &availAgg{}
+	}
+	var epMs int64
+	for _, e := range episodes {
+		epMs += intersectMs(e.StartTs, e.EndTs, ranges)
+	}
+	if epMs < a.down {
+		epMs = a.down
+	}
+
+	out := map[string]any{
+		"from":           from,
+		"to":             to,
+		"episodes":       episodes,
+		"raw_downs":      raw,
+		"top_reasons":    topEpisodeReasons(episodes, 10),
+		"state_min":      stateMin,
+		"production_min": round1(float64(rangesMs(ranges)) / 60000.0),
+	}
+	if pct, ok := episodeAvailability(a.avail, a.down, epMs); ok {
 		out["availability_pct"] = round1(pct)
 	}
 	writeJSON(w, out)
@@ -856,6 +878,153 @@ func (s *Server) handleSaveSchedule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// ── production ranges (schedule → concrete UTC intervals) ────────────────
+
+// productionRanges expands a line's weekly shifts into concrete [start,end]
+// UTC intervals within [from,to], evaluated in the app timezone (DST-safe via
+// per-day local midnight). Ranges are disjoint and ascending.
+func productionRanges(shifts []Shift, from, to time.Time, tz *time.Location) [][2]time.Time {
+	out := [][2]time.Time{}
+	if !to.After(from) {
+		return out
+	}
+	local := from.In(tz)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, tz)
+	for day.Before(to) {
+		dow := int16(day.Weekday()) // Sunday=0..Saturday=6
+		for _, sh := range shifts {
+			if sh.Dow != dow {
+				continue
+			}
+			st := day.Add(time.Duration(sh.StartMin) * time.Minute)
+			en := day.Add(time.Duration(sh.EndMin) * time.Minute)
+			if st.Before(from) {
+				st = from
+			}
+			if en.After(to) {
+				en = to
+			}
+			if en.After(st) {
+				out = append(out, [2]time.Time{st.UTC(), en.UTC()})
+			}
+		}
+		day = day.AddDate(0, 0, 1)
+	}
+	return out
+}
+
+func (s *Server) lineShifts(ctx context.Context, line string) ([]Shift, error) {
+	rows, err := s.pool.Query(ctx, `
+	    SELECT sh.dow, sh.start_min, sh.end_min
+	    FROM schedule_shift sh JOIN line l ON l.id = sh.line_id
+	    WHERE l.name = $1 ORDER BY sh.dow, sh.start_min`, line)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Shift
+	for rows.Next() {
+		var sh Shift
+		if err := rows.Scan(&sh.Dow, &sh.StartMin, &sh.EndMin); err != nil {
+			return nil, err
+		}
+		out = append(out, sh)
+	}
+	return out, rows.Err()
+}
+
+// lineProductionRanges returns the line's production intervals within
+// [from,to]. A line with NO schedule is treated as always-production (the
+// whole window), so availability is unchanged until a schedule is entered.
+func (s *Server) lineProductionRanges(ctx context.Context, line string, from, to time.Time) ([][2]time.Time, error) {
+	shifts, err := s.lineShifts(ctx, line)
+	if err != nil {
+		return nil, err
+	}
+	if len(shifts) == 0 {
+		return [][2]time.Time{{from, to}}, nil
+	}
+	return productionRanges(shifts, from, to, s.tz), nil
+}
+
+func rangesMs(ranges [][2]time.Time) int64 {
+	var t int64
+	for _, r := range ranges {
+		t += r[1].Sub(r[0]).Milliseconds()
+	}
+	return t
+}
+
+// intersectMs = total ms of [s,e] falling within the (disjoint) ranges.
+func intersectMs(s, e time.Time, ranges [][2]time.Time) int64 {
+	var total int64
+	for _, r := range ranges {
+		total += overlapMs(s, e, r[0], r[1])
+	}
+	return total
+}
+
+type availAgg struct{ avail, down int64 } // production-clipped ms
+
+// prodStateAgg returns, per EM, the available and down time within the
+// production ranges (closed intervals + the current open interval).
+func (s *Server) prodStateAgg(ctx context.Context, ids []int, from, to time.Time,
+	idSet map[int]bool, ranges [][2]time.Time) (map[int]*availAgg, error) {
+	agg := map[int]*availAgg{}
+	g := func(id int) *availAgg {
+		if agg[id] == nil {
+			agg[id] = &availAgg{}
+		}
+		return agg[id]
+	}
+	rows, err := s.pool.Query(ctx, `
+	    SELECT em_id, state, start_ts, end_ts FROM state_interval
+	    WHERE em_id = ANY($1) AND end_ts > $2 AND start_ts < $3`, ids, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var st string
+		var s0, e0 time.Time
+		if err := rows.Scan(&id, &st, &s0, &e0); err != nil {
+			return nil, err
+		}
+		ms := intersectMs(s0, e0, ranges)
+		if ms == 0 {
+			continue
+		}
+		a := g(id)
+		if strings.Contains(availStates, st) {
+			a.avail += ms
+		} else if st == model.StateDown {
+			a.down += ms
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// current open interval (in memory, not yet in the DB)
+	now := time.Now().UTC()
+	for _, le := range s.live() {
+		if !idSet[le.EMID] || le.State == "" || le.Since.IsZero() {
+			continue
+		}
+		ms := intersectMs(le.Since, now, ranges)
+		if ms == 0 {
+			continue
+		}
+		a := g(le.EMID)
+		if strings.Contains(availStates, le.State) {
+			a.avail += ms
+		} else if le.State == model.StateDown {
+			a.down += ms
+		}
+	}
+	return agg, nil
 }
 
 // handleUnconfirmed lists auto-discovered EMs awaiting an engineer's review.

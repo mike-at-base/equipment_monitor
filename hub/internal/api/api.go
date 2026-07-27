@@ -155,6 +155,19 @@ func (s *Server) window(r *http.Request) (time.Time, time.Time, error) {
 		local := now.In(s.tz)
 		midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, s.tz)
 		return midnight.UTC(), now, nil
+	case w == "prod":
+		// today's production span for this line: first shift start -> now
+		// (clamped to the last shift end). Unscheduled lines fall back to today.
+		local := now.In(s.tz)
+		midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, s.tz).UTC()
+		ranges, err := s.lineProductionRanges(r.Context(), r.PathValue("line"), midnight, now)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		if len(ranges) == 0 {
+			return now, now, nil // no production scheduled yet today
+		}
+		return ranges[0][0], ranges[len(ranges)-1][1], nil
 	case strings.HasSuffix(w, "h") || strings.HasSuffix(w, "m") || strings.HasSuffix(w, "d"):
 		if strings.HasSuffix(w, "d") {
 			n, err := strconv.Atoi(strings.TrimSuffix(w, "d"))

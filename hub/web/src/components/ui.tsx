@@ -8,7 +8,8 @@ const WindowCtx = createContext<{ win: string; setWin: (w: string) => void }>({
 export const WindowProvider = WindowCtx.Provider;
 export const useWindow = () => useContext(WindowCtx);
 
-const WINDOWS = ["1h", "8h", "today", "24h", "3d"];
+const WINDOWS = ["1h", "8h", "today", "24h", "3d", "prod"];
+const WIN_LABEL: Record<string, string> = { prod: "prod today" };
 
 export function WindowPicker() {
   const { win, setWin } = useWindow();
@@ -16,7 +17,7 @@ export function WindowPicker() {
     <div className="winpick" role="group" aria-label="time window">
       {WINDOWS.map((w) => (
         <button key={w} className={w === win ? "active" : ""} onClick={() => setWin(w)}>
-          {w}
+          {WIN_LABEL[w] ?? w}
         </button>
       ))}
     </div>
