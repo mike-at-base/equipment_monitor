@@ -9,6 +9,7 @@ import Schedule from "./pages/Schedule";
 import Station from "./pages/Station";
 import LineModel from "./pages/LineModel";
 import Sim from "./pages/Sim";
+import Availability from "./pages/Availability";
 import "./theme.css";
 
 export default function App() {
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/line/:line" element={<Line live={live} />} />
             <Route path="/line/:line/schedule" element={<Schedule />} />
             <Route path="/line/:line/model" element={<LineModel />} />
+            <Route path="/line/:line/availability" element={<Availability />} />
             <Route path="/line/:line/station/:station" element={<Station live={live} />} />
             <Route path="/em/:line/:station/:label/*" element={<EMPage />} />
             <Route path="/sim" element={<Sim live={live} />} />
@@ -57,6 +59,7 @@ function Crumbs() {
       <Route path="/line/:line" element={<LineCrumb />} />
       <Route path="/line/:line/schedule" element={<ScheduleCrumb />} />
       <Route path="/line/:line/model" element={<NamedCrumb name="Availability model" />} />
+      <Route path="/line/:line/availability" element={<NamedCrumb name="Availability" />} />
       <Route path="/line/:line/station/:station" element={<StationCrumb />} />
       <Route path="/em/:line/:station/:label/*" element={<EMCrumb />} />
       <Route path="/sim" element={

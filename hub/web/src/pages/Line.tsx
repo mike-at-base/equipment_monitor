@@ -24,6 +24,7 @@ export default function Line({ live }: { live: LiveEM[] }) {
   return (
     <>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 16, marginTop: 12 }}>
+        <Link to={`/line/${line}/availability`} className="linkbtn">Availability dashboard →</Link>
         <Link to={`/line/${line}/model`} className="linkbtn">Edit line availability model →</Link>
         <Link to={`/line/${line}/schedule`} className="linkbtn">Edit production schedule →</Link>
       </div>

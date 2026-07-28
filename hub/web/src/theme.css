@@ -353,6 +353,21 @@ table.data tr.sel td { background: var(--livewire); }
 .sim-btns button:hover { border-color: var(--terminal); color: var(--terminal); }
 .sim-btns button.active { background: var(--terminal); color: var(--strike); border-color: var(--terminal); }
 
+/* ── availability dashboard (read-only, display-friendly) ─────────────── */
+.avdash-hero { display: flex; justify-content: center; text-align: center; padding: 28px 16px; }
+.avdash-big { font: 800 72px/1 "Inter", system-ui, sans-serif; color: var(--terminal); letter-spacing: -.02em; }
+.avdash-big small { font-size: 32px; font-weight: 700; color: var(--secondary); margin-left: 4px; }
+.avdash-sub { margin-top: 8px; font-size: 14px; color: var(--secondary); }
+.avdash-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 12px; margin-top: 16px;
+}
+.avdash-station { display: block; text-align: center; padding: 18px 10px; }
+.avdash-station:hover { border-color: var(--terminal); }
+.avdash-pct { font: 800 34px/1 "Inter", system-ui, sans-serif; letter-spacing: -.01em; }
+.avdash-pct small { font-size: 16px; font-weight: 700; margin-left: 2px; }
+.avdash-name { margin-top: 6px; font: 700 12px ui-monospace, Consolas, monospace; color: var(--secondary); text-transform: uppercase; letter-spacing: .05em; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
