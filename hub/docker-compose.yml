@@ -1,0 +1,60 @@
+# emhub v2 — full production stack on one Linux host.
+#
+#   cd hub && docker compose up -d --build
+#
+#   UI + API : http://<host>:8062
+#   PLC push : <host>:15020/udp   (set the telemetry FB's remoteIp/remotePort here)
+#
+# Edit ../config.yaml (lines / EMs / telemetry) then `docker compose restart
+# emhub` — emhub re-syncs the hierarchy from the config on every startup.
+#
+# Credentials default to monitor/monitor for a quick start. For production put
+# a real password in hub/.env:  DB_PASSWORD=<something-strong>
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: emhub-db
+    environment:
+      POSTGRES_DB: emhub
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-monitor}
+    volumes:
+      - emhub_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d emhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "5" }
+
+  emhub:
+    build:
+      context: .
+    image: emhub:latest
+    container_name: emhub
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      EMHUB_DSN: "postgres://monitor:${DB_PASSWORD:-monitor}@timescaledb:5432/emhub"
+      EMHUB_HTTP: ":8062"
+      EMHUB_UDP_PORT: "15020"
+      APP_TIMEZONE: ${APP_TIMEZONE:-America/Chicago}
+    # Routing is by the payload's lineName (v4), not source IP, so Docker NAT
+    # on published ports is fine — bridge mode works on Linux and Windows.
+    # No config file: EMs auto-discover from telemetry and are configured in
+    # the UI (the DB is the source of truth).
+    ports:
+      - "8062:8062"          # SCADA UI + REST/MCP API (TCP)
+      - "15020:15020/udp"    # PLC telemetry ingest (UDP)
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+volumes:
+  emhub_data:

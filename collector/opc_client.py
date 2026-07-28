@@ -330,6 +330,10 @@ class _SubHandler:
                 tracker.on_fault_change(payload, bool(val), ts)
             elif role == "ext_msg":
                 tracker._ext_msg[payload] = str(val).strip() if val else None
+            elif role == "ext_alarm_active":
+                tracker._ext_msg_active[payload] = bool(val)
+            elif role == "alarm_msg":
+                tracker.on_alarm_msg_change(str(val).strip() if val else None, ts)
             elif role == "active_seq":
                 # S7-1500 returns 0 when no sequence is running; treat as None
                 seq_val = int(val) if val else None
@@ -593,7 +597,14 @@ class OpcClient:
                     ext = await make_node(f"{sc}.externalFaultMessage").read_value()
                     tracker._ext_msg[seq_idx] = str(ext).strip() if ext else None
                 except Exception:
-                    pass
+                    # New library: externalAlarm struct instead
+                    try:
+                        ext = await make_node(f"{sc}.externalAlarm.message").read_value()
+                        tracker._ext_msg[seq_idx] = str(ext).strip() if ext else None
+                        act = await make_node(f"{sc}.externalAlarm.active").read_value()
+                        tracker._ext_msg_active[seq_idx] = bool(act)
+                    except Exception:
+                        pass
 
     async def _resolve_em_nodes(
         self,
@@ -646,6 +657,9 @@ class OpcClient:
         has_unknown = await try_node(f'{base}.status.unknown', 'unknown_status', None)
         await try_node(f'{base}.status.activeSequence',  'active_seq', None)
         await try_node(f'{base}.interlock',              'interlock_snapshot', None)
+        # Composed fault message with PLC-side precedence (new library only;
+        # silently absent on the old library).
+        await try_node(f'{base}.status.alarm.message',   'alarm_msg',  None)
 
         # Save node refs for periodic re-reads (avail signal bounce recovery)
         avail_nodes[tracker.em_id] = (
@@ -670,7 +684,17 @@ class OpcClient:
             await try_node(f'{sc}.step',                'step',      seq_idx)
             await try_node(f'{sc}.description',         'step_desc', seq_idx)
             await try_node(f'{sc}.faulted',             'faulted',   seq_idx)
-            await try_node(f'{sc}.externalFaultMessage','ext_msg',   seq_idx)
+            # Old library exposes externalFaultMessage; the new library
+            # (library release 0.4.4+) replaced it with an externalAlarm
+            # struct.  Try old first, fall back to new — try_node silently
+            # skips whichever doesn't exist on this PLC.
+            has_old_msg = await try_node(
+                f'{sc}.externalFaultMessage', 'ext_msg', seq_idx)
+            if not has_old_msg:
+                await try_node(f'{sc}.externalAlarm.message',
+                               'ext_msg', seq_idx)
+                await try_node(f'{sc}.externalAlarm.active',
+                               'ext_alarm_active', seq_idx)
 
         # ── Struct refs for on-demand reads (no subscription) ────────────────
         # Reading the whole struct in one round-trip when a down event opens
@@ -678,6 +702,7 @@ class OpcClient:
         # library exposes.  No constants to keep in sync.
         self._struct_nodes[tracker.em_id] = {
             'interlock':     make_node(f'{base}.interlock'),
+            'alarm_msg':     make_node(f'{base}.status.alarm.message'),
             'step_branches': {
                 seq_idx: make_node(
                     f'{base}.stepControl[{seq_idx - 1}].activeStepBranch'
@@ -723,6 +748,15 @@ class OpcClient:
             coro = self._enrich_flow_reason(tracker, reason_type, seq_idx, start_ts)
         elif reason_type == "interlock":
             coro = self._enrich_interlock_reason(tracker, start_ts)
+        elif reason_type == "paused":
+            # Paused in auto with (apparently) healthy interlock — read the
+            # interlock struct to double-check; if it is actually failing the
+            # reason is promoted to interlock, otherwise it settles on
+            # operator pause.
+            coro = self._enrich_interlock_reason(
+                tracker, start_ts,
+                fallback_type="paused", fallback_desc="Operator pause",
+            )
         # 'manual' / unknown — no enrichment
         if coro is None:
             return
@@ -744,6 +778,11 @@ class OpcClient:
         and update the open down event's reason with the failed-condition
         descriptions.  No-op if the event has already closed.
         """
+        # UDP telemetry already latched the reason on the fault scan —
+        # this read happens later and would see post-fault branch state.
+        if tracker._ext_msg_authoritative.get(seq_idx):
+            return
+
         struct = self._struct_nodes.get(tracker.em_id)
         if not struct:
             return
@@ -759,21 +798,38 @@ class OpcClient:
             return
 
         branches = _parse_step_branches(raw)
-        reason = _build_step_fault_reason(
-            branches,
-            ext_msg=tracker._ext_msg.get(seq_idx),
-        )
+        ext_msg = tracker._effective_ext_msg(seq_idx)
+        reason = _build_step_fault_reason(branches, ext_msg=ext_msg)
+
+        if not reason:
+            # No failing permissive condition is visible — the fault is not
+            # permissive-driven (external device alarm, step not found, ...).
+            # Fall back to the device message, then to the PLC's composed
+            # status.alarm.message (fresh on-demand read, avoids subscription
+            # ordering races).
+            reason = ext_msg
+        if not reason:
+            alarm_node = struct.get('alarm_msg')
+            if alarm_node is not None:
+                try:
+                    msg = await alarm_node.read_value()
+                    reason = str(msg).strip() if msg else None
+                except Exception:
+                    log.debug("read status.alarm.message failed em=%d",
+                              tracker.em_id, exc_info=True)
+
         if reason:
             tracker.update_down_event_reason(reason, start_ts_override=start_ts)
 
     async def _enrich_interlock_reason(
         self, tracker: EMStateTracker, start_ts: datetime.datetime | None = None,
+        fallback_type: str = "manual", fallback_desc: str = "Manual mode",
     ) -> None:
         """
         Read ``interlock`` (one struct, one round-trip) and update the open
-        down event's reason.  If no interlock condition is failing, this was
-        an operator-initiated manual stop — rewrite reason to "Manual mode"
-        and demote reason_type accordingly.
+        down event's reason.  If no interlock condition is failing, settle on
+        the fallback — "Manual mode" for manual/interlock events, "Operator
+        pause" for paused-in-auto events.
         """
         struct = self._struct_nodes.get(tracker.em_id)
         if not struct:
@@ -796,9 +852,11 @@ class OpcClient:
         conditions = _parse_conditions(raw)
         reason = _build_interlock_reason(conditions)
         if reason:
-            tracker.update_down_event_reason(reason, start_ts_override=start_ts)
+            tracker.update_down_event_reason(
+                reason, reason_type="interlock", start_ts_override=start_ts,
+            )
         else:
-            # Only demote to manual if there is no active EM fault.
+            # Only demote to the fallback if there is no active EM fault.
             # If fault is still active but interlock detail parsing yields
             # nothing, keep it as an interlock-class fault reason.
             if tracker._em_fault:
@@ -809,7 +867,7 @@ class OpcClient:
                 )
             else:
                 tracker.update_down_event_reason(
-                    "Manual mode", reason_type="manual",
+                    fallback_desc, reason_type=fallback_type,
                     start_ts_override=start_ts,
                 )
 
@@ -885,6 +943,7 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                     ),
                     blocked_steps=list(seq.get("blocked_steps", []) or []),
                     starved_steps=list(seq.get("starved_steps", []) or []),
+                    cycle_complete_step=seq.get("cycle_complete_step"),
                 )
 
             if not enabled:
@@ -909,6 +968,16 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                 }
                 for s in em_cfg.get("sequences", [])
             }
+            seq_cycle_start_steps = {
+                int(s["index"]): str(s.get("cycle_start_step") or "").strip()
+                for s in em_cfg.get("sequences", [])
+                if str(s.get("cycle_start_step") or "").strip()
+            }
+            seq_cycle_complete_steps = {
+                int(s["index"]): str(s.get("cycle_complete_step") or "").strip()
+                for s in em_cfg.get("sequences", [])
+                if str(s.get("cycle_complete_step") or "").strip()
+            }
             tracker = EMStateTracker(
                 em_id=em_id,
                 station=em_cfg["station"],
@@ -917,6 +986,8 @@ def build_clients_from_config(config: dict) -> list[OpcClient]:
                 seq_is_production=seq_is_production,
                 seq_blocked_steps=seq_blocked_steps,
                 seq_starved_steps=seq_starved_steps,
+                seq_cycle_start_steps=seq_cycle_start_steps,
+                seq_cycle_complete_steps=seq_cycle_complete_steps,
             )
             # Attach db_path so opc_client can build node paths
             tracker.em_db_path = em_cfg["em_db_path"]

@@ -55,7 +55,8 @@ def upsert_sequence(em_id: int, seq_index: int,
                     seq_name: str, is_production: bool,
                     cycle_start_step: str = "SEQUENCE_INITIAL_STEP",
                     blocked_steps: list[str] | None = None,
-                    starved_steps: list[str] | None = None) -> None:
+                    starved_steps: list[str] | None = None,
+                    cycle_complete_step: str | None = None) -> None:
     blocked_steps = blocked_steps or []
     starved_steps = starved_steps or []
     with Conn() as conn:
@@ -64,18 +65,19 @@ def upsert_sequence(em_id: int, seq_index: int,
             """
             INSERT INTO config_sequence
               (em_id, seq_index, seq_name, is_production, cycle_start_step,
-               blocked_steps, starved_steps)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+               blocked_steps, starved_steps, cycle_complete_step)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (em_id, seq_index) DO UPDATE
               SET seq_name      = EXCLUDED.seq_name,
                   is_production = EXCLUDED.is_production,
                   cycle_start_step = EXCLUDED.cycle_start_step,
                   blocked_steps = EXCLUDED.blocked_steps,
-                  starved_steps = EXCLUDED.starved_steps
+                  starved_steps = EXCLUDED.starved_steps,
+                  cycle_complete_step = EXCLUDED.cycle_complete_step
             """,
             (
                 em_id, seq_index, seq_name, is_production, cycle_start_step,
-                blocked_steps, starved_steps,
+                blocked_steps, starved_steps, cycle_complete_step,
             ),
         )
 
@@ -339,6 +341,52 @@ def close_down_event(conn, em_id: int, start_ts: datetime.datetime,
          WHERE em_id = %s AND start_ts = %s AND end_ts IS NULL
         """,
         (end_ts, dur_ms, em_id, start_ts),
+    )
+
+
+def ack_down_event(conn, em_id: int, ack_ts: datetime.datetime) -> None:
+    """
+    Stamp the first operator reset on the currently-open down event.
+    Splits MTTR into response time (start→ack) and repair time (ack→end).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE em_down_event
+           SET ack_ts = %s
+         WHERE em_id = %s AND end_ts IS NULL AND ack_ts IS NULL
+        """,
+        (ack_ts, em_id),
+    )
+
+
+def insert_operator_event(conn, em_id: int, ts: datetime.datetime,
+                          event: str) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO em_operator_event (ts, em_id, event) VALUES (%s, %s, %s)",
+        (ts, em_id, event),
+    )
+
+
+def insert_mode_event(conn, em_id: int, ts: datetime.datetime,
+                      modes: dict) -> None:
+    """One row per mode-bit change (idle/step/mesBypass/dryCycle/...)."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO em_mode_event
+          (ts, em_id, idle, step_mode, mes_bypass, dry_cycle,
+           end_of_cycle, pause_at_home, request_entry)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            ts, em_id,
+            bool(modes.get("idle")), bool(modes.get("step_mode")),
+            bool(modes.get("mes_bypass")), bool(modes.get("dry_cycle")),
+            bool(modes.get("end_of_cycle")), bool(modes.get("pause_at_home")),
+            bool(modes.get("request_entry")),
+        ),
     )
 
 
@@ -878,7 +926,28 @@ def query_state_timeline(em_ids: list[int],
         cur = conn.cursor()
         cur.execute(
             """
-            WITH raw AS (
+            -- Bound the scan to the window plus each EM's last row at-or-
+            -- before the window start (needed to know the state entering the
+            -- window).  Without the bound this scanned the hypertable from
+            -- the beginning of time and got slower every day.
+            WITH bounded AS (
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM em_availability_raw
+                WHERE em_id = ANY(%s) AND ts > %s AND ts <= %s
+                UNION ALL
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM (
+                    SELECT DISTINCT ON (em_id)
+                           ts, em_id, automatic, fault, running,
+                           active_seq, active_is_production
+                    FROM em_availability_raw
+                    WHERE em_id = ANY(%s) AND ts <= %s
+                    ORDER BY em_id, ts DESC
+                ) prior
+            ),
+            raw AS (
                 SELECT ts, em_id, automatic, fault, running,
                        LEAD(ts) OVER (PARTITION BY em_id ORDER BY ts) AS next_ts,
                        CASE
@@ -891,9 +960,7 @@ def query_state_timeline(em_ids: list[int],
                          WHEN automatic AND NOT running THEN 'standby'
                          ELSE 'manual'
                        END AS state
-                FROM em_availability_raw
-                WHERE em_id = ANY(%s)
-                  AND ts <= %s
+                FROM bounded
             )
             SELECT r.ts, r.em_id, r.state, r.next_ts,
                    e.station, e.display_name, e.em_label
@@ -902,7 +969,7 @@ def query_state_timeline(em_ids: list[int],
             WHERE (r.next_ts IS NULL OR r.next_ts > %s)
             ORDER BY r.em_id, r.ts
             """,
-            (em_ids, end, start),
+            (em_ids, start, end, em_ids, start, start),
         )
         cols = [d[0] for d in cur.description]
         df = pd.DataFrame(cur.fetchall(), columns=cols)
@@ -931,7 +998,26 @@ def query_state_summary(em_ids: list[int],
         cur = conn.cursor()
         cur.execute(
             """
-            WITH raw AS (
+            -- Bound the scan to the window plus each EM's last row at-or-
+            -- before the window start (see query_state_timeline).
+            WITH bounded AS (
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM em_availability_raw
+                WHERE em_id = ANY(%s) AND ts > %s AND ts <= %s
+                UNION ALL
+                SELECT ts, em_id, automatic, fault, running,
+                       active_seq, active_is_production
+                FROM (
+                    SELECT DISTINCT ON (em_id)
+                           ts, em_id, automatic, fault, running,
+                           active_seq, active_is_production
+                    FROM em_availability_raw
+                    WHERE em_id = ANY(%s) AND ts <= %s
+                    ORDER BY em_id, ts DESC
+                ) prior
+            ),
+            raw AS (
                 SELECT ts, em_id,
                        LEAD(ts) OVER (PARTITION BY em_id ORDER BY ts) AS next_ts,
                        CASE
@@ -944,9 +1030,7 @@ def query_state_summary(em_ids: list[int],
                          WHEN automatic AND NOT running THEN 'standby'
                          ELSE 'manual'
                        END AS state
-                FROM em_availability_raw
-                WHERE em_id = ANY(%s)
-                  AND ts <= %s
+                FROM bounded
             ),
             clipped AS (
                 SELECT em_id, state,
@@ -980,7 +1064,7 @@ def query_state_summary(em_ids: list[int],
             GROUP BY c.em_id, e.station, e.display_name, e.em_label
             ORDER BY e.station, e.em_label
             """,
-            (em_ids, end, start, end, end, start, end),
+            (em_ids, start, end, em_ids, start, start, end, end, start, end),
         )
         cols = [d[0] for d in cur.description]
         return pd.DataFrame(cur.fetchall(), columns=cols)

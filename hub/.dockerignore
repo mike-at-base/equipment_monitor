@@ -1,0 +1,7 @@
+# keep the build context lean and force a fresh in-image UI build
+emhub
+emhub.exe
+*.log
+run_emhub.cmd
+web/node_modules
+web/dist

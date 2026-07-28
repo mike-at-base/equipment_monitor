@@ -1,3 +1,13 @@
+# ── UDP telemetry (PLC push) ──────────────────────────────────────────────
+# Listens for datagrams from the EquipmentModuleTelemetry FB (see
+# plc/TELEMETRY.md).  Event-driven from the PLC scan cycle, so steps faster
+# than the OPC sampling interval are still captured.  OPC UA stays active
+# for enrichment reads and as fallback — safe to enable before any PLC has
+# the FB deployed (the listener just idles).
+telemetry:
+  enabled: false
+  listen_port: 15020
+
 plcs:
   - name: CELL1
     opc_endpoint: "opc.tcp://10.200.2.134:4840"
@@ -1191,3 +1201,16 @@ plcs:
         sequences:
           - { index: 1, name: Home, is_production: false }
           - { index: 2, name: Main, is_production: true }
+
+  - name: SIM1
+    opc_endpoint: "opc.tcp://192.168.0.1:4840"
+    enabled: true
+    equipment_modules:
+      - station: ST90000
+        display_name: "Sim Press"
+        em_db_path: "ST90000_Station_DB.mainEquipmentModule"
+        em_label: main
+        enabled: true
+        sequences:
+          - { index: 1, name: Run, is_production: true,
+              cycle_start_step: "20", cycle_complete_step: "70" }

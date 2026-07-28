@@ -144,7 +144,32 @@ CREATE TABLE IF NOT EXISTS em_down_event (
     reason_desc TEXT,
     seq_index   SMALLINT,
     step_name   TEXT,
-    fault_msg   TEXT
+    fault_msg   TEXT,
+    ack_ts      TIMESTAMPTZ           -- first operator reset while down:
+                                      -- splits MTTR into response vs repair
+);
+
+-- ── Mode context (UDP telemetry) ──────────────────────────────────────────────
+-- One row per mode-bit change.  Lets history distinguish dry-cycle /
+-- MES-bypass / step-mode windows from real production time.
+CREATE TABLE IF NOT EXISTS em_mode_event (
+    ts            TIMESTAMPTZ NOT NULL,
+    em_id         INT NOT NULL,
+    idle          BOOL NOT NULL DEFAULT FALSE,
+    step_mode     BOOL NOT NULL DEFAULT FALSE,
+    mes_bypass    BOOL NOT NULL DEFAULT FALSE,
+    dry_cycle     BOOL NOT NULL DEFAULT FALSE,
+    end_of_cycle  BOOL NOT NULL DEFAULT FALSE,
+    pause_at_home BOOL NOT NULL DEFAULT FALSE,
+    request_entry BOOL NOT NULL DEFAULT FALSE
+);
+
+-- ── Operator events (UDP telemetry) ───────────────────────────────────────────
+-- Discrete operator interactions; currently 'reset' edges.
+CREATE TABLE IF NOT EXISTS em_operator_event (
+    ts     TIMESTAMPTZ NOT NULL,
+    em_id  INT NOT NULL,
+    event  TEXT NOT NULL
 );
 """
 
@@ -155,6 +180,8 @@ HYPERTABLES = [
     ("em_runtime_transition", "ts"),
     ("em_flow_event",       "start_ts"),
     ("em_down_event",       "start_ts"),
+    ("em_mode_event",       "ts"),
+    ("em_operator_event",   "ts"),
 ]
 
 INDEXES = [
@@ -164,6 +191,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_runtime_em_ts    ON em_runtime_transition (em_id, ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_flow_em_start    ON em_flow_event (em_id, start_ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_down_em_start    ON em_down_event       (em_id, start_ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_mode_em_ts       ON em_mode_event       (em_id, ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_operator_em_ts   ON em_operator_event   (em_id, ts DESC)",
 ]
 
 
@@ -205,6 +234,14 @@ def init_schema():
         cur.execute(
             "ALTER TABLE em_flow_event "
             "ADD COLUMN IF NOT EXISTS reason_desc TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE em_down_event "
+            "ADD COLUMN IF NOT EXISTS ack_ts TIMESTAMPTZ"
+        )
+        cur.execute(
+            "ALTER TABLE config_sequence "
+            "ADD COLUMN IF NOT EXISTS cycle_complete_step TEXT"
         )
         for table, col in HYPERTABLES:
             try:

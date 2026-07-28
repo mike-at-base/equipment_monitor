@@ -36,7 +36,18 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-async def run_all(clients) -> None:
+async def run_all(clients, telemetry_cfg: dict | None = None) -> None:
+    if telemetry_cfg and telemetry_cfg.get("enabled"):
+        from collector.udp_receiver import TelemetryReceiver, build_registry
+        port = int(telemetry_cfg.get("listen_port", 15020))
+        registry = build_registry(clients)
+        loop = asyncio.get_running_loop()
+        await loop.create_datagram_endpoint(
+            lambda: TelemetryReceiver(registry),
+            local_addr=("0.0.0.0", port),
+        )
+        log.info("Telemetry UDP listener on :%d covering %d EM(s)",
+                 port, len(registry))
     await asyncio.gather(*[c.run() for c in clients])
 
 
@@ -86,7 +97,7 @@ def main() -> None:
 
     log.info("Starting collector — press Ctrl+C to stop")
     try:
-        asyncio.run(run_all(clients))
+        asyncio.run(run_all(clients, config.get("telemetry")))
     except KeyboardInterrupt:
         log.info("Collector stopped")
 

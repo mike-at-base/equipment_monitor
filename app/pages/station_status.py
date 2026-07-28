@@ -13,6 +13,25 @@ from collections import defaultdict
 from dash import html
 
 import db.queries as q
+from app.cache import ttl_get_or_set
+
+# Live status is queried by both the full-grid render and the 30 s row
+# updater (and by every connected browser).  A short TTL dedupes those.
+_STATUS_TTL_S = 5
+
+
+def query_station_status_cached(plc_name: str) -> list[dict]:
+    return ttl_get_or_set(
+        ("station_status", plc_name), _STATUS_TTL_S,
+        lambda: q.query_station_status(plc_name),
+    )
+
+
+def get_collector_status_cached():
+    return ttl_get_or_set(
+        ("collector_status",), _STATUS_TTL_S,
+        q.get_collector_status,
+    )
 
 # ── Display config ────────────────────────────────────────────────────────────
 
@@ -166,7 +185,7 @@ def _station_card(display_name: str, station: str, ems: list[dict]) -> html.Div:
 def connection_banner_props(plc_name: str) -> tuple[list, str]:
     """Small status bar showing collector ↔ PLC connectivity."""
     try:
-        hb_df = q.get_collector_status()
+        hb_df = get_collector_status_cached()
         row   = hb_df[hb_df["plc_name"] == plc_name]
     except Exception:
         row = None
@@ -229,7 +248,7 @@ def render(plc_name: str) -> html.Div:
         return html.Div("No PLC selected.", className="text-muted p-3")
 
     try:
-        rows = q.query_station_status(plc_name)
+        rows = query_station_status_cached(plc_name)
     except Exception:
         return html.Div("Could not load station data.", className="text-muted p-3")
 

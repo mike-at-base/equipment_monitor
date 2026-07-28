@@ -1,0 +1,436 @@
+FUNCTION_BLOCK "EquipmentModuleTelemetry"
+TITLE = EM telemetry publisher (UDP push to equipment-monitor collector)
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+//
+// Drop-in per equipment module.  Pushes one small UDP datagram
+// (typeEquipmentModuleTelemetry, 1108 bytes) to the collector whenever any
+// monitored EM value changes, plus a heartbeat snapshot every
+// heartbeatInterval.  Change detection runs every scan, so transitions
+// faster than the OPC UA sampling interval are never lost; a 16-deep send
+// queue absorbs bursts of changes on consecutive scans while TUSEND is busy.
+//
+// Call AFTER the EquipmentModule FB in the same OB so the snapshot sees
+// the freshest scan data.  Give every instance on a CPU a unique
+// connectionId and localPort.
+//
+   VAR_INPUT
+      enable : Bool := TRUE;
+      lineName : String[32];            // line/site id, e.g. 'MOD1' — the
+                                        // collector routes telemetry on this
+                                        // (set once per PLC; survives NAT/re-IP)
+      stationName : String[32];         // e.g. 'ST34000'
+      emLabel : String[16] := 'main';   // e.g. 'main', 'SL01_MAG01'
+      hwInterfaceId : HW_ANY;           // HW id of the PN interface (System constants)
+      connectionId : CONN_OUC;          // unique per instance on this CPU
+      localPort : UInt;                 // unique per instance on this CPU
+      remoteIp1 : USInt;                // collector host IPv4 octets
+      remoteIp2 : USInt;
+      remoteIp3 : USInt;
+      remoteIp4 : USInt;
+      remotePort : UInt := 15020;
+      heartbeatInterval : Time := T#1s;
+      dwellCaptureDelay : Time := T#10s; // healthy dwell in one step before
+                                         // waitingOn (flow reason) is captured
+   END_VAR
+
+   VAR_OUTPUT
+      connected : Bool;
+      queueDrops : UDInt;               // events dropped because queue was full
+      sendErrors : UDInt;
+      lastError : Word;                 // last TCON/TUSEND STATUS on error
+   END_VAR
+
+   VAR_IN_OUT
+      controlInterface : "typeEquipmentModuleControlInterface";
+   END_VAR
+
+   VAR
+      instTCon {InstructionName := 'TCON'; LibVersion := '4.0'} : TCON;
+      instTUSend {InstructionName := 'TUSEND'; LibVersion := '4.0'} : TUSEND;
+      instRetryTimer {InstructionName := 'TON'; LibVersion := '1.0'} : TON;
+      instRetryOneShot : R_TRIG;
+      instHeartbeatTimer {InstructionName := 'TON'; LibVersion := '1.0'} : TON;
+      instStepFaultOneShot : R_TRIG;
+      statFirstScan : Bool := TRUE;
+      statFaultConditions : String[200];
+      statConnParam : TCON_IP_v4;
+      statAddrParam : TADDR_Param;
+      statConnPending : Bool;
+      statSeq : UDInt;
+      statSnapshot : "typeEquipmentModuleTelemetry";
+      statLastSent : "typeEquipmentModuleTelemetry";
+      statQueue : Array[0..15] of "typeEquipmentModuleTelemetry"; // depth 16 (see MOD 16 below)
+      statQueueHead : Int;              // next write slot
+      statQueueTail : Int;              // next read slot
+      statQueueCount : Int;
+      statTxPayload : "typeEquipmentModuleTelemetry";
+      statTxBuffer : Array[0..1179] of Byte;
+      statTxLen : UDInt;
+      statSendReq : Bool;
+      statSendCooldown : Bool;
+      statHeartbeatReset : Bool;
+   END_VAR
+
+   VAR_TEMP
+      tempBits : Word;
+      tempModeBits : Word;
+      tempSeqIdx : Int;
+      tempSeqValid : Bool;
+      tempStepFaulted : Bool;
+      tempChanged : Bool;
+      tempEnqueueEvent : Bool;
+      tempEnqueueHeartbeat : Bool;
+      tempHeartbeatFire : Bool;
+      tempPos : DInt;
+      tempRetVal : Int;
+      tempSerRet : Int;
+      tempLdt : LDT;
+      tempDesc : String;
+      ii : Int;
+      jj : Int;
+   END_VAR
+
+
+BEGIN
+    REGION Version Control
+        // EquipmentModuleTelemetry
+        // Description: Streams EM state/step/fault data to the equipment-monitor
+        //              collector over UDP, event-driven from the scan cycle, so
+        //              transitions faster than the OPC UA sampling interval are
+        //              still captured.  See equipment-monitor/plc/TELEMETRY.md
+        //              for the wire contract.
+
+        // Change Log:
+        // version      date                    author              description
+        // 0.1.0        2026-07-22              mwebb               first release
+    // 0.1.1        2026-07-23              mwebb               fix TUSEND edge re-arm: one-scan REQ-low cooldown between jobs (queue jammed after first send)
+    // 0.1.2        2026-07-23              mwebb               TADDR_Param V20 member names (REM_IP_ADDR / REM_PORT_NR)
+    // 0.1.3        2026-07-23              mwebb               accept TCON 80A3 (connection already established in CPU, survives instance re-download) as connected
+    // 0.1.4        2026-07-23              mwebb               fix heartbeat: IN := NOT Q self-reset consumed its own pulse (reading IEC timer Q updates state); capture Q as call output with explicit one-scan reset
+    // 0.1.5        2026-07-23              mwebb               deepen send ring buffer 8 -> 16 to absorb longer bursts of same-scan changes
+    // 0.1.6        2026-07-23              mwebb               fix CPU STOP: waiting-on IF combined bounds check + stepControl[] access in one AND (SCL has no short-circuit); with activeSequence=0 it read stepControl[0] -> area-length error. Split into nested IFs.
+    // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
+    // 0.2.0        2026-07-23              mwebb               wire v4: add lineName input, appended to payload (offset 1108); collector routes on it instead of source IP (NAT-proof, enables auto-registration). v3 offsets unchanged.
+    // 0.2.1        2026-07-24              mwebb               set identity (lineName/stationName/emLabel/version) EVERY scan instead of first-scan only, so changing lineName after the FB has run takes effect without a memory reset
+    END_REGION
+
+    REGION Initial Scan
+        IF #statFirstScan THEN
+            // UDP "connection" = local port binding; remote is addressed per
+            // datagram via TADDR_Param on TUSEND.
+            #statConnParam.InterfaceId := #hwInterfaceId;
+            #statConnParam.ID := #connectionId;
+            #statConnParam.ConnectionType := 19;          // UDP
+            #statConnParam.ActiveEstablished := FALSE;
+            #statConnParam.RemoteAddress.ADDR[1] := 0;
+            #statConnParam.RemoteAddress.ADDR[2] := 0;
+            #statConnParam.RemoteAddress.ADDR[3] := 0;
+            #statConnParam.RemoteAddress.ADDR[4] := 0;
+            #statConnParam.RemotePort := 0;
+            #statConnParam.LocalPort := #localPort;
+
+            #statAddrParam.REM_IP_ADDR[1] := #remoteIp1;
+            #statAddrParam.REM_IP_ADDR[2] := #remoteIp2;
+            #statAddrParam.REM_IP_ADDR[3] := #remoteIp3;
+            #statAddrParam.REM_IP_ADDR[4] := #remoteIp4;
+            #statAddrParam.REM_PORT_NR := #remotePort;
+
+            #statFirstScan := FALSE;
+        END_IF;
+    END_REGION
+
+    REGION Connection Management
+        // Retry timer input drops while TCON is busy, so each failed attempt
+        // re-arms a fresh 5 s edge.
+        #instRetryTimer(IN := #enable AND NOT #connected AND NOT #statConnPending,
+                        PT := T#5s);
+        #instRetryOneShot(CLK := #instRetryTimer.Q);
+
+        #instTCon(REQ := #instRetryOneShot.Q,
+                  ID := #connectionId,
+                  CONNECT := #statConnParam);
+        #statConnPending := #instTCon.BUSY;
+        IF #instTCon.DONE THEN
+            #connected := TRUE;
+        END_IF;
+        IF #instTCon.ERROR THEN
+            IF #instTCon.STATUS = W#16#80A3 THEN
+                // the CPU already holds this connection (e.g. this instance
+                // was reinitialized by a re-download while the established
+                // UDP binding survived in the CPU) - it is usable as-is
+                #connected := TRUE;
+            ELSE
+                #connected := FALSE;
+                #lastError := #instTCon.STATUS;
+            END_IF;
+        END_IF;
+    END_REGION
+
+    REGION Build Snapshot
+        // Identity refreshed every scan (not just first scan) so changing an
+        // input — e.g. wiring lineName after the FB already ran — takes effect
+        // on the next scan without a memory reset. These fields are excluded
+        // from change detection, so re-writing them never triggers an event.
+        #statSnapshot.version := 4;
+        #statSnapshot.lineName := #lineName;
+        #statSnapshot.stationName := #stationName;
+        #statSnapshot.emLabel := #emLabel;
+
+        // status bits
+        #tempBits := W#16#0000;
+        IF #controlInterface.status.mode.automatic THEN #tempBits := #tempBits OR W#16#0001; END_IF;
+        IF #controlInterface.status.alarm.fault    THEN #tempBits := #tempBits OR W#16#0002; END_IF;
+        IF #controlInterface.status.running        THEN #tempBits := #tempBits OR W#16#0004; END_IF;
+        IF #controlInterface.status.paused         THEN #tempBits := #tempBits OR W#16#0008; END_IF;
+        IF #controlInterface.status.stopped        THEN #tempBits := #tempBits OR W#16#0010; END_IF;
+        IF #controlInterface.status.unknown        THEN #tempBits := #tempBits OR W#16#0020; END_IF;
+        IF #controlInterface.interlock.status.ok   THEN #tempBits := #tempBits OR W#16#0080; END_IF;
+        IF #controlInterface.status.reset          THEN #tempBits := #tempBits OR W#16#0200; END_IF;
+
+        // mode bits — context that changes how history is interpreted
+        // (dry cycle / MES bypass windows, step-mode = maintenance activity)
+        #tempModeBits := W#16#0000;
+        IF #controlInterface.status.mode.idle         THEN #tempModeBits := #tempModeBits OR W#16#0001; END_IF;
+        IF #controlInterface.status.mode."step"       THEN #tempModeBits := #tempModeBits OR W#16#0002; END_IF;
+        IF #controlInterface.status.mode.mesBypass    THEN #tempModeBits := #tempModeBits OR W#16#0004; END_IF;
+        IF #controlInterface.status.mode.dryCycle     THEN #tempModeBits := #tempModeBits OR W#16#0008; END_IF;
+        IF #controlInterface.status.mode.endOfCycle   THEN #tempModeBits := #tempModeBits OR W#16#0010; END_IF;
+        IF #controlInterface.status.mode.pauseAtHome  THEN #tempModeBits := #tempModeBits OR W#16#0020; END_IF;
+        IF #controlInterface.status.mode.requestEntry THEN #tempModeBits := #tempModeBits OR W#16#0040; END_IF;
+        #statSnapshot.modeBits := #tempModeBits;
+
+        #tempSeqIdx := #controlInterface.status.activeSequence;
+        #statSnapshot.activeSequence := #tempSeqIdx;
+        #tempStepFaulted := FALSE;
+
+        // Single source of truth for "is there a valid active sequence to index
+        // stepControl[] with?".  activeSequence = 0 (no sequence active) is a
+        // normal idle state.  Every stepControl[#tempSeqIdx] access in this FB
+        // is gated on #tempSeqValid via a nested IF — never as a term in the
+        // same AND as the access, because SCL does not short-circuit and would
+        // evaluate stepControl[0] anyway (area-length error -> CPU STOP).
+        #tempSeqValid := (#tempSeqIdx >= 1) AND (#tempSeqIdx <= "SEQUENCE_MAX_NUMBER");
+
+        IF #tempSeqValid THEN
+            #tempStepFaulted := #controlInterface.stepControl[#tempSeqIdx].faulted;
+            IF #tempStepFaulted THEN
+                #tempBits := #tempBits OR W#16#0040;
+            END_IF;
+            IF #controlInterface.stepControl[#tempSeqIdx].externalAlarm.active THEN
+                #tempBits := #tempBits OR W#16#0100;
+            END_IF;
+            #statSnapshot."step" := #controlInterface.stepControl[#tempSeqIdx]."step";
+            #statSnapshot.stepDescription :=
+                LEFT(IN := #controlInterface.stepControl[#tempSeqIdx].description, L := 200);
+            #statSnapshot.stepActiveTime := #controlInterface.stepControl[#tempSeqIdx].activeTime;
+        ELSE
+            #statSnapshot."step" := '';
+            #statSnapshot.stepDescription := '';
+            #statSnapshot.stepActiveTime := T#0ms;
+        END_IF;
+
+        #statSnapshot.statusBits := #tempBits;
+        #statSnapshot.alarmMessage := LEFT(IN := #controlInterface.status.alarm.message, L := 200);
+
+        // ALL failing interlock conditions, first-out first (root-cause plus
+        // co-occurrence: door open + air dump is a different event than a
+        // door alone)
+        #statSnapshot.interlockFails := '';
+        IF NOT #controlInterface.interlock.status.ok THEN
+            FOR #ii := 0 TO 15 DO
+                IF NOT #controlInterface.interlock.condition[#ii].ok THEN
+                    #tempDesc := #controlInterface.interlock.condition[#ii].description;
+                    IF LEN(#tempDesc) > 0 THEN
+                        IF LEN(#statSnapshot.interlockFails) = 0 THEN
+                            #statSnapshot.interlockFails := LEFT(IN := #tempDesc, L := 160);
+                        ELSIF (LEN(#statSnapshot.interlockFails) + LEN(#tempDesc) + 2) <= 160 THEN
+                            #statSnapshot.interlockFails := CONCAT(IN1 := #statSnapshot.interlockFails,
+                                                                   IN2 := '; ',
+                                                                   IN3 := #tempDesc);
+                        END_IF;
+                    END_IF;
+                END_IF;
+            END_FOR;
+        END_IF;
+    END_REGION
+
+    REGION Fault Reason Capture
+        // Latch the failing step-permissive conditions on the SAME SCAN the
+        // step fault rises.  One scan later is already too late: a stop /
+        // reset transition overwrites activeStepBranch with the next step's
+        // branches, which is exactly the race that makes after-the-fact OPC
+        // reads unreliable.  For faults that are not permissive-driven
+        // (external device alarms) no condition is failing and this stays
+        // empty — the collector then uses alarmMessage as the reason.
+        #instStepFaultOneShot(CLK := #tempStepFaulted);
+        IF #tempSeqValid AND #instStepFaultOneShot.Q THEN
+            #statFaultConditions := '';
+            FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                    FOR #jj := 0 TO 15 DO
+                        IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
+                            #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
+                            IF LEN(#tempDesc) > 0 THEN
+                                IF LEN(#statFaultConditions) = 0 THEN
+                                    #statFaultConditions := LEFT(IN := #tempDesc, L := 200);
+                                ELSIF (FIND(IN1 := #statFaultConditions, IN2 := #tempDesc) = 0)
+                                    AND ((LEN(#statFaultConditions) + LEN(#tempDesc) + 2) <= 200)
+                                THEN
+                                    // append only new, still-fitting descriptions
+                                    #statFaultConditions := CONCAT(IN1 := #statFaultConditions,
+                                                                   IN2 := '; ',
+                                                                   IN3 := #tempDesc);
+                                END_IF;
+                            END_IF;
+                        END_IF;
+                    END_FOR;
+                END_IF;
+            END_FOR;
+        ELSIF NOT #tempStepFaulted THEN
+            #statFaultConditions := '';
+        END_IF;
+        #statSnapshot.faultConditions := #statFaultConditions;
+    END_REGION
+
+    REGION Waiting-On Capture
+        // What is the active step waiting on?  When the machine is available
+        // and running but parked in the same step past dwellCaptureDelay, the
+        // failing branch permissives ARE the flow reason.  No blocked/starved
+        // semantics here — the collector deduces those from cycle position
+        // and this text, so nothing in the PLC needs maintaining beyond the
+        // permissive descriptions the HMI already shows.
+        #statSnapshot.waitingOn := '';
+        // SCL does NOT guarantee short-circuit AND, so the bounds check and the
+        // stepControl[] access must be in SEPARATE nested IFs.  In one combined
+        // expression stepControl[#tempSeqIdx] is evaluated even when the bounds
+        // term is false, so stepControl[0] is read when no sequence is active
+        // (activeSequence = 0) -> area-length error -> CPU STOP.
+        IF #controlInterface.status.mode.automatic
+            AND #controlInterface.status.running
+            AND NOT #tempStepFaulted
+            AND #tempSeqValid
+        THEN
+            IF #controlInterface.stepControl[#tempSeqIdx].activeTime > #dwellCaptureDelay THEN
+                FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                    IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                        FOR #jj := 0 TO 15 DO
+                            IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
+                                #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
+                                IF LEN(#tempDesc) > 0 THEN
+                                    IF LEN(#statSnapshot.waitingOn) = 0 THEN
+                                        #statSnapshot.waitingOn := LEFT(IN := #tempDesc, L := 200);
+                                    ELSIF (FIND(IN1 := #statSnapshot.waitingOn, IN2 := #tempDesc) = 0)
+                                        AND ((LEN(#statSnapshot.waitingOn) + LEN(#tempDesc) + 2) <= 200)
+                                    THEN
+                                        #statSnapshot.waitingOn := CONCAT(IN1 := #statSnapshot.waitingOn,
+                                                                          IN2 := '; ',
+                                                                          IN3 := #tempDesc);
+                                    END_IF;
+                                END_IF;
+                            END_IF;
+                        END_FOR;
+                    END_IF;
+                END_FOR;
+            END_IF;
+        END_IF;
+    END_REGION
+
+    REGION Change Detection And Enqueue
+        // stepActiveTime / plcTime / seq deliberately excluded — they change
+        // every scan and would turn event push into continuous streaming.
+        #tempChanged :=
+            (#statSnapshot.statusBits      <> #statLastSent.statusBits) OR
+            (#statSnapshot.modeBits        <> #statLastSent.modeBits) OR
+            (#statSnapshot.activeSequence  <> #statLastSent.activeSequence) OR
+            (#statSnapshot."step"          <> #statLastSent."step") OR
+            (#statSnapshot.stepDescription <> #statLastSent.stepDescription) OR
+            (#statSnapshot.alarmMessage    <> #statLastSent.alarmMessage) OR
+            (#statSnapshot.interlockFails  <> #statLastSent.interlockFails) OR
+            (#statSnapshot.faultConditions <> #statLastSent.faultConditions) OR
+            (#statSnapshot.waitingOn       <> #statLastSent.waitingOn);
+
+        // Heartbeat: reading an IEC timer's Q UPDATES its state, so the
+        // classic IN := NOT Q self-reset consumes its own pulse - the IN
+        // expression is the first reader to see Q rise, the call then runs
+        // with IN = FALSE, and the reset clears Q before the enqueue check
+        // reads it.  Capture Q as a call output (atomic) and reset
+        // explicitly for one scan instead.
+        #instHeartbeatTimer(IN := #enable AND NOT #statHeartbeatReset,
+                            PT := #heartbeatInterval,
+                            Q => #tempHeartbeatFire);
+        #statHeartbeatReset := #tempHeartbeatFire;
+
+        #tempEnqueueEvent := #enable AND #tempChanged;
+        #tempEnqueueHeartbeat := #enable AND #tempHeartbeatFire AND NOT #tempChanged;
+
+        IF #tempEnqueueEvent OR #tempEnqueueHeartbeat THEN
+            IF #tempEnqueueEvent THEN
+                #statSnapshot.msgType := 1;
+                #statLastSent := #statSnapshot;
+            ELSE
+                #statSnapshot.msgType := 2;
+            END_IF;
+
+            #tempRetVal := RD_SYS_T(#tempLdt);
+            #statSnapshot.plcTime := #tempLdt;
+            #statSeq := #statSeq + 1;
+            #statSnapshot.seq := #statSeq;
+
+            // ring buffer: drop-oldest on overflow so the NEWEST state always
+            // gets through (stale intermediate steps are the acceptable loss).
+            // Depth 16 — must match the statQueue array bound and the MOD below.
+            IF #statQueueCount >= 16 THEN
+                #statQueueTail := (#statQueueTail + 1) MOD 16;
+                #statQueueCount := #statQueueCount - 1;
+                #queueDrops := #queueDrops + 1;
+            END_IF;
+            #statQueue[#statQueueHead] := #statSnapshot;
+            #statQueueHead := (#statQueueHead + 1) MOD 16;
+            #statQueueCount := #statQueueCount + 1;
+        END_IF;
+    END_REGION
+
+    REGION Send Queue Drain
+        // TUSEND is edge-triggered and samples REQ only when called: after a
+        // job completes, the instruction must see one call with REQ = FALSE
+        // before the next rising edge, or the next job never starts (the
+        // queue then fills and drops).  statSendCooldown enforces that
+        // one-scan gap; worst-case throughput is one datagram per two scans,
+        // which is far beyond what one EM produces.
+        IF #connected AND NOT #statSendReq AND NOT #statSendCooldown AND (#statQueueCount > 0) THEN
+            #statTxPayload := #statQueue[#statQueueTail];
+            #statQueueTail := (#statQueueTail + 1) MOD 16;
+            #statQueueCount := #statQueueCount - 1;
+
+            #tempPos := 0;
+            #tempSerRet := Serialize(SRC_VARIABLE := #statTxPayload,
+                                     DEST_ARRAY => #statTxBuffer,
+                                     POS := #tempPos);
+            #statTxLen := DINT_TO_UDINT(#tempPos);
+            #statSendReq := TRUE;
+        END_IF;
+
+        #instTUSend(REQ := #statSendReq,
+                    ID := #connectionId,
+                    LEN := #statTxLen,
+                    DATA := #statTxBuffer,
+                    ADDR := #statAddrParam);
+
+        IF #instTUSend.DONE THEN
+            #statSendReq := FALSE;
+            #statSendCooldown := TRUE;   //this scan's call ran with REQ high
+        ELSIF #instTUSend.ERROR THEN
+            // UDP send errors are rare (no ack semantics) - drop and move on;
+            // the next heartbeat snapshot self-heals collector state.
+            #statSendReq := FALSE;
+            #statSendCooldown := TRUE;
+            #sendErrors := #sendErrors + 1;
+            #lastError := #instTUSend.STATUS;
+        ELSIF #statSendCooldown AND NOT #statSendReq THEN
+            //this scan's call ran with REQ low - edge is re-armed
+            #statSendCooldown := FALSE;
+        END_IF;
+    END_REGION
+
+END_FUNCTION_BLOCK

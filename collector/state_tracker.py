@@ -46,12 +46,23 @@ _DESC_EDGE_GUARD_MS = 250
 _INTERLOCK_REASON_MAX_AGE_S = 30
 
 
+# Direction keywords for classifying a healthy dwell ("waiting on ...") as
+# starved (waiting for something to ARRIVE) vs blocked (waiting for something
+# to LEAVE) when cycle-position doesn't decide it.
+_KW_STARVED = ("present", "available", "upstream", "infeed", "supply",
+               "arrive", "loaded", "at fixture", "at nest", "starv")
+_KW_BLOCKED = ("downstream", "outfeed", "clear", "free", "empty pos",
+               "takeaway", "unload", "exit", "occupied", "full", "block")
+
+
 class EMStateTracker:
     def __init__(self, em_id: int, station: str, em_label: str,
                  seq_indices: list[int],
                  seq_is_production: dict[int, bool] | None = None,
                  seq_blocked_steps: dict[int, set[str]] | None = None,
-                 seq_starved_steps: dict[int, set[str]] | None = None) -> None:
+                 seq_starved_steps: dict[int, set[str]] | None = None,
+                 seq_cycle_start_steps: dict[int, str] | None = None,
+                 seq_cycle_complete_steps: dict[int, str] | None = None) -> None:
         self.em_id      = em_id
         self.station    = station
         self.em_label   = em_label
@@ -59,6 +70,15 @@ class EMStateTracker:
         self._seq_is_production = seq_is_production or {}
         self._seq_blocked_steps = seq_blocked_steps or {}
         self._seq_starved_steps = seq_starved_steps or {}
+        self._seq_cycle_start = seq_cycle_start_steps or {}
+        self._seq_cycle_complete = seq_cycle_complete_steps or {}
+        # cycle phase per sequence: 'work' (start..complete) or 'exchange'
+        # (complete..next start); tracked from step edges when a
+        # cycle_complete_step is configured.
+        self._seq_phase: dict[int, str] = {}
+        # Once UDP telemetry supplies waitingOn snapshots, the deduced flow
+        # path owns em_flow_event and the config-list matcher stands down.
+        self._flow_from_telemetry = False
 
         # Active sequence — informational only; step events are tagged by
         # which stepControl[N] fired, not by reading activeSequence.
@@ -81,6 +101,19 @@ class EMStateTracker:
         self._fault_step:      dict[int, str | None]              = {i: None  for i in seq_indices}
         self._fault_step_desc: dict[int, str | None]              = {i: None  for i in seq_indices}
         self._ext_msg:         dict[int, str | None]              = {i: None  for i in seq_indices}
+        # externalAlarm.active gate for _ext_msg (new library only).
+        # None = unknown / old library (externalFaultMessage) → trust message.
+        self._ext_msg_active:  dict[int, bool | None]             = {i: None  for i in seq_indices}
+        # True when _ext_msg holds a scan-accurate fault reason from UDP
+        # telemetry (alarm message + fault-scan permissive conditions).
+        # The OPC enrichment read must not overwrite it — by the time that
+        # read lands, activeStepBranch may already show post-fault state.
+        self._ext_msg_authoritative: dict[int, bool]              = {i: False for i in seq_indices}
+        # Latest EM status.alarm.message (new library composes the fault text
+        # with precedence: config error > step not found > timeout > external).
+        # NOTE: the PLC does not clear this string when the fault clears, so
+        # it is only trustworthy while/just after a fault was active.
+        self._alarm_msg: str | None = None
 
         # EM-level raw signals — written on every change to em_availability_raw.
         # Initialised to None so the first OPC notification always triggers a
@@ -104,6 +137,11 @@ class EMStateTracker:
         self._down_seq_idx:     int | None               = None
         self._down_step:        str | None               = None
         self._down_fault_msg:   str | None               = None
+
+        # Mode context + operator reset (UDP telemetry only)
+        self._modes: dict[str, bool] | None = None
+        self._reset: bool | None = None
+        self._down_ack_recorded: bool = False
 
         # Most recent parsed interlock health snapshot (from OPC interlock
         # struct datachange subscription). Used to distinguish true interlock
@@ -144,6 +182,27 @@ class EMStateTracker:
             return None
         return desc
 
+    def _effective_ext_msg(self, seq_idx: int) -> str | None:
+        """
+        External fault message for a sequence, gated by externalAlarm.active
+        where the new library exposes it.  active=None means old library
+        (externalFaultMessage, no gate) — trust the message as-is.
+        """
+        msg = self._ext_msg.get(seq_idx)
+        if not msg:
+            return None
+        if self._ext_msg_active.get(seq_idx) is False:
+            return None
+        return msg
+
+    @staticmethod
+    def _is_placeholder_reason(desc: str | None) -> bool:
+        if not desc:
+            return True
+        if "(reading conditions...)" in desc:
+            return True
+        return desc.startswith("Step ") and desc.endswith(" faulted")
+
     # ── Down-event helpers ────────────────────────────────────────────────────
 
     def _try_open_down_event(
@@ -177,7 +236,9 @@ class EMStateTracker:
                     self._down_fault_msg = existing["fault_msg"]
                     # Collector restart can adopt an open placeholder event
                     # from DB; re-run enrichment to replace placeholder text.
-                    should_enrich = self._down_reason_type in ("interlock", "step_fault")
+                    should_enrich = self._down_reason_type in (
+                        "interlock", "step_fault", "paused",
+                    )
                 else:
                     self._down_start_ts    = ts
                     self._down_reason_type = reason_type
@@ -185,6 +246,7 @@ class EMStateTracker:
                     self._down_seq_idx     = seq_idx
                     self._down_step        = step_name
                     self._down_fault_msg   = fault_msg
+                    self._down_ack_recorded = False
 
                     log.debug("[%s/%s] down event OPEN  type=%s desc=%s",
                               self.station, self.em_label, reason_type, reason_desc)
@@ -302,26 +364,41 @@ class EMStateTracker:
 
         # Ensure placeholder text does not persist in history if async
         # enrichment could not resolve before close.
-        if self._down_reason_desc == "Manual / interlock (reading conditions...)":
-            if self._em_fault:
-                self._down_reason_desc = "EM fault active (interlock details unavailable)"
-                self._down_reason_type = "interlock"
-            else:
-                self._down_reason_desc = "Manual mode"
-                self._down_reason_type = "manual"
-            try:
-                conn = get_pool().getconn()
+        if self._is_placeholder_reason(self._down_reason_desc):
+            finalized = None
+            if self._down_reason_type == "step_fault":
+                # The EM's status.alarm.message carried this fault's composed
+                # text while it was active (the PLC never clears the string,
+                # so at close it still holds this fault's message).
+                seq = self._down_seq_idx
+                finalized = (
+                    (self._effective_ext_msg(seq) if seq is not None else None)
+                    or self._alarm_msg
+                )
+            elif self._down_reason_type == "paused":
+                finalized = "Operator pause"
+            elif self._down_reason_type in ("interlock", "manual"):
+                if self._em_fault:
+                    finalized = "EM fault active (interlock details unavailable)"
+                    self._down_reason_type = "interlock"
+                else:
+                    finalized = "Manual mode"
+                    self._down_reason_type = "manual"
+            if finalized:
+                self._down_reason_desc = finalized
                 try:
-                    q.update_down_event_reason(
-                        conn, self.em_id, start_ts,
-                        self._down_reason_desc,
-                        self._down_reason_type,
-                    )
-                    conn.commit()
-                finally:
-                    get_pool().putconn(conn)
-            except Exception:
-                log.exception("finalize_down_event_reason failed em=%d", self.em_id)
+                    conn = get_pool().getconn()
+                    try:
+                        q.update_down_event_reason(
+                            conn, self.em_id, start_ts,
+                            self._down_reason_desc,
+                            self._down_reason_type,
+                        )
+                        conn.commit()
+                    finally:
+                        get_pool().putconn(conn)
+                except Exception:
+                    log.exception("finalize_down_event_reason failed em=%d", self.em_id)
 
         # Clear in-memory state before the DB write so that any exception
         # in the write doesn't leave the tracker stuck.
@@ -331,6 +408,7 @@ class EMStateTracker:
         self._down_seq_idx     = None
         self._down_step        = None
         self._down_fault_msg   = None
+        self._down_ack_recorded = False
 
         try:
             conn = get_pool().getconn()
@@ -376,12 +454,39 @@ class EMStateTracker:
         elif self._automatic and self._running:
             state = "productive"
         elif self._automatic and not self._running:
-            state = "standby"
+            # The PLC state machine PAUSES the sequence when the EM interlock
+            # drops while running, and the interlock alarm is NOT mapped into
+            # status.alarm — so an interlock stop looks identical to standby
+            # on the three raw signals.  Use the live interlock snapshot (and
+            # the paused bit, where the library exposes it) to attribute it.
+            if interlock_reason:
+                state = "interlock_down"
+            elif self._paused:
+                state = "paused_down"
+            else:
+                state = "standby"
         else:
             state = "manual"
 
         if state in ("productive", "standby"):
             self._try_close_down_event(ts)
+
+        elif state == "interlock_down":
+            self._try_open_down_event(
+                ts,
+                reason_type="interlock",
+                reason_desc=interlock_reason,
+            )
+
+        elif state == "paused_down":
+            # Paused in automatic with a healthy interlock — most likely an
+            # operator pause.  The interlock enrichment read double-checks:
+            # if conditions are failing it promotes the reason to interlock.
+            self._try_open_down_event(
+                ts,
+                reason_type="paused",
+                reason_desc="Paused (reading conditions...)",
+            )
 
         elif state == "manual":
             # If interlock conditions are currently failing, attribute stop
@@ -446,10 +551,15 @@ class EMStateTracker:
     def _try_open_flow_event(
         self, ts: datetime.datetime, kind: str,
         seq_idx: int, step_name: str,
+        reason_desc: str | None = None,
     ) -> None:
         if self._flow_start_ts is not None:
             return
-        reason_desc = f"{kind.title()} (reading permissives...)"
+        # Telemetry supplies the reason directly (scan-fresh waitingOn text);
+        # the OPC path opens with a placeholder and enriches asynchronously.
+        have_reason = reason_desc is not None
+        if not have_reason:
+            reason_desc = f"{kind.title()} (reading permissives...)"
         should_enrich = False
         try:
             conn = get_pool().getconn()
@@ -475,7 +585,7 @@ class EMStateTracker:
                         conn, self.em_id, ts, kind, reason_desc, seq_idx, step_name,
                     )
                     conn.commit()
-                    should_enrich = True
+                    should_enrich = not have_reason
             finally:
                 get_pool().putconn(conn)
         except Exception:
@@ -540,7 +650,77 @@ class EMStateTracker:
         except Exception:
             log.exception("close_flow_event failed em=%d", self.em_id)
 
+    @staticmethod
+    def _keyword_kind(waiting_on: str) -> str | None:
+        text = waiting_on.lower()
+        starved = any(k in text for k in _KW_STARVED)
+        blocked = any(k in text for k in _KW_BLOCKED)
+        if blocked and not starved:
+            return "blocked"
+        if starved and not blocked:
+            return "starved"
+        return None
+
+    def _classify_wait(self, seq_idx: int, step_name: str,
+                       waiting_on: str) -> str:
+        """
+        Deduce the flow kind for a healthy dwell.  Precedence:
+          1. explicit config step lists (operator override, legacy)
+          2. cycle position — dwelling AT the cycle start step means waiting
+             for a part (starved); dwelling in the exchange phase (after the
+             complete step) means waiting for takeaway (blocked)
+          3. direction keywords in the failing permissive text
+          4. generic 'wait' — mid-cycle process waits charged to the station
+        """
+        step = (step_name or "").strip()
+        if step in self._seq_blocked_steps.get(seq_idx, set()):
+            return "blocked"
+        if step in self._seq_starved_steps.get(seq_idx, set()):
+            return "starved"
+
+        start_step = (self._seq_cycle_start.get(seq_idx) or "").strip()
+        if start_step and step == start_step:
+            return "starved"
+        if self._seq_cycle_complete.get(seq_idx):
+            phase = self._seq_phase.get(seq_idx)
+            if phase == "exchange":
+                return "blocked"
+            if phase == "work":
+                return self._keyword_kind(waiting_on) or "process_wait"
+        return self._keyword_kind(waiting_on) or "wait"
+
+    def on_waiting_snapshot(self, seq_idx: int, step_name: str,
+                            waiting_on: str | None,
+                            ts: datetime.datetime) -> None:
+        """
+        UDP telemetry waitingOn update for the active sequence: the failing
+        permissives of a step the machine has been healthily dwelling in.
+        Opens/updates/closes em_flow_event with the deduced kind and the
+        scan-fresh reason text.
+        """
+        self._flow_from_telemetry = True
+
+        available = bool(self._automatic) and not self._em_fault
+        is_prod = self._seq_is_production.get(seq_idx, False)
+        if not waiting_on or not available or not is_prod:
+            self._try_close_flow_event(ts)
+            return
+
+        kind = self._classify_wait(seq_idx, step_name, waiting_on)
+        if self._flow_start_ts is not None and kind != self._flow_kind:
+            self._try_close_flow_event(ts)
+        if self._flow_start_ts is None:
+            self._try_open_flow_event(ts, kind, seq_idx, step_name,
+                                      reason_desc=waiting_on)
+        elif waiting_on != self._flow_reason_desc:
+            # conditions changed while still waiting (some perms came true)
+            self.update_flow_event_reason(waiting_on)
+
     def _check_flow_event(self, ts: datetime.datetime) -> None:
+        # Telemetry-driven deduction owns flow events once active — the
+        # config-list matcher only serves OPC-only EMs.
+        if self._flow_from_telemetry:
+            return
         if self._automatic is None or self._em_fault is None:
             return
         active_seq = self._active_seq
@@ -711,6 +891,13 @@ class EMStateTracker:
         self._step[seq_idx]       = step_name
         self._step_start[seq_idx] = ts
 
+        # cycle phase tracking (used by the flow-wait classifier)
+        if step_name:
+            if step_name == (self._seq_cycle_complete.get(seq_idx) or ""):
+                self._seq_phase[seq_idx] = "exchange"
+            elif step_name == (self._seq_cycle_start.get(seq_idx) or ""):
+                self._seq_phase[seq_idx] = "work"
+
         if seq_idx == self._active_seq:
             self._check_flow_event(ts)
 
@@ -757,7 +944,7 @@ class EMStateTracker:
             # completes.  _try_open_down_event no-ops if one is already
             # open (sticky root cause).
             step    = self._step.get(seq_idx)
-            ext_msg = self._ext_msg.get(seq_idx)
+            ext_msg = self._effective_ext_msg(seq_idx)
             placeholder = ext_msg or f"Step {step or '?'} faulted"
             self._try_open_down_event(
                 ts,
@@ -767,10 +954,10 @@ class EMStateTracker:
                 step_name=step,
                 fault_msg=ext_msg,
             )
-            # If the EM-level fault edge opened a generic interlock/manual
-            # event first, promote it to step_fault now that we know the
-            # sequence context.
-            if self._down_start_ts is not None and self._down_reason_type in ("interlock", "manual"):
+            # If the EM-level fault edge opened a generic interlock/manual/
+            # paused event first, promote it to step_fault now that we know
+            # the sequence context.
+            if self._down_start_ts is not None and self._down_reason_type in ("interlock", "manual", "paused"):
                 self._down_reason_type = "step_fault"
                 self._down_reason_desc = placeholder
                 self._down_seq_idx = seq_idx
@@ -831,7 +1018,7 @@ class EMStateTracker:
                             self._fault_step[seq_idx],
                             self._fault_step_desc[seq_idx],
                         ),
-                            ext_msg=self._ext_msg.get(seq_idx),
+                            ext_msg=self._effective_ext_msg(seq_idx),
                         )
                         self._fault_id[seq_idx] = fault_id
                 else:
@@ -993,11 +1180,97 @@ class EMStateTracker:
         self._check_down_event(ts)
         self._check_flow_event(ts)
 
+    def on_status_snapshot(
+        self, automatic: bool, em_fault: bool, running: bool,
+        paused: bool, stopped: bool, unknown_status: bool,
+        ts: datetime.datetime,
+    ) -> None:
+        """
+        Apply all six EM-level signals atomically (UDP telemetry datagrams
+        are scan-consistent snapshots).  Unlike the per-signal OPC callbacks
+        this cannot emit transient runtime states from half-applied updates,
+        and it writes at most one availability/transition row per datagram.
+        """
+        changed_avail = (
+            automatic != self._automatic
+            or em_fault != self._em_fault
+            or running != self._running
+        )
+        changed_any = changed_avail or (
+            paused != self._paused
+            or stopped != self._stopped
+            or unknown_status != self._unknown_status
+        )
+        if not changed_any:
+            return
+        self._automatic = automatic
+        self._em_fault = em_fault
+        self._running = running
+        self._paused = paused
+        self._stopped = stopped
+        self._unknown_status = unknown_status
+        if changed_avail:
+            self._emit_availability_raw(ts)
+        self._emit_runtime_transition(ts)
+        self._check_down_event(ts)
+        self._check_flow_event(ts)
+
     def on_interlock_snapshot(self, reason: str | None, ts: datetime.datetime) -> None:
         """Track latest interlock condition health from live PLC struct data."""
+        changed = (reason != self._interlock_reason)
         self._interlock_reason = reason
         self._interlock_has_fail = bool(reason)
         self._interlock_ts = ts
+        # An interlock trip pauses the sequence WITHOUT raising the EM alarm,
+        # and the snapshot notification can arrive after the running/paused
+        # edges.  Re-evaluate so the pause gets attributed to the interlock.
+        if changed:
+            self._check_down_event(ts)
+
+    def on_alarm_msg_change(self, msg: str | None, ts: datetime.datetime) -> None:
+        """Track EM status.alarm.message (composed fault text, new library)."""
+        self._alarm_msg = msg or None
+
+    def on_mode_snapshot(self, modes: dict, ts: datetime.datetime) -> None:
+        """Record mode-bit changes (dry cycle / MES bypass / step mode / ...)."""
+        if modes == self._modes:
+            return
+        self._modes = dict(modes)
+        try:
+            conn = get_pool().getconn()
+            try:
+                q.insert_mode_event(conn, self.em_id, ts, modes)
+                conn.commit()
+            finally:
+                get_pool().putconn(conn)
+        except Exception:
+            log.exception("insert_mode_event failed em=%d", self.em_id)
+
+    def on_reset_change(self, val: bool, ts: datetime.datetime) -> None:
+        """
+        Operator reset edge.  Recorded as an operator event, and the FIRST
+        reset while a down event is open stamps ack_ts on it — splitting
+        MTTR into response time (down→ack) and repair time (ack→recover).
+        """
+        if val == self._reset:
+            return
+        rising = bool(val) and self._reset is not None
+        self._reset = bool(val)
+        if not rising:
+            return
+        log.debug("[%s/%s] operator reset", self.station, self.em_label)
+        try:
+            conn = get_pool().getconn()
+            try:
+                q.insert_operator_event(conn, self.em_id, ts, "reset")
+                if self._down_start_ts is not None and not self._down_ack_recorded:
+                    q.ack_down_event(conn, self.em_id, ts)
+                    self._down_ack_recorded = True
+                conn.commit()
+            finally:
+                get_pool().putconn(conn)
+        except Exception:
+            log.exception("operator reset handling failed em=%d", self.em_id)
 
     def _recent_interlock_reason(self, ts: datetime.datetime) -> str | None:
         if not self._interlock_has_fail or not self._interlock_reason:
