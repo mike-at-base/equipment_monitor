@@ -204,14 +204,24 @@ func TestModeWindows(t *testing.T) {
 	}
 }
 
-func TestFlowDeduction(t *testing.T) {
-	s := newSim()
-	// enter work phase, then exchange phase (cycle steps 20 / 70)
-	s.send(AUTO|RUN|ILKOK, 0, "20", "Close clamp", "", "", "", "")
-	s.advance(time.Second)
+// starved/blocked come strictly from the configured step lists — nothing is
+// inferred from cycle position or reason keywords.
+func TestFlowClassificationFromConfig(t *testing.T) {
+	cap := &capture{}
+	cfg := Config{
+		EMID: 1, Station: "ST10000", EMLabel: "main",
+		Sequences: map[int16]SeqConfig{
+			1: {Index: 1, IsProduction: true, CycleStart: "20", CycleComplete: "70",
+				StarvedSteps: map[string]bool{"20": true},
+				BlockedSteps: map[string]bool{"70": true}},
+		},
+	}
+	s := &sim{t: New(cfg, cap), cap: cap,
+		now: time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)}
+
+	// blocked: dwell waiting at a configured blocked step
 	s.send(AUTO|RUN|ILKOK, 0, "70", "Release part", "", "", "", "")
 	s.advance(11 * time.Second)
-	// healthy dwell in exchange phase -> blocked by cycle position
 	s.send(AUTO|RUN|ILKOK, 0, "70", "Release part", "", "", "", "Downstream pallet stop occupied")
 	s.advance(8 * time.Second)
 	// waiting set changes while still blocked -> reason updates in place
@@ -230,7 +240,7 @@ func TestFlowDeduction(t *testing.T) {
 		t.Fatalf("blocked duration %v", blocked.EndTs.Sub(blocked.StartTs))
 	}
 
-	// starved: dwell AT the cycle start step
+	// starved: dwell waiting at a configured starved step
 	s.advance(time.Second)
 	s.send(AUTO|RUN|ILKOK, 0, "20", "Close clamp", "", "", "", "Part present at infeed")
 	s.advance(6 * time.Second)
@@ -238,6 +248,17 @@ func TestFlowDeduction(t *testing.T) {
 	starved := s.cap.intervals[len(s.cap.intervals)-1]
 	if starved.State != model.StateStarved || starved.Reason != "Part present at infeed" {
 		t.Fatalf("state %q reason %q", starved.State, starved.Reason)
+	}
+
+	// no inference: waiting at an unlisted step is generic wait, even when the
+	// reason text contains flow keywords that the old deducer would have caught.
+	s.advance(time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "40", "Weld", "", "", "", "Downstream conveyor not clear")
+	s.advance(6 * time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "40", "Weld", "", "", "", "")
+	wait := s.cap.intervals[len(s.cap.intervals)-1]
+	if wait.State != model.StateWait {
+		t.Fatalf("unlisted step: state %q, want wait", wait.State)
 	}
 }
 

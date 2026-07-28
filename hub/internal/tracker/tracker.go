@@ -8,19 +8,11 @@
 package tracker
 
 import (
-	"strings"
 	"time"
 
 	"github.com/mike-at-base/equipment_monitor/hub/internal/model"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/wire"
 )
-
-// Direction keywords for classifying a healthy dwell when cycle position
-// doesn't decide it.
-var kwStarved = []string{"present", "available", "upstream", "infeed",
-	"supply", "arrive", "loaded", "at fixture", "at nest", "starv"}
-var kwBlocked = []string{"downstream", "outfeed", "clear", "free",
-	"empty pos", "takeaway", "unload", "exit", "occupied", "full", "block"}
 
 // MaxClockSkew: beyond this, the PLC clock is not trusted and receive time
 // is used instead.
@@ -73,7 +65,6 @@ type EM struct {
 	stepFaulted bool
 
 	// cycle tracking
-	cyclePhase  map[int16]string // "work" | "exchange"
 	cycleStart  map[int16]time.Time
 	cycleWork   map[int16]*time.Time
 	cycleDirty  map[int16]bool // interrupted flag
@@ -100,7 +91,6 @@ func New(cfg Config, store model.Store) *EM {
 	return &EM{
 		cfg:        cfg,
 		store:      store,
-		cyclePhase: map[int16]string{},
 		cycleStart: map[int16]time.Time{},
 		cycleWork:  map[int16]*time.Time{},
 		cycleDirty: map[int16]bool{},
@@ -255,10 +245,8 @@ func (t *EM) trackCycleEdges(seq int16, step string, ts time.Time) {
 		t.cycleStart[seq] = ts
 		t.cycleWork[seq] = nil
 		t.cycleDirty[seq] = false
-		t.cyclePhase[seq] = "work"
 	case sc.CycleComplete:
 		if sc.CycleComplete != "" {
-			t.cyclePhase[seq] = "exchange"
 			if t.cycleOpen[seq] && t.cycleWork[seq] == nil {
 				w := ts
 				t.cycleWork[seq] = &w
@@ -346,7 +334,7 @@ func (t *EM) classify(d *wire.Datagram, alarmActive bool) (state, rtype, reason 
 	case !auto:
 		return model.StateManual, "", "Manual mode"
 	case running && d.WaitingOn != "":
-		kind := t.classifyWait(d.ActiveSequence, d.Step, d.WaitingOn)
+		kind := t.classifyWait(d.ActiveSequence, d.Step)
 		return kind, model.ReasonFlow, d.WaitingOn
 	case running:
 		return model.StateProductive, "", ""
@@ -370,10 +358,11 @@ func composeFaultReason(alarmMsg, conds string) string {
 	}
 }
 
-func (t *EM) classifyWait(seq int16, step, waitingOn string) string {
+// classifyWait maps a flow wait to starved/blocked strictly from the
+// per-sequence configured step lists. Nothing is inferred: a wait at a step
+// that is neither a configured starved nor blocked step is generic "wait".
+func (t *EM) classifyWait(seq int16, step string) string {
 	sc, known := t.cfg.Sequences[seq]
-	// Explicitly configured starved/blocked steps are authoritative — they
-	// override the cycle-position + keyword deduction below.
 	if known {
 		if sc.StarvedSteps[step] {
 			return model.StateStarved
@@ -382,49 +371,7 @@ func (t *EM) classifyWait(seq int16, step, waitingOn string) string {
 			return model.StateBlocked
 		}
 	}
-	if known && sc.CycleStart != "" && step == sc.CycleStart {
-		return model.StateStarved
-	}
-	if known && sc.CycleComplete != "" {
-		switch t.cyclePhase[seq] {
-		case "exchange":
-			return model.StateBlocked
-		case "work":
-			if k := keywordKind(waitingOn); k != "" {
-				return k
-			}
-			return model.StateProcessWait
-		}
-	}
-	if k := keywordKind(waitingOn); k != "" {
-		return k
-	}
 	return model.StateWait
-}
-
-func keywordKind(waitingOn string) string {
-	text := strings.ToLower(waitingOn)
-	starved, blocked := false, false
-	for _, k := range kwStarved {
-		if strings.Contains(text, k) {
-			starved = true
-			break
-		}
-	}
-	for _, k := range kwBlocked {
-		if strings.Contains(text, k) {
-			blocked = true
-			break
-		}
-	}
-	switch {
-	case blocked && !starved:
-		return model.StateBlocked
-	case starved && !blocked:
-		return model.StateStarved
-	default:
-		return ""
-	}
 }
 
 // ── interval management ──────────────────────────────────────────────────
