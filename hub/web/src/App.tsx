@@ -8,7 +8,6 @@ import EMPage from "./pages/EM";
 import Schedule from "./pages/Schedule";
 import Station from "./pages/Station";
 import LineModel from "./pages/LineModel";
-import Sim from "./pages/Sim";
 import Availability from "./pages/Availability";
 import "./theme.css";
 
@@ -31,7 +30,6 @@ export default function App() {
             </Link>
             <Crumbs />
             <span className="spacer" />
-            <Link to="/sim" className="topbar-link">Simulator</Link>
             <WindowPicker />
             <span className={`conn-dot ${connected ? "ok" : ""}`} />
             <span className="conn-label">{connected ? "live" : "reconnecting"}</span>
@@ -44,7 +42,6 @@ export default function App() {
             <Route path="/line/:line/availability" element={<Availability />} />
             <Route path="/line/:line/station/:station" element={<Station live={live} />} />
             <Route path="/em/:line/:station/:label/*" element={<EMPage />} />
-            <Route path="/sim" element={<Sim live={live} />} />
           </Routes>
         </div>
       </WindowProvider>
@@ -62,9 +59,6 @@ function Crumbs() {
       <Route path="/line/:line/availability" element={<NamedCrumb name="Availability" />} />
       <Route path="/line/:line/station/:station" element={<StationCrumb />} />
       <Route path="/em/:line/:station/:label/*" element={<EMCrumb />} />
-      <Route path="/sim" element={
-        <nav className="crumbs"><Link to="/">Site</Link><span>/</span><b>Simulator</b></nav>
-      } />
     </Routes>
   );
 }

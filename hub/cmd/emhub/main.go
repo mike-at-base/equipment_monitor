@@ -10,7 +10,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,7 +20,6 @@ import (
 	"github.com/mike-at-base/equipment_monitor/hub/internal/api"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/ingest"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/mcpserv"
-	"github.com/mike-at-base/equipment_monitor/hub/internal/simulator"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/store"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/tracker"
 	"github.com/mike-at-base/equipment_monitor/hub/web"
@@ -144,9 +142,6 @@ func main() {
 	}, func() []ingest.RawEM {
 		return svc.RawSnapshot()
 	}, onConfigChange, onDelete)
-	// built-in UI simulator feeds the hub's own collector over real UDP so
-	// simulated telemetry takes the exact same path as a PLC's.
-	apiSrv.SetSim(simulator.New(fmt.Sprintf("127.0.0.1:%d", envInt("EMHUB_UDP_PORT", 15020))))
 	apiSrv.Register(mux)
 	mux.HandleFunc("/mcp", mcpserv.Handler(mux))
 
