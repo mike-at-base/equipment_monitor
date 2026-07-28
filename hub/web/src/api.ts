@@ -197,6 +197,32 @@ export type RawEM = {
   skew_ms: number;
 };
 
+// ── composed (k-of-n) availability ────────────────────────────────────────
+// A node is either a leaf ({em} at station scope, {station} at line scope)
+// or a group: k = "all" (series) | number (at least k of children).
+export type AvailNode = {
+  em?: string;
+  station?: string;
+  k?: "all" | number;
+  children?: AvailNode[];
+};
+
+export type ComposedResult = {
+  pct: number | null;
+  up_spans: { start: number; end: number }[]; // epoch ms
+  down: { start_ts: string; end_ts: string; causes: string[] }[];
+  causes: { name: string; minutes: number }[];
+  default_model: boolean;
+  model: AvailNode;
+  production_min: number;
+};
+
+export type AvailModelResp = {
+  model: AvailNode | null;
+  default_model: AvailNode;
+  members: string[];
+};
+
 export type ResetEvent = { ts: string; event: string };
 export type ModeWindow = { flag: string; start_ts: string; end_ts: string; minutes: number };
 export type RawState = {
@@ -267,6 +293,24 @@ export const api = {
     get<{ line: string; shifts: Shift[] }>(`/api/v2/lines/${encodeURIComponent(line)}/schedule`),
   saveSchedule: (line: string, shifts: Shift[]) =>
     put<{ ok: boolean }>(`/api/v2/lines/${encodeURIComponent(line)}/schedule`, { shifts }),
+  lineComposed: (line: string, win: string) =>
+    get<{ from: string; to: string; line: string; composed: ComposedResult;
+          stations: Record<string, number | null> }>(
+      `/api/v2/lines/${encodeURIComponent(line)}/composed?window=${win}`),
+  stationComposed: (line: string, station: string, win: string) =>
+    get<{ from: string; to: string; station: string; composed: ComposedResult }>(
+      `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/composed?window=${win}`),
+  getLineModel: (line: string) =>
+    get<AvailModelResp>(`/api/v2/lines/${encodeURIComponent(line)}/availmodel`),
+  saveLineModel: (line: string, model: AvailNode | null) =>
+    put<{ ok: boolean }>(`/api/v2/lines/${encodeURIComponent(line)}/availmodel`, { model }),
+  getStationModel: (line: string, station: string) =>
+    get<AvailModelResp>(
+      `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/availmodel`),
+  saveStationModel: (line: string, station: string, model: AvailNode | null) =>
+    put<{ ok: boolean }>(
+      `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/availmodel`,
+      { model }),
 };
 
 // SSE live stream with polling fallback

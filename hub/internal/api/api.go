@@ -123,6 +123,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/hierarchy", s.handleHierarchy)
 	mux.HandleFunc("GET /api/v2/lines/{line}/schedule", s.handleGetSchedule)
 	mux.HandleFunc("PUT /api/v2/lines/{line}/schedule", s.handleSaveSchedule)
+	mux.HandleFunc("GET /api/v2/lines/{line}/availmodel", s.handleGetLineModel)
+	mux.HandleFunc("PUT /api/v2/lines/{line}/availmodel", s.handleSaveLineModel)
+	mux.HandleFunc("GET /api/v2/lines/{line}/stations/{station}/availmodel", s.handleGetStationModel)
+	mux.HandleFunc("PUT /api/v2/lines/{line}/stations/{station}/availmodel", s.handleSaveStationModel)
+	mux.HandleFunc("GET /api/v2/lines/{line}/composed", s.handleLineComposed)
+	mux.HandleFunc("GET /api/v2/lines/{line}/stations/{station}/composed", s.handleStationComposed)
 }
 
 // handleHierarchy returns the full line -> station -> em tree (with display

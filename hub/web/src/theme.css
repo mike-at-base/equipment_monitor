@@ -275,6 +275,71 @@ table.data tr.sel td { background: var(--livewire); }
 .bitchip.on.bad { background: var(--st-down); border-color: var(--st-down); }
 .bitchip.on.good { background: var(--st-productive); border-color: var(--st-productive); }
 
+/* ── composed availability: RBD + model editor ─────────────────────────── */
+.station-head { display: flex; align-items: center; gap: 10px; }
+.station-link { color: inherit; }
+.station-link:hover { color: var(--grounded); text-decoration: underline; }
+.pct-chip {
+  font: 700 11px ui-monospace, Consolas, monospace;
+  padding: 2px 7px; border-radius: 10px;
+  background: var(--terminal); color: var(--strike);
+  letter-spacing: 0;
+}
+
+.rbd { overflow-x: auto; padding: 6px 2px; }
+.rbd-leaf {
+  display: inline-flex; flex-direction: column; align-items: center;
+  gap: 1px; padding: 7px 12px; border-radius: 6px; min-width: 86px;
+  color: var(--strike); box-shadow: inset 0 0 0 1px rgb(0 0 0 / .12);
+}
+.rbd-leaf .rbd-name { font: 700 12px ui-monospace, Consolas, monospace; }
+.rbd-leaf .rbd-state { font-size: 10px; opacity: .9; text-transform: uppercase; letter-spacing: .04em; }
+.rbd-group {
+  position: relative; display: inline-flex; flex-direction: column;
+  border: 2px solid var(--subtle); border-radius: 10px;
+  padding: 18px 10px 10px; margin: 4px;
+}
+.rbd-group.ok { border-color: var(--st-productive); }
+.rbd-group.bad { border-color: var(--st-down); }
+.rbd-badge {
+  position: absolute; top: -9px; left: 10px;
+  font: 700 10px ui-monospace, Consolas, monospace;
+  padding: 1px 7px; border-radius: 8px;
+  background: var(--conduit); border: 1px solid var(--subtle);
+  color: var(--secondary); text-transform: uppercase; letter-spacing: .04em;
+}
+.rbd-group.ok > .rbd-badge { border-color: var(--st-productive); color: var(--grounded); }
+.rbd-group.bad > .rbd-badge { border-color: var(--st-down); color: var(--st-down); }
+.rbd-group.series > .rbd-kids { display: flex; flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rbd-group.parallel > .rbd-kids { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+
+.avm-group {
+  border: 1px dashed var(--subtle); border-radius: 8px;
+  padding: 10px; margin-top: 8px; background: rgb(0 0 0 / .015);
+}
+.avm-head { display: flex; align-items: center; gap: 8px; }
+.avm-head select, .avm-add select {
+  font: inherit; font-size: 13px; padding: 4px 8px;
+  border: 1px solid var(--subtle); border-radius: 6px; background: var(--strike);
+}
+.avm-kids { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: 8px; }
+.avm-add { display: flex; gap: 8px; margin-top: 8px; }
+
+/* ── availability dashboard (read-only, display-friendly) ─────────────── */
+.avdash-hero { display: flex; justify-content: center; text-align: center; padding: 28px 16px; }
+.avdash-big { font: 800 72px/1 "Inter", system-ui, sans-serif; color: var(--terminal); letter-spacing: -.02em; }
+.avdash-big small { font-size: 32px; font-weight: 700; color: var(--secondary); margin-left: 4px; }
+.avdash-sub { margin-top: 8px; font-size: 14px; color: var(--secondary); }
+.avdash-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 12px; margin-top: 16px;
+}
+.avdash-station { display: block; text-align: center; padding: 18px 10px; }
+.avdash-station:hover { border-color: var(--terminal); }
+.avdash-pct { font: 800 34px/1 "Inter", system-ui, sans-serif; letter-spacing: -.01em; }
+.avdash-pct small { font-size: 16px; font-weight: 700; margin-left: 2px; }
+.avdash-name { margin-top: 6px; font: 700 12px ui-monospace, Consolas, monospace; color: var(--secondary); text-transform: uppercase; letter-spacing: .05em; }
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }

@@ -139,6 +139,11 @@ var hypertables = [][2]string{
 var migrations = []string{
 	`ALTER TABLE sequence ADD COLUMN IF NOT EXISTS starved_steps TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE sequence ADD COLUMN IF NOT EXISTS blocked_steps TEXT NOT NULL DEFAULT ''`,
+	// composed availability models: k-of-n trees stored as JSON documents.
+	// NULL = no model configured (station defaults to ALL of its EMs, line
+	// to ALL of its stations).
+	`ALTER TABLE station ADD COLUMN IF NOT EXISTS avail_model JSONB`,
+	`ALTER TABLE line ADD COLUMN IF NOT EXISTS avail_model JSONB`,
 }
 
 var indexes = []string{

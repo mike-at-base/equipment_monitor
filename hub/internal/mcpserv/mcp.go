@@ -6,6 +6,12 @@
 //
 // Every tool is a thin wrapper over the REST endpoints, so agents and the
 // UI read identical numbers.
+//
+// The tool set covers every READ endpoint of the query API. Writes (config
+// saves, schedule and redundancy-model edits, EM deletion) are deliberately
+// left out: the REST surface is unauthenticated, so keeping MCP read-only
+// means an agent cannot destroy configuration or history. Keep it that way
+// when adding tools.
 package mcpserv
 
 import (
@@ -106,11 +112,120 @@ func tools() []tool {
 				return emPath(a, "intervals") + "?" + win(a)
 			},
 		},
+		{
+			Name:        "em_throughput",
+			Description: "Completed cycle counts per time bucket for one equipment module — actual output, not a rate. Bucket is 15m, 30m, or 1h (default 1h).",
+			InputSchema: emSchemaWith(`,"bucket":{"type":"string","description":"15m, 30m, or 1h (default 1h)"}`),
+			path: func(a map[string]any) string {
+				b := str(a["bucket"])
+				if b == "" {
+					b = "1h"
+				}
+				return emPath(a, "throughput") + "?" + win(a) + "&bucket=" + url.QueryEscape(b)
+			},
+		},
+		{
+			Name:        "em_debug",
+			Description: "Engineering debug view of one equipment module: the latest raw telemetry datagram (decoded status/mode bits, active sequence, step timing, PLC clock skew), reset events, and mode windows. Use when the derived states look wrong and you need the underlying signals.",
+			InputSchema: emSchema(),
+			path: func(a map[string]any) string {
+				return emPath(a, "debug") + "?" + win(a)
+			},
+		},
+		{
+			Name:        "em_config",
+			Description: "Configuration of one equipment module: display name, confirmed flag, wire version, and per-sequence settings (cycle start/complete steps, starved/blocked step lists) — plus the step names actually OBSERVED in telemetry. Check this before trusting an EM's cycle or flow-loss numbers: an unconfigured EM records states but no cycles.",
+			InputSchema: emIdentSchema(),
+			path: func(a map[string]any) string {
+				return emPath(a, "config")
+			},
+		},
+		{
+			Name:        "hierarchy",
+			Description: "Full line -> station -> equipment-module tree with display names and confirmed flags. Use to resolve exact station and em_label spellings before calling the per-EM tools.",
+			InputSchema: emptySchema(),
+			path:        func(map[string]any) string { return "/api/v2/hierarchy" },
+		},
+		{
+			Name:        "unconfirmed_ems",
+			Description: "Equipment modules auto-discovered from telemetry that no engineer has reviewed yet. They record states but have no sequence config, so they produce no cycle data and may be phantoms.",
+			InputSchema: emptySchema(),
+			path:        func(map[string]any) string { return "/api/v2/unconfirmed" },
+		},
+		{
+			Name:        "line_schedule",
+			Description: "Weekly production schedule for a line: shifts as day-of-week plus start/end minutes from local midnight. Hours outside the schedule are excluded from availability (SEMI E10) — check this before interpreting an availability number, and note the 'prod' window covers today's scheduled span only.",
+			InputSchema: lineIdentSchema(),
+			path: func(a map[string]any) string {
+				return linePath(a, "schedule")
+			},
+		},
+		{
+			Name:        "line_composed_availability",
+			Description: "Composed availability for a line and each of its stations, evaluated over the configured k-of-n redundancy models in the TIME DOMAIN (never by multiplying percentages). Differs from line_summary's availability, which treats each equipment module independently — use this one when redundancy matters.",
+			InputSchema: lineSchema(),
+			path: func(a map[string]any) string {
+				return linePath(a, "composed") + "?" + win(a)
+			},
+		},
+		{
+			Name:        "station_composed_availability",
+			Description: "Composed availability for one station: percentage, available spans, unavailable segments naming the exact equipment modules that broke the redundancy requirement, a cause pareto, and the k-of-n model in use. THE tool for 'what actually took this cell down' — a redundant module that failed while a sibling covered it contributes nothing.",
+			InputSchema: stationSchema(),
+			path: func(a map[string]any) string {
+				return stationPath(a, "composed") + "?" + win(a)
+			},
+		},
+		{
+			Name:        "availability_model",
+			Description: "The configured k-of-n redundancy model for a line (stations as members) or, when station is given, for a station (equipment modules as members). Also returns the default model and the available member names — use it to inspect or propose a model. Saving a model is deliberately not exposed here; do that in the UI.",
+			InputSchema: json.RawMessage(`{"type":"object","required":["line"],"properties":{"line":{"type":"string"},"station":{"type":"string","description":"omit for the line-level model"}}}`),
+			path: func(a map[string]any) string {
+				if st := str(a["station"]); st != "" {
+					return stationPath(a, "availmodel")
+				}
+				return linePath(a, "availmodel")
+			},
+		},
 	}
 }
 
-func emSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","required":["line","station"],"properties":{"line":{"type":"string"},"station":{"type":"string","description":"e.g. ST90000"},"em_label":{"type":"string","description":"default: main"},` + windowProp() + `}}`)
+const emIdentProps = `"line":{"type":"string"},` +
+	`"station":{"type":"string","description":"e.g. ST90000"},` +
+	`"em_label":{"type":"string","description":"default: main"}`
+
+func emSchema() json.RawMessage { return emSchemaWith("") }
+
+// emSchemaWith is the EM identity + window schema plus any extra properties.
+func emSchemaWith(extra string) json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["line","station"],"properties":{` +
+		emIdentProps + `,` + windowProp() + extra + `}}`)
+}
+
+// emIdentSchema identifies an EM with no window (config-style reads).
+func emIdentSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["line","station"],"properties":{` +
+		emIdentProps + `}}`)
+}
+
+func lineSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["line"],"properties":{` +
+		`"line":{"type":"string","description":"line name, e.g. CELL1"},` + windowProp() + `}}`)
+}
+
+func lineIdentSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["line"],"properties":{` +
+		`"line":{"type":"string","description":"line name, e.g. CELL1"}}}`)
+}
+
+func stationSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","required":["line","station"],"properties":{` +
+		`"line":{"type":"string"},"station":{"type":"string","description":"e.g. ST34000"},` +
+		windowProp() + `}}`)
+}
+
+func emptySchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
 }
 
 func emPath(a map[string]any, leaf string) string {
@@ -120,6 +235,15 @@ func emPath(a map[string]any, leaf string) string {
 	}
 	return "/api/v2/ems/" + url.PathEscape(str(a["line"])) + "/" +
 		url.PathEscape(str(a["station"])) + "/" + url.PathEscape(label) + "/" + leaf
+}
+
+func linePath(a map[string]any, leaf string) string {
+	return "/api/v2/lines/" + url.PathEscape(str(a["line"])) + "/" + leaf
+}
+
+func stationPath(a map[string]any, leaf string) string {
+	return "/api/v2/lines/" + url.PathEscape(str(a["line"])) +
+		"/stations/" + url.PathEscape(str(a["station"])) + "/" + leaf
 }
 
 // ── JSON-RPC plumbing ────────────────────────────────────────────────────

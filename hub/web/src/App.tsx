@@ -6,6 +6,9 @@ import Site from "./pages/Site";
 import Line from "./pages/Line";
 import EMPage from "./pages/EM";
 import Schedule from "./pages/Schedule";
+import Station from "./pages/Station";
+import LineModel from "./pages/LineModel";
+import Availability from "./pages/Availability";
 import "./theme.css";
 
 export default function App() {
@@ -35,6 +38,9 @@ export default function App() {
             <Route path="/" element={<Site live={live} />} />
             <Route path="/line/:line" element={<Line live={live} />} />
             <Route path="/line/:line/schedule" element={<Schedule />} />
+            <Route path="/line/:line/model" element={<LineModel />} />
+            <Route path="/line/:line/availability" element={<Availability />} />
+            <Route path="/line/:line/station/:station" element={<Station live={live} />} />
             <Route path="/em/:line/:station/:label/*" element={<EMPage />} />
           </Routes>
         </div>
@@ -49,6 +55,9 @@ function Crumbs() {
       <Route path="/" element={null} />
       <Route path="/line/:line" element={<LineCrumb />} />
       <Route path="/line/:line/schedule" element={<ScheduleCrumb />} />
+      <Route path="/line/:line/model" element={<NamedCrumb name="Availability model" />} />
+      <Route path="/line/:line/availability" element={<NamedCrumb name="Availability" />} />
+      <Route path="/line/:line/station/:station" element={<StationCrumb />} />
       <Route path="/em/:line/:station/:label/*" element={<EMCrumb />} />
     </Routes>
   );
@@ -69,6 +78,26 @@ function ScheduleCrumb() {
     <nav className="crumbs">
       <Link to="/">Site</Link><span>/</span>
       <Link to={`/line/${line}`}>{line}</Link><span>/</span><b>Schedule</b>
+    </nav>
+  );
+}
+
+function NamedCrumb({ name }: { name: string }) {
+  const { line } = useParams();
+  return (
+    <nav className="crumbs">
+      <Link to="/">Site</Link><span>/</span>
+      <Link to={`/line/${line}`}>{line}</Link><span>/</span><b>{name}</b>
+    </nav>
+  );
+}
+
+function StationCrumb() {
+  const { line, station } = useParams();
+  return (
+    <nav className="crumbs">
+      <Link to="/">Site</Link><span>/</span>
+      <Link to={`/line/${line}`}>{line}</Link><span>/</span><b>{station}</b>
     </nav>
   );
 }
