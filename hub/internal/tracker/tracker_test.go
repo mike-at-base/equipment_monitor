@@ -250,15 +250,18 @@ func TestFlowClassificationFromConfig(t *testing.T) {
 		t.Fatalf("state %q reason %q", starved.State, starved.Reason)
 	}
 
-	// no inference: waiting at an unlisted step is generic wait, even when the
-	// reason text contains flow keywords that the old deducer would have caught.
+	// no inference: waiting at an unlisted step is NOT a flow loss — it stays
+	// productive (normal automatic running), even when the reason text carries
+	// flow keywords the old deducer would have caught.
 	s.advance(time.Second)
 	s.send(AUTO|RUN|ILKOK, 0, "40", "Weld", "", "", "", "Downstream conveyor not clear")
 	s.advance(6 * time.Second)
-	s.send(AUTO|RUN|ILKOK, 0, "40", "Weld", "", "", "", "")
-	wait := s.cap.intervals[len(s.cap.intervals)-1]
-	if wait.State != model.StateWait {
-		t.Fatalf("unlisted step: state %q, want wait", wait.State)
+	// a fault closes whatever interval was open across the unlisted-step wait
+	s.send(AUTO|FAULT|STEPFLT|ILKOK, 0, "40", "Weld", "Weld timeout", "", "", "")
+	prod := s.cap.intervals[len(s.cap.intervals)-1]
+	if prod.State != model.StateProductive || prod.Reason != "" {
+		t.Fatalf("unlisted step wait: state %q reason %q, want productive/no-reason",
+			prod.State, prod.Reason)
 	}
 }
 

@@ -334,8 +334,12 @@ func (t *EM) classify(d *wire.Datagram, alarmActive bool) (state, rtype, reason 
 	case !auto:
 		return model.StateManual, "", "Manual mode"
 	case running && d.WaitingOn != "":
-		kind := t.classifyWait(d.ActiveSequence, d.Step)
-		return kind, model.ReasonFlow, d.WaitingOn
+		// a flow wait counts as starved/blocked only at a configured step;
+		// waiting anywhere else is normal automatic running -> productive.
+		if kind := t.classifyWait(d.ActiveSequence, d.Step); kind != "" {
+			return kind, model.ReasonFlow, d.WaitingOn
+		}
+		return model.StateProductive, "", ""
 	case running:
 		return model.StateProductive, "", ""
 	case paused:
@@ -360,7 +364,8 @@ func composeFaultReason(alarmMsg, conds string) string {
 
 // classifyWait maps a flow wait to starved/blocked strictly from the
 // per-sequence configured step lists. Nothing is inferred: a wait at a step
-// that is neither a configured starved nor blocked step is generic "wait".
+// that is neither a configured starved nor blocked step returns "" — the
+// caller treats that as normal running (productive).
 func (t *EM) classifyWait(seq int16, step string) string {
 	sc, known := t.cfg.Sequences[seq]
 	if known {
@@ -371,7 +376,7 @@ func (t *EM) classifyWait(seq int16, step string) string {
 			return model.StateBlocked
 		}
 	}
-	return model.StateWait
+	return ""
 }
 
 // ── interval management ──────────────────────────────────────────────────
@@ -379,8 +384,7 @@ func (t *EM) classifyWait(seq int16, step string) string {
 func (t *EM) applyState(state, rtype, reason string, d *wire.Datagram, ts time.Time) {
 	// production seq gate: flow states only count on production sequences
 	if sc, ok := t.cfg.Sequences[d.ActiveSequence]; ok && !sc.IsProduction {
-		if state == model.StateStarved || state == model.StateBlocked ||
-			state == model.StateProcessWait || state == model.StateWait {
+		if state == model.StateStarved || state == model.StateBlocked {
 			state, rtype, reason = model.StateProductive, "", ""
 		}
 	}
@@ -388,8 +392,7 @@ func (t *EM) applyState(state, rtype, reason string, d *wire.Datagram, ts time.T
 	if state != model.StateProductive && state != model.StateStandby {
 		// any non-run state inside an open cycle marks it interrupted
 		if d.ActiveSequence > 0 && t.cycleOpen[d.ActiveSequence] &&
-			state != model.StateStarved && state != model.StateBlocked &&
-			state != model.StateProcessWait && state != model.StateWait {
+			state != model.StateStarved && state != model.StateBlocked {
 			t.cycleDirty[d.ActiveSequence] = true
 		}
 	}
