@@ -34,18 +34,44 @@ Every tool is an in-process wrapper over a REST endpoint (no network hop),
 and **every tool is read-only** — there is no MCP path that can change
 configuration or delete anything.
 
+For live tiles, use the SSE stream (`GET /api/v2/stream`) rather than
+polling `live_status` in a loop.
+
 ### Tools
+
+Seventeen tools covering every read endpoint of the query API.
+
+**Discovery**
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `list_lines` | — | Lines with EM counts + live state rollup. **Start here** to discover line names. |
+| `list_lines` | — | Lines with EM counts + live state rollup. **Start here.** |
+| `hierarchy` | — | Full line → station → EM tree. Use to resolve exact spellings. |
 | `live_status` | — | Every EM right now: state, reason, current step, dwell. |
+| `unconfirmed_ems` | — | Auto-discovered EMs nobody has reviewed yet. |
+
+**Line and station**
+
+| Tool | Arguments | Returns |
+|---|---|---|
 | `line_summary` | `line`, `window` | Availability %, minutes per state, cycle stats (count/p50/p90, work-vs-exchange), top down reasons, flow losses, mode context, MTTR split response/repair, per-EM breakdown. |
 | `compare_lines` | `a`, `b`, `window` | Both summaries plus a delta. The tool for *"why is A running better than B"*. |
+| `line_composed_availability` | `line`, `window` | Composed k-of-n availability for the line + each station. |
+| `station_composed_availability` | `line`, `station`, `window` | Station %, up spans, down segments naming the EMs that broke the requirement, cause pareto, model in use. |
+| `availability_model` | `line`, `station?` | The configured redundancy model, the default, and the member names. Omit `station` for the line-level model. |
+| `line_schedule` | `line` | Weekly production shifts (drives E10 availability and the `prod` window). |
+
+**Equipment module**
+
+| Tool | Arguments | Returns |
+|---|---|---|
 | `em_downs` | `line`, `station`, `em_label`, `window` | Down episodes with scan-accurate reasons, ack timestamps, reason pareto. |
-| `em_cycles` | `line`, `station`, `em_label`, `window` | Cycle records + stats, interrupted count. |
-| `em_steps` | `line`, `station`, `em_label`, `window` | Step history: name, description, duration, faulted flag. |
-| `em_intervals` | `line`, `station`, `em_label`, `window` | Raw state timeline with reasons. |
+| `em_cycles` | ″ | Cycle records + stats, interrupted count. |
+| `em_steps` | ″ | Step history: name, description, duration, faulted flag. |
+| `em_intervals` | ″ | Raw state timeline with reasons. |
+| `em_throughput` | ″ + `bucket` | Completed cycle counts per bucket (`15m`/`30m`/`1h`). |
+| `em_debug` | ″ | Latest raw datagram (decoded bits, clock skew), resets, mode windows. |
+| `em_config` | `line`, `station`, `em_label` | Sequence config + the step names actually observed. |
 
 `em_label` defaults to `main`. `window` defaults to `today`.
 
@@ -221,11 +247,12 @@ curl -N localhost:8062/api/v2/stream
 - **Timestamps are RFC3339 UTC.** Durations are milliseconds (`*_ms`) or
   minutes (`*_min` / `minutes`) — the suffix always tells you which.
 
-## Not yet exposed over MCP
+## Writes are REST-only, on purpose
 
-The MCP tool list predates several endpoints. These are REST-only today:
-throughput, composed availability, schedule, redundancy models, hierarchy,
-unconfirmed, config, and debug. Agents needing them can call REST directly.
+MCP exposes every *read* endpoint and no write. Because the REST surface is
+unauthenticated, keeping the agent-facing side read-only means an agent
+cannot save a bad config, clear a schedule, or delete an EM's history —
+regardless of what it is asked to do. Keep that property when adding tools.
 
 ## Reference
 
