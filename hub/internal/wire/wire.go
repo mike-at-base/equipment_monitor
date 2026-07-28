@@ -168,6 +168,16 @@ func BuildTest(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
 // BuildTestLine is BuildTest with an explicit lineName (wire v4 field).
 func BuildTestLine(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
 	step, desc, alarm, ilk, cond, waiting, lineName string, plcTime time.Time) []byte {
+	return BuildSim(msgType, bits, modes, seq, activeSeq,
+		"ST10000", "main", step, desc, alarm, ilk, cond, waiting, lineName, plcTime)
+}
+
+// BuildSim constructs a byte-exact v4 datagram with full control of the
+// identity fields — used by the tracker tests, emsim, and the built-in
+// UI simulator.
+func BuildSim(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
+	station, emLabel, step, desc, alarm, ilk, cond, waiting, lineName string,
+	plcTime time.Time) []byte {
 
 	s7s := func(text string, max int) []byte {
 		if len(text) > max {
@@ -190,8 +200,8 @@ func BuildTestLine(msgType uint8, bits, modes uint16, seq uint32, activeSeq int1
 	binary.BigEndian.PutUint32(head[12:], 5000) // stepActiveTime ms
 	binary.BigEndian.PutUint64(head[16:], uint64(plcTime.UnixNano()))
 	b = append(b, head...)
-	b = append(b, s7s("ST10000", 32)...)
-	b = append(b, s7s("main", 16)...)
+	b = append(b, s7s(station, 32)...)
+	b = append(b, s7s(emLabel, 16)...)
 	b = append(b, s7s(step, 60)...)
 	b = append(b, s7s(desc, 200)...)
 	b = append(b, s7s(alarm, 200)...)

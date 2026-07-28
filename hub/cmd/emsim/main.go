@@ -25,7 +25,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"net"
@@ -107,7 +106,8 @@ func main() {
 					alarm = ""
 				}
 				e.seq++
-				_, _ = conn.Write(datagram(st.bits, e.seq, e.station, e.label, alarm, *line))
+				_, _ = conn.Write(wire.BuildSim(wire.MsgEvent, st.bits, 0, e.seq, 1,
+					e.station, e.label, "20", "Run", alarm, "", "", "", *line, time.Now()))
 			}
 			mu.Unlock()
 		}
@@ -180,36 +180,3 @@ func matches(pat string, e *em) bool {
 	return ok
 }
 
-// datagram builds a wire-v4 telemetry payload (same layout the FB serializes).
-func datagram(bits uint16, seq uint32, station, label, alarm, line string) []byte {
-	s7s := func(text string, max int) []byte {
-		if len(text) > max {
-			text = text[:max]
-		}
-		out := make([]byte, max+2)
-		out[0] = byte(max)
-		out[1] = byte(len(text))
-		copy(out[2:], text)
-		return out
-	}
-	head := make([]byte, 24)
-	head[0] = wire.Version
-	head[1] = wire.MsgEvent
-	binary.BigEndian.PutUint16(head[2:], bits)
-	binary.BigEndian.PutUint16(head[4:], 0)
-	binary.BigEndian.PutUint16(head[6:], 1) // activeSequence
-	binary.BigEndian.PutUint32(head[8:], seq)
-	binary.BigEndian.PutUint32(head[12:], 5000)
-	binary.BigEndian.PutUint64(head[16:], uint64(time.Now().UnixNano()))
-	b := append([]byte{}, head...)
-	b = append(b, s7s(station, 32)...)
-	b = append(b, s7s(label, 16)...)
-	b = append(b, s7s("20", 60)...)   // step
-	b = append(b, s7s("Run", 200)...) // step description
-	b = append(b, s7s(alarm, 200)...)
-	b = append(b, s7s("", 160)...) // interlock fails
-	b = append(b, s7s("", 200)...) // fault conditions
-	b = append(b, s7s("", 200)...) // waiting on
-	b = append(b, s7s(line, 32)...)
-	return b
-}

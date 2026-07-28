@@ -31,6 +31,7 @@ import (
 
 	"github.com/mike-at-base/equipment_monitor/hub/internal/ingest"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/model"
+	"github.com/mike-at-base/equipment_monitor/hub/internal/simulator"
 )
 
 type EMInfo struct {
@@ -72,6 +73,7 @@ type Server struct {
 	onConfig func(emID int) // reload tracker + hierarchy after a config save
 	onDelete func(emID int) // remove tracker + rows + refresh after a delete
 	tz       *time.Location
+	sim      *simulator.Sim // built-in UI simulator (nil = disabled)
 }
 
 // SetLines swaps the hierarchy (called by the background refresh so
@@ -129,6 +131,10 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v2/lines/{line}/stations/{station}/availmodel", s.handleSaveStationModel)
 	mux.HandleFunc("GET /api/v2/lines/{line}/composed", s.handleLineComposed)
 	mux.HandleFunc("GET /api/v2/lines/{line}/stations/{station}/composed", s.handleStationComposed)
+	mux.HandleFunc("GET /api/v2/sim", s.handleGetSim)
+	mux.HandleFunc("PUT /api/v2/sim", s.handleStartSim)
+	mux.HandleFunc("PUT /api/v2/sim/state", s.handleSimState)
+	mux.HandleFunc("DELETE /api/v2/sim", s.handleStopSim)
 }
 
 // handleHierarchy returns the full line -> station -> em tree (with display

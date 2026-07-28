@@ -223,6 +223,10 @@ export type AvailModelResp = {
   members: string[];
 };
 
+// built-in training simulator
+export type SimEM = { station: string; em_label: string; state: string; reason?: string };
+export type SimStatus = { running: boolean; line: string; ems: SimEM[] };
+
 export type ResetEvent = { ts: string; event: string };
 export type ModeWindow = { flag: string; start_ts: string; end_ts: string; minutes: number };
 export type RawState = {
@@ -311,6 +315,15 @@ export const api = {
     put<{ ok: boolean }>(
       `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/availmodel`,
       { model }),
+  sim: () => get<SimStatus>("/api/v2/sim"),
+  simStart: (line: string, spec: string) => put<SimStatus>("/api/v2/sim", { line, spec }),
+  simState: (pattern: string, state: string, reason = "") =>
+    put<{ ok: boolean; matched: number }>("/api/v2/sim/state", { pattern, state, reason }),
+  simStop: (purge: boolean) =>
+    fetch(`/api/v2/sim${purge ? "?purge=1" : ""}`, { method: "DELETE" }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status}`);
+      return r.json() as Promise<{ ok: boolean; purged: number }>;
+    }),
 };
 
 // SSE live stream with polling fallback
