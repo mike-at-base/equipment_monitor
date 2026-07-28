@@ -10,6 +10,7 @@ export default function Line({ live }: { live: LiveEM[] }) {
   const { win } = useWindow();
   const now = useNow();
   const sum = usePolledAsync(() => api.summary(line, win), [line, win]);
+  const comp = usePolledAsync(() => api.lineComposed(line, win), [line, win]);
 
   const liveByKey: Record<string, LiveEM> = {};
   for (const e of live.filter((e) => e.line === line)) {
@@ -22,11 +23,14 @@ export default function Line({ live }: { live: LiveEM[] }) {
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 16, marginTop: 12 }}>
+        <Link to={`/line/${line}/model`} className="linkbtn">Edit line availability model →</Link>
         <Link to={`/line/${line}/schedule`} className="linkbtn">Edit production schedule →</Link>
       </div>
       <div className="tiles" style={{ marginTop: 8 }}>
-        <Tile label={`Availability (${win})`}
+        <Tile label={`Composed availability (${win})`}
+          value={comp.data?.composed.pct != null ? `${comp.data.composed.pct.toFixed(1)}` : "–"} unit="%" />
+        <Tile label={`Availability (EM avg, ${win})`}
           value={s.availability_pct != null ? `${s.availability_pct.toFixed(1)}` : "–"} unit="%" />
         <Tile label="Cycles" value={`${s.cycles.count}`} unit={s.cycles.per_hour ? ` · ${s.cycles.per_hour}/h` : ""} />
         <Tile label="Cycle p50" value={s.cycles.p50_ms != null ? (s.cycles.p50_ms / 1000).toFixed(1) : "–"} unit=" s" />
@@ -37,7 +41,14 @@ export default function Line({ live }: { live: LiveEM[] }) {
 
       {groupByStation(s.ems).map(([station, ems]) => (
         <div className="station-group" key={station}>
-          <div className="station-head">{station}</div>
+          <div className="station-head">
+            <Link to={`/line/${line}/station/${station}`} className="station-link">{station}</Link>
+            {comp.data?.stations?.[station] != null && (
+              <span className="pct-chip" title="composed availability (redundancy model)">
+                {comp.data.stations[station]!.toFixed(1)}%
+              </span>
+            )}
+          </div>
           <div className="grid ems">
             {ems.map((em) => {
               const lv = liveByKey[`${em.station}|${em.em_label}`.toLowerCase()];
