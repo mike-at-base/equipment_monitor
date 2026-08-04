@@ -34,7 +34,7 @@ export default function Station({ live }: { live: LiveEM[] }) {
           <div className="label">Production time in window</div>
         </div>
         <div className="tile">
-          <div className="n">{c.down.length}<small></small></div>
+          <div className="n">{(c.down ?? []).length}<small></small></div>
           <div className="label">Composed outages</div>
         </div>
       </div>
@@ -53,14 +53,14 @@ export default function Station({ live }: { live: LiveEM[] }) {
       <ComposedGantt line={line} station={station} win={win}
                      from={comp.data.from} to={comp.data.to} composed={c} />
 
-      {c.causes.length > 0 && (
+      {(c.causes ?? []).length > 0 && (
         <div className="card">
           <h2>Composed unavailability by cause ({win})</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Only time where the STATION went down is charged. Concurrent causes
             (e.g. all mags down together) are each charged in full.
           </p>
-          <Bars rows={c.causes.map((r) => ({
+          <Bars rows={(c.causes ?? []).map((r) => ({
             name: r.name, value: r.minutes, color: "var(--st-down)",
           }))} />
         </div>
@@ -80,13 +80,13 @@ export default function Station({ live }: { live: LiveEM[] }) {
 // composed band mapped onto the state palette: up = productive green,
 // down = down red (causes in the tooltip).
 function composedIntervals(c: ComposedResult): Interval[] {
-  const out: Interval[] = c.up_spans.map((s) => ({
+  const out: Interval[] = (c.up_spans ?? []).map((s) => ({
     start_ts: new Date(s.start).toISOString(),
     end_ts: new Date(s.end).toISOString(),
     state: "productive",
     reason: "station available",
   }));
-  for (const d of c.down) {
+  for (const d of (c.down ?? [])) {
     out.push({ start_ts: d.start_ts, end_ts: d.end_ts, state: "down",
                reason: d.causes.join(", ") });
   }

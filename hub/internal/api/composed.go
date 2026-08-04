@@ -213,8 +213,14 @@ type causeRow struct {
 
 func buildComposedDTO(res compose.Result, node *compose.Node, isDefault bool,
 	prod []compose.Span) composedDTO {
+	// Normalize nil to empty so JSON encodes "up_spans":[] — a nil slice
+	// marshals as null and the SPA crashes on up_spans.map(...).
+	up := res.Up
+	if up == nil {
+		up = []compose.Span{}
+	}
 	dto := composedDTO{
-		UpSpans: res.Up, Default: isDefault, Model: node,
+		UpSpans: up, Default: isDefault, Model: node,
 		Down: []composeDown{}, Causes: []causeRow{},
 	}
 	var prodMs int64

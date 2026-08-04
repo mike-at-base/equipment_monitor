@@ -51,10 +51,10 @@ export default function Availability() {
                from={Date.parse(d.from)} to={Date.parse(d.to)} />
       </div>
 
-      {c.causes.length > 0 && (
+      {(c.causes ?? []).length > 0 && (
         <div className="card">
           <h2>Unavailability by cause ({win})</h2>
-          <Bars rows={c.causes.slice(0, 10).map((r) => ({
+          <Bars rows={(c.causes ?? []).slice(0, 10).map((r) => ({
             name: r.name, value: r.minutes, color: "var(--st-down)",
           }))} />
         </div>
@@ -64,13 +64,13 @@ export default function Availability() {
 }
 
 function composedIntervals(c: ComposedResult): Interval[] {
-  const out: Interval[] = c.up_spans.map((s) => ({
+  const out: Interval[] = (c.up_spans ?? []).map((s) => ({
     start_ts: new Date(s.start).toISOString(),
     end_ts: new Date(s.end).toISOString(),
     state: "productive",
     reason: "line available",
   }));
-  for (const dn of c.down) {
+  for (const dn of (c.down ?? [])) {
     out.push({ start_ts: dn.start_ts, end_ts: dn.end_ts, state: "down",
                reason: dn.causes.join(", ") });
   }
