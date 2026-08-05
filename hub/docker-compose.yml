@@ -19,6 +19,11 @@ services:
       POSTGRES_DB: emhub
       POSTGRES_USER: monitor
       POSTGRES_PASSWORD: ${DB_PASSWORD:-monitor}
+    # Host 5432 is often already taken (e.g. v1 equipment-monitor-db). Publish
+    # on 5433 so reporting/ETL can reach emhub without colliding. Inside the
+    # compose network the service is still timescaledb:5432.
+    ports:
+      - "5433:5432"          # psql / external read-only reporting clients
     volumes:
       - emhub_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -44,6 +49,10 @@ services:
       EMHUB_HTTP: ":8062"
       EMHUB_UDP_PORT: "15020"
       APP_TIMEZONE: ${APP_TIMEZONE:-America/Chicago}
+      # Optional SELECT-only login for external reporting/ETL. No default
+      # password — unset means emhub never creates the role.
+      EMHUB_READONLY_USER: ${EMHUB_READONLY_USER:-}
+      EMHUB_READONLY_PASSWORD: ${EMHUB_READONLY_PASSWORD:-}
     # Routing is by the payload's lineName (v4), not source IP, so Docker NAT
     # on published ports is fine — bridge mode works on Linux and Windows.
     # No config file: EMs auto-discover from telemetry and are configured in

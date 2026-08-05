@@ -213,6 +213,46 @@ func (p *PG) InitSchema(ctx context.Context) error {
 	return nil
 }
 
+// EnsureReadOnlyRole creates — or re-syncs the password of — a SELECT-only
+// login for external reporting/ETL that reads the fact tables directly
+// instead of polling the API. The role gets no INSERT/UPDATE/DELETE and no
+// DDL, so it cannot change anything. Idempotent, and called after InitSchema
+// on every startup, so tables added by a later release are covered too.
+func (p *PG) EnsureReadOnlyRole(ctx context.Context, user, password string) error {
+	var exists bool
+	var db string
+	if err := p.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=$1),
+		        quote_ident(current_database())`, user).Scan(&exists, &db); err != nil {
+		return fmt.Errorf("readonly role: %w", err)
+	}
+	role := pgx.Identifier{user}.Sanitize()
+	verb := "CREATE"
+	if exists {
+		verb = "ALTER"
+	}
+	// CREATE/ALTER ROLE takes no bind parameters, so let Postgres quote the
+	// password literal (%L) rather than escaping it here.
+	var setLogin string
+	if err := p.pool.QueryRow(ctx, `SELECT format($1, $2::text)`,
+		verb+" ROLE "+role+" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L",
+		password).Scan(&setLogin); err != nil {
+		return fmt.Errorf("readonly role: %w", err)
+	}
+	for _, stmt := range []string{
+		setLogin,
+		`GRANT CONNECT ON DATABASE ` + db + ` TO ` + role,
+		`GRANT USAGE ON SCHEMA public TO ` + role,
+		`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ` + role,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ` + role,
+	} {
+		if _, err := p.pool.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("readonly role: %w", err)
+		}
+	}
+	return nil
+}
+
 // RegisterEM upserts the line -> station -> EM chain discovered live from a
 // v4 datagram and returns the EM id. New EMs are enabled (tracked + visible)
 // but UNCONFIRMED until an engineer vets them in the UI. Only wire_version is
