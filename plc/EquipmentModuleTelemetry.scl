@@ -70,6 +70,11 @@ VERSION : 0.1
       statSendReq : Bool;
       statSendCooldown : Bool;
       statHeartbeatReset : Bool;
+      // v5 branch attribution (see REGION Branch Attribution)
+      statDwellStep : String[60];         // step the latches below belong to
+      statDwellBranch : String[60];       // nextStep of the branch that fired
+      statDwellReason : String[200];      // that branch's unmet conditions
+      statUnmetMask : Array[0.."SEQUENCE_MAX_STEP_BRANCHES"] of Word;
    END_VAR
 
    VAR_TEMP
@@ -87,6 +92,7 @@ VERSION : 0.1
       tempSerRet : Int;
       tempLdt : LDT;
       tempDesc : String;
+      tempBranchOk : Bool;   // a branch's permissive is fully satisfied
       ii : Int;
       jj : Int;
    END_VAR
@@ -113,6 +119,7 @@ BEGIN
     // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
     // 0.2.0        2026-07-23              mwebb               wire v4: add lineName input, appended to payload (offset 1108); collector routes on it instead of source IP (NAT-proof, enables auto-registration). v3 offsets unchanged.
     // 0.2.1        2026-07-24              mwebb               set identity (lineName/stationName/emLabel/version) EVERY scan instead of first-scan only, so changing lineName after the FB has run takes effect without a memory reset
+    // 0.3.0        2026-07-28              mwebb               wire v5: branch attribution. waitingOn unions ALL branches, so a multi-branch step always reports the not-taken branch's discriminator. Latch per-branch unmet conditions as a bitmask during the dwell and materialize dwellReason + branchTaken on the scan a branch's permissive satisfies (before activeStepBranch is overwritten). v4 offsets unchanged; collector still accepts v4.
     END_REGION
 
     REGION Initial Scan
@@ -172,7 +179,7 @@ BEGIN
         // input — e.g. wiring lineName after the FB already ran — takes effect
         // on the next scan without a memory reset. These fields are excluded
         // from change detection, so re-writing them never triggers an event.
-        #statSnapshot.version := 4;
+        #statSnapshot.version := 5;
         #statSnapshot.lineName := #lineName;
         #statSnapshot.stationName := #stationName;
         #statSnapshot.emLabel := #emLabel;
@@ -336,6 +343,82 @@ BEGIN
         END_IF;
     END_REGION
 
+    REGION Branch Attribution
+        // waitingOn above is the UNION of unmet conditions over every enabled
+        // branch, which on a multi-branch step is misleading: the branch that
+        // is NOT taken has a discriminator that stays false for the whole
+        // dwell (if it were true the sequencer would already have jumped), so
+        // it always appears in the reason.  Example — ST12000 step 240:
+        //     branch A -> skip : 'dispense work state complete'
+        //     branch B -> 250  : 'not complete', '7 stacks', '8 stacks'
+        // and the union always names A's condition even though B is the path.
+        //
+        // Rather than guess which branch is live, wait until the machine TELLS
+        // us: the branch whose permissive goes fully OK is the one the
+        // sequencer takes.  Latch each branch's unmet conditions as a bitmask
+        // during the dwell (cheap), then materialize the text on the scan that
+        // branch satisfies — one scan BEFORE the transition overwrites
+        // activeStepBranch with the next step's branches, the same race called
+        // out in Fault Reason Capture above.
+        IF #tempSeqValid THEN
+            // a new step invalidates every latch
+            IF #controlInterface.stepControl[#tempSeqIdx].step <> #statDwellStep THEN
+                #statDwellStep := #controlInterface.stepControl[#tempSeqIdx].step;
+                #statDwellBranch := '';
+                #statDwellReason := '';
+                FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                    #statUnmetMask[#ii] := W#16#0000;
+                END_FOR;
+            END_IF;
+
+            // accumulate what has been unmet so far in this dwell, per branch
+            FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                    FOR #jj := 0 TO 15 DO
+                        IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
+                            #statUnmetMask[#ii] := #statUnmetMask[#ii]
+                                OR SHL(IN := W#16#0001, N := #jj);
+                        END_IF;
+                    END_FOR;
+                END_IF;
+            END_FOR;
+
+            // first branch to satisfy wins, matching sequencer branch priority.
+            // Latched once per dwell so a later branch cannot overwrite it.
+            IF LEN(#statDwellBranch) = 0 THEN
+                FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                    IF LEN(#statDwellBranch) = 0 THEN
+                        #tempBranchOk := FALSE;
+                        IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                            #tempBranchOk := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.status.ok;
+                        END_IF;
+                        IF #tempBranchOk THEN
+                            #statDwellBranch := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].nextStep;
+                            // descriptions are still THIS step's on this scan
+                            #statDwellReason := '';
+                            FOR #jj := 0 TO 15 DO
+                                IF (#statUnmetMask[#ii] AND SHL(IN := W#16#0001, N := #jj)) <> W#16#0000 THEN
+                                    #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
+                                    IF LEN(#tempDesc) > 0 THEN
+                                        IF LEN(#statDwellReason) = 0 THEN
+                                            #statDwellReason := LEFT(IN := #tempDesc, L := 200);
+                                        ELSIF (LEN(#statDwellReason) + LEN(#tempDesc) + 2) <= 200 THEN
+                                            #statDwellReason := CONCAT(IN1 := #statDwellReason,
+                                                                       IN2 := '; ',
+                                                                       IN3 := #tempDesc);
+                                        END_IF;
+                                    END_IF;
+                                END_IF;
+                            END_FOR;
+                        END_IF;
+                    END_IF;
+                END_FOR;
+            END_IF;
+        END_IF;
+        #statSnapshot.branchTaken := #statDwellBranch;
+        #statSnapshot.dwellReason := #statDwellReason;
+    END_REGION
+
     REGION Change Detection And Enqueue
         // stepActiveTime / plcTime / seq deliberately excluded — they change
         // every scan and would turn event push into continuous streaming.
@@ -348,7 +431,12 @@ BEGIN
             (#statSnapshot.alarmMessage    <> #statLastSent.alarmMessage) OR
             (#statSnapshot.interlockFails  <> #statLastSent.interlockFails) OR
             (#statSnapshot.faultConditions <> #statLastSent.faultConditions) OR
-            (#statSnapshot.waitingOn       <> #statLastSent.waitingOn);
+            (#statSnapshot.waitingOn       <> #statLastSent.waitingOn) OR
+            // v5: the branch resolving is the whole point of the attribution —
+            // it must reach the collector before the step advances, so it has
+            // to count as a change rather than wait for the next heartbeat.
+            (#statSnapshot.branchTaken     <> #statLastSent.branchTaken) OR
+            (#statSnapshot.dwellReason     <> #statLastSent.dwellReason);
 
         // Heartbeat: reading an IEC timer's Q UPDATES its state, so the
         // classic IN := NOT Q self-reset consumes its own pulse - the IN

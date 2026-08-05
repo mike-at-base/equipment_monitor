@@ -337,6 +337,12 @@ func (t *EM) classify(d *wire.Datagram, alarmActive bool) (state, rtype, reason 
 		// a flow wait counts as starved/blocked only at a configured step;
 		// waiting anywhere else is normal automatic running -> productive.
 		if kind := t.classifyWait(d.ActiveSequence, d.Step); kind != "" {
+			// once the PLC has resolved which branch fires, its conditions are
+			// the reason; WaitingOn (the union over branches) is the fallback
+			// while the branch is still unknown.
+			if d.DwellReason != "" {
+				return kind, model.ReasonFlow, d.DwellReason
+			}
 			return kind, model.ReasonFlow, d.WaitingOn
 		}
 		return model.StateProductive, "", ""
@@ -382,6 +388,18 @@ func (t *EM) classifyWait(seq int16, step string) string {
 // ── interval management ──────────────────────────────────────────────────
 
 func (t *EM) applyState(state, rtype, reason string, d *wire.Datagram, ts time.Time) {
+	// v5 branch attribution: WaitingOn is the union of unmet conditions across
+	// every enabled branch, so on a multi-branch step it always carries the
+	// discriminator of the branch NOT taken (that condition is false for the
+	// whole dwell — if it were true the sequencer would already have jumped).
+	// Once the PLC knows which branch actually satisfied, correct the OPEN
+	// flow interval so it closes with only that branch's conditions. Done
+	// before the close logic below so the fix lands whether the interval
+	// closes on this datagram or a later one.
+	if d.DwellReason != "" && t.curRType == model.ReasonFlow && t.curState != "" {
+		t.curReason = d.DwellReason
+	}
+
 	// production seq gate: flow states only count on production sequences
 	if sc, ok := t.cfg.Sequences[d.ActiveSequence]; ok && !sc.IsProduction {
 		if state == model.StateStarved || state == model.StateBlocked {

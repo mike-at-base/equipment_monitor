@@ -12,8 +12,19 @@ import (
 )
 
 const (
-	Version    = 4    // minimum + current wire format (v3 and earlier dropped)
-	PayloadLen = 1142 // v4: header + strings + lineName String[32] at offset 1108
+	// Version is the MINIMUM accepted wire version. It is deliberately not
+	// bumped with CurrentVersion: the fleet runs a mix of FB versions, and a
+	// v4 PLC must keep reporting after the collector is upgraded.
+	Version = 4
+	// CurrentVersion is what the current FB emits.
+	CurrentVersion = 5
+
+	// PayloadLen is the minimum datagram length (v4: header + strings +
+	// lineName String[32] at offset 1108).
+	PayloadLen = 1142
+	// PayloadLenV5 adds branchTaken String[60] @1142 and
+	// dwellReason String[200] @1204 — the branch-attributed flow reason.
+	PayloadLenV5 = 1406
 )
 
 // statusBits
@@ -84,6 +95,12 @@ type Datagram struct {
 	InterlockFails string
 	FaultConds     string
 	WaitingOn      string
+	// v5 branch attribution. WaitingOn is the union of unmet conditions over
+	// ALL enabled branches, so on a multi-branch step it always carries the
+	// discriminator of the branch NOT being taken. Once the sequencer's branch
+	// is known, DwellReason names only that branch's conditions.
+	BranchTaken string // nextStep of the branch that satisfied ("" until known)
+	DwellReason string // unmet conditions of that branch during the dwell
 }
 
 func (d *Datagram) Bit(mask uint16) bool  { return d.StatusBits&mask != 0 }
@@ -153,6 +170,10 @@ func Decode(b []byte) (*Datagram, error) {
 	if len(b) >= PayloadLen {
 		d.LineName = s7String(b, 1108, 32)
 	}
+	if len(b) >= PayloadLenV5 {
+		d.BranchTaken = s7String(b, 1142, 60)
+		d.DwellReason = s7String(b, 1204, 200)
+	}
 	return d, nil
 }
 
@@ -165,20 +186,34 @@ func BuildTest(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
 		step, desc, alarm, ilk, cond, waiting, "", plcTime)
 }
 
+// s7s encodes an S7 STRING: [max][len][chars...] padded to max.
+func s7s(text string, max int) []byte {
+	if len(text) > max {
+		text = text[:max]
+	}
+	out := make([]byte, max+2)
+	out[0] = byte(max)
+	out[1] = byte(len(text))
+	copy(out[2:], text)
+	return out
+}
+
+// BuildTestV5 is BuildTestLine plus the v5 branch-attribution fields.
+func BuildTestV5(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
+	step, desc, alarm, ilk, cond, waiting, lineName,
+	branchTaken, dwellReason string, plcTime time.Time) []byte {
+	b := BuildTestLine(msgType, bits, modes, seq, activeSeq,
+		step, desc, alarm, ilk, cond, waiting, lineName, plcTime)
+	b[0] = CurrentVersion
+	b = append(b, s7s(branchTaken, 60)...)
+	b = append(b, s7s(dwellReason, 200)...)
+	return b
+}
+
 // BuildTestLine is BuildTest with an explicit lineName (wire v4 field).
 func BuildTestLine(msgType uint8, bits, modes uint16, seq uint32, activeSeq int16,
 	step, desc, alarm, ilk, cond, waiting, lineName string, plcTime time.Time) []byte {
 
-	s7s := func(text string, max int) []byte {
-		if len(text) > max {
-			text = text[:max]
-		}
-		out := make([]byte, max+2)
-		out[0] = byte(max)
-		out[1] = byte(len(text))
-		copy(out[2:], text)
-		return out
-	}
 	b := make([]byte, 0, PayloadLen)
 	head := make([]byte, 24)
 	head[0] = Version

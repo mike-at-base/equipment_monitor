@@ -72,6 +72,18 @@ func (s *sim) send(bits, modes uint16, step, desc, alarm, ilk, cond, waiting str
 	s.t.Ingest(d, s.now)
 }
 
+// sendV5 is send() plus the v5 branch-attribution fields.
+func (s *sim) sendV5(bits, modes uint16, step, desc, waiting, branchTaken, dwellReason string) {
+	s.seq++
+	raw := wire.BuildTestV5(wire.MsgEvent, bits, modes, s.seq, 1,
+		step, desc, "", "", "", waiting, "", branchTaken, dwellReason, s.now)
+	d, err := wire.Decode(raw)
+	if err != nil {
+		panic(err)
+	}
+	s.t.Ingest(d, s.now)
+}
+
 func (s *sim) advance(d time.Duration) { s.now = s.now.Add(d) }
 
 func TestFastStepsAllRecorded(t *testing.T) {
@@ -262,6 +274,73 @@ func TestFlowClassificationFromConfig(t *testing.T) {
 	if prod.State != model.StateProductive || prod.Reason != "" {
 		t.Fatalf("unlisted step wait: state %q reason %q, want productive/no-reason",
 			prod.State, prod.Reason)
+	}
+}
+
+// The ST12000 step-240 shape: two branches, one testing "dispense workstate
+// complete" (skip ahead) and one testing NOT complete plus real waits. The
+// union text always carries the skip branch's discriminator, because if it
+// were true the sequencer would have jumped and there'd be no dwell at all.
+// v5 branch attribution must replace it with only the taken branch's waits.
+func TestBranchAttributedFlowReason(t *testing.T) {
+	cap := &capture{}
+	cfg := Config{
+		EMID: 1, Station: "ST12000", EMLabel: "main",
+		Sequences: map[int16]SeqConfig{
+			1: {Index: 1, IsProduction: true,
+				StarvedSteps: map[string]bool{"240": true}},
+		},
+	}
+	s := &sim{t: New(cfg, cap), cap: cap,
+		now: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)}
+
+	const union = "dispense work state complete; 7 stacks present; 8 stacks present"
+	const taken = "7 stacks present; 8 stacks present"
+
+	s.sendV5(AUTO|RUN|ILKOK, 0, "240", "Wait for dispense ready", "", "", "")
+	s.advance(20 * time.Second)
+	// dwelling: branch not resolved yet, only the union text is available
+	s.sendV5(AUTO|RUN|ILKOK, 0, "240", "Wait for dispense ready", union, "", "")
+	s.advance(40 * time.Second)
+	// the sequencer's branch resolves -> PLC reports which one and its waits
+	s.sendV5(AUTO|RUN|ILKOK, 0, "240", "Wait for dispense ready", union, "250", taken)
+	s.advance(time.Second)
+	// step advances; the starved interval closes
+	s.sendV5(AUTO|RUN|ILKOK, 0, "250", "Dispense", "", "", "")
+
+	starved := s.cap.intervals[len(s.cap.intervals)-1]
+	if starved.State != model.StateStarved {
+		t.Fatalf("state %q, want starved", starved.State)
+	}
+	if starved.Reason != taken {
+		t.Fatalf("reason %q,\n want %q (the not-taken branch's discriminator must be gone)",
+			starved.Reason, taken)
+	}
+}
+
+// A v4 PLC (no branch fields) keeps the old union behavior — mixed fleets.
+func TestFlowReasonFallsBackToUnionOnV4(t *testing.T) {
+	cap := &capture{}
+	cfg := Config{
+		EMID: 1, Station: "ST12000", EMLabel: "main",
+		Sequences: map[int16]SeqConfig{
+			1: {Index: 1, IsProduction: true,
+				StarvedSteps: map[string]bool{"240": true}},
+		},
+	}
+	s := &sim{t: New(cfg, cap), cap: cap,
+		now: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)}
+	const union = "dispense work state complete; 7 stacks present"
+
+	s.send(AUTO|RUN|ILKOK, 0, "240", "Wait", "", "", "", "")
+	s.advance(30 * time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "240", "Wait", "", "", "", union)
+	s.advance(30 * time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "250", "Dispense", "", "", "", "")
+
+	last := s.cap.intervals[len(s.cap.intervals)-1]
+	if last.State != model.StateStarved || last.Reason != union {
+		t.Fatalf("v4 fallback: state %q reason %q", last.State, last.Reason)
 	}
 }
 
