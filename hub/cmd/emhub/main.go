@@ -5,6 +5,8 @@
 // Env:
 //	EMHUB_DSN   postgres DSN (default local dev TimescaleDB, db "emhub")
 //	EMHUB_HTTP  http listen address for /healthz + /api/v2/live (default :8060)
+//	EMHUB_READONLY_USER/_PASSWORD  optional SELECT-only login for external
+//	            reporting/ETL; both unset means the role is not created
 package main
 
 import (
@@ -49,6 +51,21 @@ func main() {
 	if err := pg.InitSchema(ctx); err != nil {
 		log.Error("schema", "err", err)
 		os.Exit(1)
+	}
+
+	// Optional SELECT-only login for external reporting/ETL. There is no
+	// default password: leave both unset and the role is never created.
+	if roUser := env("EMHUB_READONLY_USER", ""); roUser != "" {
+		roPass := os.Getenv("EMHUB_READONLY_PASSWORD")
+		if roPass == "" {
+			log.Error("readonly role", "err", "EMHUB_READONLY_USER set without EMHUB_READONLY_PASSWORD")
+			os.Exit(1)
+		}
+		if err := pg.EnsureReadOnlyRole(ctx, roUser, roPass); err != nil {
+			log.Error("readonly role", "err", err)
+			os.Exit(1)
+		}
+		log.Info("readonly role ready", "user", roUser)
 	}
 
 	// The DB is the sole source of truth: EMs auto-discover from v4 telemetry

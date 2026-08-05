@@ -61,6 +61,42 @@ an engineer then reviews and confirms each one in the UI (name, line/station,
 cycle metadata). The database is the single source of truth. The UDP listen
 port is set via `EMHUB_UDP_PORT` (default 15020).
 
+## Read-only database access (optional)
+
+TimescaleDB publishes **TCP 5433→5432** on the host so reporting/ETL tools can
+read the fact tables directly instead of polling the API. (Host **5432** is
+often already taken by the v1 `equipment-monitor` stack; use **5433** for
+emhub. Inside compose the DB remains `timescaledb:5432`.)
+
+To hand a client a SELECT-only login, add to `hub/.env`:
+
+```
+EMHUB_READONLY_USER=reporting
+EMHUB_READONLY_PASSWORD=<something-strong>
+```
+
+emhub creates the role on startup (re-syncing its password on later starts)
+and grants it **SELECT only** — no INSERT/UPDATE/DELETE and no DDL — on every
+table, including ones added by a future release. There is no default password:
+leave both unset and the role is never created.
+
+```bash
+# only if a remote host reads the DB (not needed for a localhost poller)
+sudo ufw allow 5433/tcp
+psql "postgres://reporting:<password>@127.0.0.1:5433/emhub" -c '\dt'
+```
+
+For the BigQuery poller on this same host:
+
+| Poller env | Value |
+|---|---|
+| `MFG_EMHUB_PG_HOST` | `127.0.0.1` |
+| `MFG_EMHUB_PG_PORT` | `5433` |
+| `MFG_EMHUB_PG_DATABASE` | `emhub` |
+| `MFG_EMHUB_PG_USER` | `reporting` (or whatever you set) |
+| `MFG_EMHUB_PG_PASSWORD` | the password from `.env` |
+| `MFG_EMHUB_PG_SSLMODE` | `disable` (local Postgres has no TLS) |
+
 ## Operations
 
 ```bash
