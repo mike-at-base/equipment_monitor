@@ -50,6 +50,10 @@ type StepEvent struct {
 	EndTs      time.Time
 	DurationMs int64
 	WasFaulted bool
+	// v5: nextStep of the branch the sequencer actually took out of this
+	// step. "" when the PLC is pre-v5, or when the step ended without any
+	// branch satisfying (forced jump, fault, reset).
+	BranchTaken string
 }
 
 type Cycle struct {

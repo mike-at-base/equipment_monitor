@@ -402,7 +402,8 @@ func (s *Server) handleSteps(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.pool.Query(r.Context(), `
-	    SELECT start_ts, end_ts, seq_index, step_name, step_desc, duration_ms, was_faulted
+	    SELECT start_ts, end_ts, seq_index, step_name, step_desc, duration_ms,
+	           was_faulted, branch_taken
 	    FROM step_event WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
 	    ORDER BY start_ts DESC LIMIT $4 OFFSET $5`, em.ID, from, to, limit, offset)
 	if err != nil {
@@ -418,12 +419,15 @@ func (s *Server) handleSteps(w http.ResponseWriter, r *http.Request) {
 		StepDesc   string    `json:"description"`
 		DurationMs int64     `json:"duration_ms"`
 		WasFaulted bool      `json:"was_faulted"`
+		// v5: which branch the sequencer took out of this step ("" when the
+		// PLC predates v5 or no branch satisfied).
+		BranchTaken string `json:"branch_taken"`
 	}
 	out := []step{}
 	for rows.Next() {
 		var v step
 		if err := rows.Scan(&v.StartTs, &v.EndTs, &v.SeqIndex, &v.StepName,
-			&v.StepDesc, &v.DurationMs, &v.WasFaulted); err != nil {
+			&v.StepDesc, &v.DurationMs, &v.WasFaulted, &v.BranchTaken); err != nil {
 			httpErr(w, 500, err)
 			return
 		}

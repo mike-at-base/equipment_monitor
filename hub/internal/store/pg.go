@@ -93,7 +93,8 @@ var ddl = []string{
 	    step_name TEXT NOT NULL,
 	    step_desc TEXT NOT NULL DEFAULT '',
 	    duration_ms BIGINT NOT NULL,
-	    was_faulted BOOL NOT NULL DEFAULT FALSE)`,
+	    was_faulted BOOL NOT NULL DEFAULT FALSE,
+	    branch_taken TEXT NOT NULL DEFAULT '')`,
 	`CREATE TABLE IF NOT EXISTS cycle (
 	    start_ts TIMESTAMPTZ NOT NULL,
 	    em_id INT NOT NULL,
@@ -144,6 +145,10 @@ var migrations = []string{
 	// to ALL of its stations).
 	`ALTER TABLE station ADD COLUMN IF NOT EXISTS avail_model JSONB`,
 	`ALTER TABLE line ADD COLUMN IF NOT EXISTS avail_model JSONB`,
+	// v5: which branch the sequencer took out of each step execution.
+	// '' for pre-v5 PLCs and for steps that ended without a branch
+	// satisfying (forced jump, fault, reset).
+	`ALTER TABLE step_event ADD COLUMN IF NOT EXISTS branch_taken TEXT NOT NULL DEFAULT ''`,
 }
 
 var indexes = []string{
@@ -555,10 +560,11 @@ func (p *PG) flush(rows []row) error {
 		case 'e':
 			batch.Queue(`INSERT INTO step_event
 			    (start_ts, em_id, end_ts, seq_index, step_name, step_desc,
-			     duration_ms, was_faulted)
-			    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			     duration_ms, was_faulted, branch_taken)
+			    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 				r.se.StartTs, r.se.EMID, r.se.EndTs, r.se.SeqIndex,
-				r.se.StepName, r.se.StepDesc, r.se.DurationMs, r.se.WasFaulted)
+				r.se.StepName, r.se.StepDesc, r.se.DurationMs, r.se.WasFaulted,
+				r.se.BranchTaken)
 		case 'c':
 			batch.Queue(`INSERT INTO cycle
 			    (start_ts, em_id, end_ts, seq_index, work_end_ts, work_ms,

@@ -63,6 +63,7 @@ type EM struct {
 	stepSeq     int16
 	stepStart   time.Time
 	stepFaulted bool
+	stepBranch  string // v5 branch taken out of the current step
 
 	// cycle tracking
 	cycleStart  map[int16]time.Time
@@ -200,6 +201,12 @@ func (t *EM) trackSteps(d *wire.Datagram, ts time.Time) {
 	if d.Bit(wire.BitStepFault) {
 		t.stepFaulted = true
 	}
+	// Latch the branch while we are still ON the step: the FB clears
+	// branchTaken the instant the step changes, so by the datagram that
+	// closes the step it is already empty.
+	if d.BranchTaken != "" {
+		t.stepBranch = d.BranchTaken
+	}
 	if d.Step == t.stepName && seq == t.stepSeq {
 		return
 	}
@@ -210,11 +217,13 @@ func (t *EM) trackSteps(d *wire.Datagram, ts time.Time) {
 			StepName: t.stepName, StepDesc: t.stepDesc,
 			StartTs: t.stepStart, EndTs: ts,
 			DurationMs: ts.Sub(t.stepStart).Milliseconds(),
-			WasFaulted: t.stepFaulted,
+			WasFaulted:  t.stepFaulted,
+			BranchTaken: t.stepBranch,
 		})
 	}
 	t.stepName, t.stepDesc, t.stepSeq = d.Step, d.StepDesc, seq
 	t.stepStart, t.stepFaulted = ts, false
+	t.stepBranch = ""
 	t.trackCycleEdges(seq, d.Step, ts)
 }
 

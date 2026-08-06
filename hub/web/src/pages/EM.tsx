@@ -123,7 +123,8 @@ function Steps({ l, s, e }: P) {
           <table className="data">
             <thead><tr>
               <th>Time</th><th>Seq</th><th>Step</th><th>Description</th>
-              <th style={{ textAlign: "right" }}>Duration</th><th>Faulted</th>
+              <th style={{ textAlign: "right" }}>Duration</th>
+              <th>Branch →</th><th>Faulted</th>
             </tr></thead>
             <tbody>
               {steps.map((st, i) => (
@@ -133,6 +134,11 @@ function Steps({ l, s, e }: P) {
                   <td className="num">{st.step}</td>
                   <td>{st.description}</td>
                   <td className="num">{fmtMs(st.duration_ms)}</td>
+                  <td className="num" title={st.branch_taken
+                    ? `sequencer took the branch to step ${st.branch_taken}`
+                    : "no branch resolved (pre-v5 PLC, or forced jump / fault / reset)"}>
+                    {st.branch_taken || "—"}
+                  </td>
                   <td>{st.was_faulted ? <span className="chip" style={{ background: "var(--st-down)" }}>fault</span> : ""}</td>
                 </tr>
               ))}

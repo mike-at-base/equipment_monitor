@@ -318,6 +318,46 @@ func TestBranchAttributedFlowReason(t *testing.T) {
 	}
 }
 
+// branchTaken is live for as little as ONE scan: the FB clears it the moment
+// the step changes, so by the datagram that closes the step event it is
+// already empty. The tracker must latch it while still on the step.
+func TestStepEventRecordsBranchTaken(t *testing.T) {
+	cap := &capture{}
+	cfg := Config{EMID: 1, Station: "ST12000", EMLabel: "main",
+		Sequences: map[int16]SeqConfig{1: {Index: 1, IsProduction: true}}}
+	s := &sim{t: New(cfg, cap), cap: cap,
+		now: time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)}
+
+	s.sendV5(AUTO|RUN|ILKOK, 0, "240", "Wait for dispense", "", "", "")
+	s.advance(30 * time.Second)
+	// branch resolves — still on step 240, one scan before the transition
+	s.sendV5(AUTO|RUN|ILKOK, 0, "240", "Wait for dispense", "", "250", "7 stacks")
+	s.advance(time.Second)
+	// step advances; the FB has already cleared branchTaken by now
+	s.sendV5(AUTO|RUN|ILKOK, 0, "250", "Dispense", "", "", "")
+
+	var ev *model.StepEvent
+	for i := range s.cap.steps {
+		if s.cap.steps[i].StepName == "240" {
+			ev = &s.cap.steps[i]
+		}
+	}
+	if ev == nil {
+		t.Fatal("no step event recorded for 240")
+	}
+	if ev.BranchTaken != "250" {
+		t.Fatalf("branch_taken %q, want 250 (latched before the step changed)", ev.BranchTaken)
+	}
+	// and it must NOT leak onto the next step
+	s.advance(5 * time.Second)
+	s.sendV5(AUTO|RUN|ILKOK, 0, "260", "Retract", "", "", "")
+	for _, e := range s.cap.steps {
+		if e.StepName == "250" && e.BranchTaken != "" {
+			t.Fatalf("branch leaked onto step 250: %q", e.BranchTaken)
+		}
+	}
+}
+
 // A v4 PLC (no branch fields) keeps the old union behavior — mixed fleets.
 func TestFlowReasonFallsBackToUnionOnV4(t *testing.T) {
 	cap := &capture{}

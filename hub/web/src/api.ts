@@ -144,6 +144,7 @@ export type StepRow = {
   description: string;
   duration_ms: number;
   was_faulted: boolean;
+  branch_taken: string; // v5: nextStep of the branch the sequencer took
 };
 
 export type StepsPage = {
