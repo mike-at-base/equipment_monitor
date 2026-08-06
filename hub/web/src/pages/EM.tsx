@@ -267,6 +267,90 @@ function StepShapeAndDrift({ l, s, e, step, seq }: P & { step: string; seq: numb
   );
 }
 
+const CYCLE_METRICS = [
+  { key: "total", label: "Total" },
+  { key: "work", label: "Work" },
+  { key: "exchange", label: "Exchange" },
+];
+
+// Same three views the Step history tab gives, for whole cycles: how total
+// splits against work/exchange, the distribution SHAPE, and whether it is
+// drifting.
+function CycleShapeAndDrift({ l, s, e }: P) {
+  const { win } = useWindow();
+  const [metric, setMetric] = useState("total");
+  const [bucketSel, setBucketSel] = useState("auto");
+  const q = usePolledAsync(() => api.cycleDetail(l, s, e, win, metric, bucketSel),
+    [l, s, e, win, metric, bucketSel]);
+  if (q.err) return <ErrorBox err={q.err} />;
+  if (!q.data) return <Loading />;
+  const { spread, histogram: h, drift, bucket: resolved } = q.data;
+  const total = h.bins.reduce((a, b) => a + b, 0) + h.overflow;
+  const metricLabel = CYCLE_METRICS.find((m) => m.key === metric)?.label ?? metric;
+
+  const MetricPicker = () => (
+    <div className="winpick" role="group" aria-label="cycle metric">
+      {CYCLE_METRICS.map((m) => (
+        <button key={m.key} className={m.key === metric ? "active" : ""}
+                onClick={() => setMetric(m.key)}>{m.label}</button>
+      ))}
+    </div>
+  );
+
+  return (
+    <>
+      {spread.length > 0 && (
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+            <h2 style={{ margin: 0 }}>Cycle spread ({winLabel(win)})</h2>
+            <span className="muted" style={{ fontSize: 13 }}>
+              total vs its work and exchange phases
+            </span>
+          </div>
+          <BoxPlot
+            rows={spread.map((r) => ({
+              name: r.name, detail: `${r.count} cycles`,
+              min: r.min_ms, p05: r.p05_ms, p25: r.p25_ms, p50: r.p50_ms,
+              p75: r.p75_ms, p95: r.p95_ms, max: r.max_ms, n: r.count,
+            }))}
+            fmt={(v) => fmtMs(v)} />
+        </div>
+      )}
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <h2 style={{ margin: 0 }}>Distribution · {metricLabel.toLowerCase()}</h2>
+          <MetricPicker />
+        </div>
+        <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+          {total} cycles · bins to p95
+          {h.overflow > 0 && ` · ${h.overflow} slower than ${fmtMs(h.hi_ms)}`}
+        </p>
+        <Histogram bins={h.bins} lo={h.lo_ms} hi={h.hi_ms} overflow={h.overflow}
+                   fmt={(v) => fmtMs(v)} />
+      </div>
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <h2 style={{ margin: 0 }}>Drift over time · {metricLabel.toLowerCase()}</h2>
+          <div className="winpick" role="group" aria-label="bucket size">
+            {DRIFT_BUCKETS.map((b) => (
+              <button key={b} className={b === bucketSel ? "active" : ""}
+                      onClick={() => setBucketSel(b)}>
+                {b === "auto" ? `auto · ${resolved}` : b}
+              </button>
+            ))}
+          </div>
+        </div>
+        <PercentileBand
+          points={drift.map((d) => ({
+            t: Date.parse(d.bucket_ts), n: d.count,
+            p25: d.p25_ms, p50: d.p50_ms, p75: d.p75_ms, p95: d.p95_ms,
+          }))}
+          fmt={(v) => fmtMs(v)} />
+      </div>
+    </>
+  );
+}
+
 function Cycles({ l, s, e }: P) {
   const { win } = useWindow();
   const q = usePolledAsync(() => api.cycles(l, s, e, win), [l, s, e, win]);
@@ -317,6 +401,7 @@ function Cycles({ l, s, e }: P) {
         <Trend points={points} unit="s" />
       </div>
       <Throughput l={l} s={s} e={e} />
+      <CycleShapeAndDrift l={l} s={s} e={e} />
       {selected && (
         <div className="card" ref={waterfallRef}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>

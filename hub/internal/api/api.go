@@ -116,6 +116,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/stepstats", s.handleStepStats)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/stepdetail", s.handleStepDetail)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/cycles", s.handleCycles)
+	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/cycledetail", s.handleCycleDetail)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/throughput", s.handleThroughput)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/downs", s.handleDowns)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/debug", s.handleDebug)
@@ -461,11 +462,11 @@ func (s *Server) stepStats(ctx context.Context, emID int, from, to time.Time) ([
 	return out, rows.Err()
 }
 
-// StepHistogram is the duration distribution SHAPE of one step: counts in
+// DurationHistogram is the duration distribution SHAPE of one step: counts in
 // equal-width bins across [lo,hi]. The domain stops at p95 and everything
 // past it lands in Overflow, otherwise a single multi-minute execution puts
 // every real observation in bin 0.
-type StepHistogram struct {
+type DurationHistogram struct {
 	LoMs     float64 `json:"lo_ms"`
 	HiMs     float64 `json:"hi_ms"`
 	BinMs    float64 `json:"bin_ms"`
@@ -473,9 +474,9 @@ type StepHistogram struct {
 	Overflow int     `json:"overflow"` // executions slower than hi
 }
 
-// StepDriftPoint is one time bucket of a step's duration distribution, so
+// DriftPoint is one time bucket of a step's duration distribution, so
 // you can see the spread move rather than just its total.
-type StepDriftPoint struct {
+type DriftPoint struct {
 	BucketTs time.Time `json:"bucket_ts"`
 	Count    int       `json:"count"`
 	P25Ms    float64   `json:"p25_ms"`
@@ -487,8 +488,8 @@ type StepDriftPoint struct {
 const stepHistogramBins = 24
 
 func (s *Server) stepHistogram(ctx context.Context, emID int, seq int16, step string,
-	from, to time.Time) (StepHistogram, error) {
-	h := StepHistogram{Bins: make([]int, stepHistogramBins)}
+	from, to time.Time) (DurationHistogram, error) {
+	h := DurationHistogram{Bins: make([]int, stepHistogramBins)}
 	var lo, hi *float64
 	err := s.pool.QueryRow(ctx, `
 	    SELECT min(duration_ms)::float8,
@@ -536,7 +537,7 @@ func (s *Server) stepHistogram(ctx context.Context, emID int, seq int16, step st
 }
 
 func (s *Server) stepDrift(ctx context.Context, emID int, seq int16, step string,
-	from, to time.Time, bucket time.Duration) ([]StepDriftPoint, error) {
+	from, to time.Time, bucket time.Duration) ([]DriftPoint, error) {
 	rows, err := s.pool.Query(ctx, `
 	    SELECT to_timestamp(floor(extract(epoch FROM start_ts) / $6) * $6) AS bucket_ts,
 	           count(*)::int,
@@ -553,9 +554,140 @@ func (s *Server) stepDrift(ctx context.Context, emID int, seq int16, step string
 		return nil, err
 	}
 	defer rows.Close()
-	out := []StepDriftPoint{}
+	out := []DriftPoint{}
 	for rows.Next() {
-		var p StepDriftPoint
+		var p DriftPoint
+		if err := rows.Scan(&p.BucketTs, &p.Count, &p.P25Ms, &p.P50Ms,
+			&p.P75Ms, &p.P95Ms); err != nil {
+			return nil, err
+		}
+		p.BucketTs = p.BucketTs.UTC()
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// cycleMetrics whitelists the columns the cycle charts may aggregate. The
+// metric name reaches SQL as an identifier, so it must never come straight
+// from the query string.
+var cycleMetrics = map[string]string{
+	"total":    "total_ms",
+	"work":     "work_ms",
+	"exchange": "exchange_ms",
+}
+
+// CycleSpread is one metric's distribution across the window, for the
+// total-vs-work-vs-exchange comparison.
+type CycleSpread struct {
+	Name  string  `json:"name"`
+	Count int     `json:"count"`
+	MinMs float64 `json:"min_ms"`
+	P05Ms float64 `json:"p05_ms"`
+	P25Ms float64 `json:"p25_ms"`
+	P50Ms float64 `json:"p50_ms"`
+	P75Ms float64 `json:"p75_ms"`
+	P95Ms float64 `json:"p95_ms"`
+	MaxMs float64 `json:"max_ms"`
+}
+
+func (s *Server) cycleSpread(ctx context.Context, emID int, from, to time.Time) ([]CycleSpread, error) {
+	out := []CycleSpread{}
+	for _, name := range []string{"total", "work", "exchange"} {
+		col := cycleMetrics[name]
+		var v CycleSpread
+		v.Name = name
+		var mn, p05, p25, p50, p75, p95, mx *float64
+		err := s.pool.QueryRow(ctx, `
+		    SELECT count(*)::int, min(`+col+`)::float8,
+		           percentile_cont(0.05) WITHIN GROUP (ORDER BY `+col+`),
+		           percentile_cont(0.25) WITHIN GROUP (ORDER BY `+col+`),
+		           percentile_cont(0.50) WITHIN GROUP (ORDER BY `+col+`),
+		           percentile_cont(0.75) WITHIN GROUP (ORDER BY `+col+`),
+		           percentile_cont(0.95) WITHIN GROUP (ORDER BY `+col+`),
+		           max(`+col+`)::float8
+		    FROM cycle
+		    WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
+		      AND `+col+` IS NOT NULL`, emID, from, to).
+			Scan(&v.Count, &mn, &p05, &p25, &p50, &p75, &p95, &mx)
+		if err != nil {
+			return nil, err
+		}
+		if v.Count == 0 || mn == nil {
+			continue // work/exchange are null until a cycle-complete step is set
+		}
+		v.MinMs, v.P05Ms, v.P25Ms = *mn, *p05, *p25
+		v.P50Ms, v.P75Ms, v.P95Ms, v.MaxMs = *p50, *p75, *p95, *mx
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (s *Server) cycleHistogram(ctx context.Context, emID int, from, to time.Time,
+	metric string) (DurationHistogram, error) {
+	col := cycleMetrics[metric]
+	h := DurationHistogram{Bins: make([]int, stepHistogramBins)}
+	var lo, hi *float64
+	err := s.pool.QueryRow(ctx, `
+	    SELECT min(`+col+`)::float8,
+	           percentile_cont(0.95) WITHIN GROUP (ORDER BY `+col+`)
+	    FROM cycle WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
+	      AND `+col+` IS NOT NULL`, emID, from, to).Scan(&lo, &hi)
+	if err != nil || lo == nil || hi == nil {
+		return h, err
+	}
+	if *hi <= *lo {
+		*hi = *lo + 1
+	}
+	h.LoMs, h.HiMs = *lo, *hi
+	h.BinMs = (*hi - *lo) / stepHistogramBins
+
+	rows, err := s.pool.Query(ctx, `
+	    SELECT width_bucket(`+col+`::float8, $4, $5, $6) AS bin, count(*)::int
+	    FROM cycle WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
+	      AND `+col+` IS NOT NULL
+	    GROUP BY bin ORDER BY bin`,
+		emID, from, to, h.LoMs, h.HiMs, stepHistogramBins)
+	if err != nil {
+		return h, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var bin, n int
+		if err := rows.Scan(&bin, &n); err != nil {
+			return h, err
+		}
+		switch {
+		case bin > stepHistogramBins:
+			h.Overflow += n
+		case bin < 1:
+			h.Bins[0] += n
+		default:
+			h.Bins[bin-1] += n
+		}
+	}
+	return h, rows.Err()
+}
+
+func (s *Server) cycleDrift(ctx context.Context, emID int, from, to time.Time,
+	bucket time.Duration, metric string) ([]DriftPoint, error) {
+	col := cycleMetrics[metric]
+	rows, err := s.pool.Query(ctx, `
+	    SELECT to_timestamp(floor(extract(epoch FROM start_ts) / $4) * $4) AS bucket_ts,
+	           count(*)::int,
+	           percentile_cont(0.25) WITHIN GROUP (ORDER BY `+col+`),
+	           percentile_cont(0.50) WITHIN GROUP (ORDER BY `+col+`),
+	           percentile_cont(0.75) WITHIN GROUP (ORDER BY `+col+`),
+	           percentile_cont(0.95) WITHIN GROUP (ORDER BY `+col+`)
+	    FROM cycle WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
+	      AND `+col+` IS NOT NULL
+	    GROUP BY 1 ORDER BY 1`, emID, from, to, int(bucket.Seconds()))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DriftPoint{}
+	for rows.Next() {
+		var p DriftPoint
 		if err := rows.Scan(&p.BucketTs, &p.Count, &p.P25Ms, &p.P50Ms,
 			&p.P75Ms, &p.P95Ms); err != nil {
 			return nil, err

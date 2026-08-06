@@ -515,6 +515,51 @@ func (s *Server) handleStepDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCycleDetail mirrors stepdetail for whole cycles: the spread of
+// total vs work vs exchange, plus the shape and drift of one chosen metric.
+func (s *Server) handleCycleDetail(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	from, to, err := s.window(r)
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	metric := r.URL.Query().Get("metric")
+	if _, ok := cycleMetrics[metric]; !ok {
+		metric = "total"
+	}
+	spread, err := s.cycleSpread(r.Context(), em.ID, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	hist, err := s.cycleHistogram(r.Context(), em.ID, from, to, metric)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	n := hist.Overflow
+	for _, c := range hist.Bins {
+		n += c
+	}
+	bName, bDur := autoStepDriftBucket(from, to, n)
+	if q := r.URL.Query().Get("bucket"); q != "" && q != "auto" {
+		bName, bDur = parseBucket(q)
+	}
+	drift, err := s.cycleDrift(r.Context(), em.ID, from, to, bDur, metric)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"from": from, "to": to, "metric": metric,
+		"spread": spread, "histogram": hist, "bucket": bName, "drift": drift,
+	})
+}
+
 func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
 	em, ok := s.emIDOr404(w, r)
 	if !ok {

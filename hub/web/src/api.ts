@@ -175,6 +175,20 @@ export type StepDetail = {
   drift: { bucket_ts: string; count: number; p25_ms: number; p50_ms: number; p75_ms: number; p95_ms: number }[];
 };
 
+export type CycleSpreadRow = {
+  name: string; count: number;
+  min_ms: number; p05_ms: number; p25_ms: number; p50_ms: number;
+  p75_ms: number; p95_ms: number; max_ms: number;
+};
+
+export type CycleDetail = {
+  metric: string;
+  bucket: string;
+  spread: CycleSpreadRow[];
+  histogram: { lo_ms: number; hi_ms: number; bin_ms: number; bins: number[]; overflow: number };
+  drift: { bucket_ts: string; count: number; p25_ms: number; p50_ms: number; p75_ms: number; p95_ms: number }[];
+};
+
 export type ThroughputBucket = {
   bucket_ts: string;
   count: number;
@@ -369,6 +383,10 @@ export const api = {
                seq: number, bucket = "auto") =>
     get<StepDetail>(`/api/v2/ems/${l}/${s}/${e}/stepdetail?${winQuery(win)}` +
       `&step=${encodeURIComponent(step)}&seq=${seq}&bucket=${bucket}`),
+  cycleDetail: (l: string, s: string, e: string, win: string,
+                metric = "total", bucket = "auto") =>
+    get<CycleDetail>(`/api/v2/ems/${l}/${s}/${e}/cycledetail?${winQuery(win)}` +
+      `&metric=${metric}&bucket=${bucket}`),
   cycles: (l: string, s: string, e: string, win: string) =>
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?${winQuery(win)}`),
