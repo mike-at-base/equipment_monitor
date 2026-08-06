@@ -75,9 +75,15 @@ VERSION : 0.1
       statSendCooldown : Bool;
       statHeartbeatReset : Bool;
       // v5 branch attribution (see REGION Branch Attribution)
-      statDwellStep : String[60];         // step the latches below belong to
-      statDwellBranch : String[60];       // nextStep of the branch that fired
+      statDwellStep : String[60];         // step the caches below belong to
+      statDwellBranch : String[60];       // published for ONE scan on transition
       statDwellReason : String[200];      // that branch's unmet conditions
+      statDwellPublished : Bool;          // clear the two above next scan
+      // per-branch caches for the CURRENT step, kept so the branch can be
+      // identified after the transition, when activeStepBranch already
+      // describes the next step
+      statBranchNext : Array[0.."SEQUENCE_MAX_STEP_BRANCHES"] of String[60];
+      statBranchReason : Array[0.."SEQUENCE_MAX_STEP_BRANCHES"] of String[200];
       statUnmetMask : Array[0.."SEQUENCE_MAX_STEP_BRANCHES"] of Word;
    END_VAR
 
@@ -96,7 +102,7 @@ VERSION : 0.1
       tempSerRet : Int;
       tempLdt : LDT;
       tempDesc : String;
-      tempBranchOk : Bool;   // a branch's permissive is fully satisfied
+      tempStepNow : String[60];   // active step this scan
       ii : Int;
       jj : Int;
    END_VAR
@@ -123,9 +129,10 @@ BEGIN
     // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
     // 0.2.0        2026-07-23              mwebb               wire v4: add lineName input, appended to payload (offset 1108); collector routes on it instead of source IP (NAT-proof, enables auto-registration). v3 offsets unchanged.
     // 0.2.1        2026-07-24              mwebb               set identity (lineName/stationName/emLabel/version) EVERY scan instead of first-scan only, so changing lineName after the FB has run takes effect without a memory reset
-    // 0.3.2        2026-08-06              mwebb               fix v5 regression: statTxBuffer was still 1180 bytes while the v5 payload is 1406, so Serialize failed, POS stayed 0, and TUSEND with LEN=0 transmitted the WHOLE buffer as 1180 zero bytes (version byte 0 -> collector drops it) while reporting DONE and sendErrors=0. Buffer grown to 1406 and the Serialize return is now checked instead of ignored.
-    // 0.3.1        2026-08-06              mwebb               fix silent mis-send: statAddrParam (remote IP/port) was latched on first scan, so editing remoteIp*/remotePort on the call did nothing until a memory reset. UDP has no ack, so a stale destination still shows connected=TRUE, sendErrors=0, queueDrops=0 while nothing arrives. Now refreshed every scan (same fix as lineName in 0.2.1).
     // 0.3.0        2026-07-28              mwebb               wire v5: branch attribution. waitingOn unions ALL branches, so a multi-branch step always reports the not-taken branch's discriminator. Latch per-branch unmet conditions as a bitmask during the dwell and materialize dwellReason + branchTaken on the scan a branch's permissive satisfies (before activeStepBranch is overwritten). v4 offsets unchanged; collector still accepts v4.
+    // 0.3.1        2026-08-06              mwebb               fix silent mis-send: statAddrParam (remote IP/port) was latched on first scan, so editing remoteIp*/remotePort on the call did nothing until a memory reset. UDP has no ack, so a stale destination still shows connected=TRUE, sendErrors=0, queueDrops=0 while nothing arrives. Now refreshed every scan (same fix as lineName in 0.2.1).
+    // 0.3.2        2026-08-06              mwebb               fix v5 regression: statTxBuffer was still 1180 bytes while the v5 payload is 1406, so Serialize failed, POS stayed 0, and TUSEND with LEN=0 transmitted the WHOLE buffer as 1180 zero bytes (version byte 0 -> collector drops it) while reporting DONE and sendErrors=0. Buffer grown to 1406 and the Serialize return is now checked instead of ignored.
+    // 0.4.0        2026-08-06              mwebb               branch attribution by DESTINATION: 0.3.0 waited to observe a branch permissive satisfy while the step was still active, which never happens when SequenceControl advances the step in the same scan before this FB runs (0 of 4161 step events captured a branch, including multi-minute dwells). Now caches each branch nextStep + its unmet conditions during the dwell and, on the transition, attributes to the cached branch whose nextStep is where we landed. Independent of FB call order. Published for one scan; the event queue guarantees delivery.
     END_REGION
 
     REGION Initial Scan
@@ -357,76 +364,90 @@ BEGIN
     END_REGION
 
     REGION Branch Attribution
-        // waitingOn above is the UNION of unmet conditions over every enabled
-        // branch, which on a multi-branch step is misleading: the branch that
-        // is NOT taken has a discriminator that stays false for the whole
-        // dwell (if it were true the sequencer would already have jumped), so
-        // it always appears in the reason.  Example — ST12000 step 240:
+        // waitingOn is the UNION of unmet conditions over every enabled
+        // branch, which on a multi-branch step always names the branch NOT
+        // taken: its discriminator is false for the whole dwell, because if
+        // it were true the sequencer would already have jumped. Example --
+        // CELL1 ST12000 step 240:
         //     branch A -> skip : 'dispense work state complete'
         //     branch B -> 250  : 'not complete', '7 stacks', '8 stacks'
-        // and the union always names A's condition even though B is the path.
         //
-        // Rather than guess which branch is live, wait until the machine TELLS
-        // us: the branch whose permissive goes fully OK is the one the
-        // sequencer takes.  Latch each branch's unmet conditions as a bitmask
-        // during the dwell (cheap), then materialize the text on the scan that
-        // branch satisfies — one scan BEFORE the transition overwrites
-        // activeStepBranch with the next step's branches, the same race called
-        // out in Fault Reason Capture above.
+        // The branch cannot be identified by watching for a permissive to
+        // satisfy: when SequenceControl runs BEFORE this FB in the scan, it
+        // sees the permissive, advances the step and rewrites
+        // activeStepBranch all within one scan, so the satisfying state is
+        // never observable here. (0.3.0 tried exactly that and captured
+        // nothing across thousands of steps, including multi-minute dwells.)
+        //
+        // So identify it by DESTINATION instead. Cache each branch's
+        // nextStep and its unmet conditions while the step is active; on the
+        // scan the step changes, the branch taken is the cached one whose
+        // nextStep is where we landed. That holds regardless of FB call
+        // order, because it never needs the satisfying instant -- only the
+        // step we ended up in.
+        //
+        // Published for ONE scan. That is sufficient: the change detection
+        // below turns it into an event datagram and the queue guarantees
+        // delivery. Holding it longer would leak the previous step's branch
+        // onto the next step's records.
+        IF #statDwellPublished THEN
+            #statDwellBranch := '';
+            #statDwellReason := '';
+            #statDwellPublished := FALSE;
+        END_IF;
+
         IF #tempSeqValid THEN
-            // a new step invalidates every latch
-            IF #controlInterface.stepControl[#tempSeqIdx].step <> #statDwellStep THEN
-                #statDwellStep := #controlInterface.stepControl[#tempSeqIdx].step;
-                #statDwellBranch := '';
-                #statDwellReason := '';
+            #tempStepNow := #controlInterface.stepControl[#tempSeqIdx]."step";
+
+            IF #tempStepNow <> #statDwellStep THEN
+                // transition: the caches still describe the step we left
+                FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
+                    IF LEN(#statDwellBranch) = 0 THEN
+                        IF LEN(#statBranchNext[#ii]) > 0 THEN
+                            IF #statBranchNext[#ii] = #tempStepNow THEN
+                                #statDwellBranch := #statBranchNext[#ii];
+                                #statDwellReason := #statBranchReason[#ii];
+                                #statDwellPublished := TRUE;
+                            END_IF;
+                        END_IF;
+                    END_IF;
+                END_FOR;
+                // no match -> forced jump, fault or reset; publish nothing
+                // and let the collector keep the union text.
+
+                #statDwellStep := #tempStepNow;
                 FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
                     #statUnmetMask[#ii] := W#16#0000;
+                    #statBranchNext[#ii] := '';
+                    #statBranchReason[#ii] := '';
                 END_FOR;
             END_IF;
 
-            // accumulate what has been unmet so far in this dwell, per branch
+            // cache each branch's destination and accumulate the conditions
+            // that have been unmet at any point during this dwell
             FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
                 IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
+                    #statBranchNext[#ii] := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].nextStep;
                     FOR #jj := 0 TO 15 DO
                         IF NOT #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].ok THEN
-                            #statUnmetMask[#ii] := #statUnmetMask[#ii]
-                                OR SHL(IN := W#16#0001, N := #jj);
+                            // first time this condition is seen unmet in this dwell
+                            IF (#statUnmetMask[#ii] AND SHL(IN := W#16#0001, N := #jj)) = W#16#0000 THEN
+                                #statUnmetMask[#ii] := #statUnmetMask[#ii] OR SHL(IN := W#16#0001, N := #jj);
+                                #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
+                                IF LEN(#tempDesc) > 0 THEN
+                                    IF LEN(#statBranchReason[#ii]) = 0 THEN
+                                        #statBranchReason[#ii] := LEFT(IN := #tempDesc, L := 200);
+                                    ELSIF (LEN(#statBranchReason[#ii]) + LEN(#tempDesc) + 2) <= 200 THEN
+                                        #statBranchReason[#ii] := CONCAT(IN1 := #statBranchReason[#ii],
+                                                                          IN2 := '; ',
+                                                                          IN3 := #tempDesc);
+                                    END_IF;
+                                END_IF;
+                            END_IF;
                         END_IF;
                     END_FOR;
                 END_IF;
             END_FOR;
-
-            // first branch to satisfy wins, matching sequencer branch priority.
-            // Latched once per dwell so a later branch cannot overwrite it.
-            IF LEN(#statDwellBranch) = 0 THEN
-                FOR #ii := 0 TO "SEQUENCE_MAX_STEP_BRANCHES" DO
-                    IF LEN(#statDwellBranch) = 0 THEN
-                        #tempBranchOk := FALSE;
-                        IF #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].enabled THEN
-                            #tempBranchOk := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.status.ok;
-                        END_IF;
-                        IF #tempBranchOk THEN
-                            #statDwellBranch := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].nextStep;
-                            // descriptions are still THIS step's on this scan
-                            #statDwellReason := '';
-                            FOR #jj := 0 TO 15 DO
-                                IF (#statUnmetMask[#ii] AND SHL(IN := W#16#0001, N := #jj)) <> W#16#0000 THEN
-                                    #tempDesc := #controlInterface.stepControl[#tempSeqIdx].activeStepBranch[#ii].permissive.condition[#jj].description;
-                                    IF LEN(#tempDesc) > 0 THEN
-                                        IF LEN(#statDwellReason) = 0 THEN
-                                            #statDwellReason := LEFT(IN := #tempDesc, L := 200);
-                                        ELSIF (LEN(#statDwellReason) + LEN(#tempDesc) + 2) <= 200 THEN
-                                            #statDwellReason := CONCAT(IN1 := #statDwellReason,
-                                                                       IN2 := '; ',
-                                                                       IN3 := #tempDesc);
-                                        END_IF;
-                                    END_IF;
-                                END_IF;
-                            END_FOR;
-                        END_IF;
-                    END_IF;
-                END_FOR;
-            END_IF;
         END_IF;
         #statSnapshot.branchTaken := #statDwellBranch;
         #statSnapshot.dwellReason := #statDwellReason;

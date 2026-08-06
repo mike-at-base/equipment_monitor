@@ -149,13 +149,26 @@ branch (1 unmet vs 2) — the wrong one. A discriminator is indistinguishable
 from a real wait unless the PLC is told which is which, and a tagging
 convention only works if every engineer follows it forever.
 
-So the FB waits until the machine answers the question itself. It latches
-each branch's unmet conditions as a bitmask during the dwell, and on the
-scan a branch's `permissive.status.ok` goes true — the branch the sequencer
-is about to take — it materializes `dwellReason` from that branch's latched
-mask and sets `branchTaken`. That happens one scan *before* the transition
-overwrites `activeStepBranch` with the next step's branches, the same race
-that makes after-the-fact OPC reads useless.
+So the FB waits until the machine answers the question itself — but it
+cannot do that by watching for a permissive to satisfy. When
+`SequenceControl` runs **before** this FB in the scan, it sees the
+permissive, advances the step and rewrites `activeStepBranch` all within
+one scan, so the satisfying state is never observable here. (v0.3.0 tried
+exactly that and captured nothing across 4161 step events, including
+multi-minute dwells.)
+
+Instead the branch is identified by **destination**. While a step is
+active the FB caches, per branch, its `nextStep` and the conditions that
+have been unmet at any point during the dwell. On the scan the step
+changes, the branch taken is the cached one whose `nextStep` is where the
+sequencer landed, and its accumulated conditions become `dwellReason`.
+This holds regardless of FB call order, because it never needs the
+satisfying instant — only the step actually reached.
+
+`branchTaken`/`dwellReason` are published for a single scan. That is
+enough: they are part of change detection, so the scan they appear is an
+event datagram, and the send queue guarantees delivery. Holding them
+longer would leak the previous step's branch onto the next step's records.
 
 The collector then closes the flow interval with `dwellReason` instead of
 `waitingOn`. Consequences worth knowing:
@@ -164,8 +177,13 @@ The collector then closes the flow interval with `dwellReason` instead of
   retroactive — it lands when the wait ends.
 - A dwell that never ends (a genuine ongoing stoppage) has no branch to
   attribute to, so it keeps the union text.
-- A step forced or jumped without a branch satisfying leaves both fields
-  empty, and the union stands. Nothing is invented.
+- A step forced or jumped to somewhere no branch points at leaves both
+  fields empty, and the union stands. Nothing is invented.
+- If two branches share a `nextStep` the destination is ambiguous; the
+  first match wins.
+
+`branchTaken` is also stored per step execution in `step_event`, so you can
+ask which path a step took and what each path costs in dwell time.
 
 ## PLC integration (per EM)
 
