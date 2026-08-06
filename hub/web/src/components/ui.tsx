@@ -45,6 +45,79 @@ export function StateChip({ state }: { state: string }) {
 // ── horizontal bar list ──────────────────────────────────────────────────
 // layout: default = truncated side label; wrap = wrapping side label;
 // stacked = full text above the bar (best for long PLC reason strings).
+// ── horizontal box plot ──────────────────────────────────────────────────
+// One row per category. Box = p25..p75, rule = median, whiskers = p05..p95,
+// tick = max. Single series, so no legend and no categorical palette: the
+// title names the measure and the numbers are in the tooltip and the table.
+// A shared linear scale across rows makes rows comparable at a glance.
+export type BoxRow = {
+  name: string;
+  min: number; p05: number; p25: number; p50: number;
+  p75: number; p95: number; max: number;
+  n: number;
+  detail?: string;
+  flagged?: boolean; // draw the max tick in the down color (e.g. faulted)
+};
+
+export function BoxPlot({ rows, fmt, selected, onSelect }: {
+  rows: BoxRow[];
+  fmt: (v: number) => string;
+  selected?: string;
+  onSelect?: (name: string) => void;
+}) {
+  // Scale to the p95 envelope, NOT the max: one step that sat open across a
+  // shutdown has a max in the tens of minutes and would flatten every box to
+  // a hairline. Anything past the domain clamps to the right edge and is
+  // marked, so the outlier is still visible without destroying the chart.
+  const hi = Math.max(...rows.map((r) => r.p95), 1);
+  const pc = (v: number) => `${Math.max(0, Math.min(100, (v / hi) * 100))}%`;
+  const anyClamped = rows.some((r) => r.max > hi);
+  return (
+    <div className="boxplot">
+      {rows.map((r) => {
+        const on = r.name === selected;
+        return (
+          <div key={r.name}
+               className={`bp-row${onSelect ? " clickable" : ""}${on ? " sel" : ""}`}
+               onClick={onSelect ? () => onSelect(r.name) : undefined}
+               title={`${r.name}  (n=${r.n})
+min ${fmt(r.min)} · p05 ${fmt(r.p05)} · p25 ${fmt(r.p25)}
+median ${fmt(r.p50)}
+p75 ${fmt(r.p75)} · p95 ${fmt(r.p95)} · max ${fmt(r.max)}`}>
+            <span className="bp-name">{r.name}</span>
+            <div className="bp-track">
+              {/* whisker p05..p95 */}
+              <div className="bp-whisker"
+                   style={{ left: pc(r.p05), width: pc(r.p95 - r.p05) }} />
+              {/* box p25..p75 */}
+              <div className="bp-box"
+                   style={{ left: pc(r.p25), width: pc(Math.max(r.p75 - r.p25, 0)) }} />
+              {/* median */}
+              <div className="bp-median" style={{ left: pc(r.p50) }} />
+              {/* max, so a timeout outlier is visible even when percentiles are tight */}
+              <div className={`bp-max${r.flagged ? " bad" : ""}${r.max > hi ? " clamped" : ""}`}
+                   style={{ left: pc(r.max) }} />
+            </div>
+            <span className="bp-val">{fmt(r.p50)}</span>
+          </div>
+        );
+      })}
+      <div className="bp-legend">
+        <span><i className="bp-k-box" />p25–p75</span>
+        <span><i className="bp-k-median" />median</span>
+        <span><i className="bp-k-whisker" />p05–p95</span>
+        <span><i className="bp-k-max" />max</span>
+        <span className="muted">scale 0 – {fmt(hi)} (p95)</span>
+        {anyClamped && (
+          <span className="muted">
+            <i className="bp-k-clamped" />max beyond scale — see tooltip
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Bars({ rows, wrap, stacked, valueFmt }: {
   rows: { name: string; value: number; color?: string; suffix?: string; detail?: string }[];
   wrap?: boolean;

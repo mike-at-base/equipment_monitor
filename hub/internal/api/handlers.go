@@ -445,6 +445,27 @@ func (s *Server) handleSteps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// handleStepStats returns the per-step duration distribution over the whole
+// window. The Steps tab used to average only the page it had loaded, which
+// is a biased sample of whatever happened to be newest.
+func (s *Server) handleStepStats(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	from, to, err := s.window(r)
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	stats, err := s.stepStats(r.Context(), em.ID, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, map[string]any{"from": from, "to": to, "steps": stats})
+}
+
 func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
 	em, ok := s.emIDOr404(w, r)
 	if !ok {

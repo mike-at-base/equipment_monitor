@@ -113,6 +113,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/compare", s.handleCompare)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/intervals", s.handleIntervals)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/steps", s.handleSteps)
+	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/stepstats", s.handleStepStats)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/cycles", s.handleCycles)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/throughput", s.handleThroughput)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/downs", s.handleDowns)
@@ -394,6 +395,63 @@ func topReasons(downs []DownRow, n int) []ReasonAgg {
 		out = out[:n]
 	}
 	return out
+}
+
+// StepStat is the duration distribution of one step over the window —
+// computed server-side across EVERY execution, not the page the UI happens
+// to be showing. Box plot: box p25..p75, median p50, whiskers p05..p95;
+// min/max/avg carried separately because a step timeout shows up as the
+// max long before it moves a percentile.
+type StepStat struct {
+	SeqIndex int16   `json:"seq_index"`
+	Step     string  `json:"step"`
+	Desc     string  `json:"description"`
+	Count    int     `json:"count"`
+	Faulted  int     `json:"faulted"`
+	MinMs    float64 `json:"min_ms"`
+	P05Ms    float64 `json:"p05_ms"`
+	P25Ms    float64 `json:"p25_ms"`
+	P50Ms    float64 `json:"p50_ms"`
+	P75Ms    float64 `json:"p75_ms"`
+	P95Ms    float64 `json:"p95_ms"`
+	MaxMs    float64 `json:"max_ms"`
+	AvgMs    float64 `json:"avg_ms"`
+}
+
+func (s *Server) stepStats(ctx context.Context, emID int, from, to time.Time) ([]StepStat, error) {
+	rows, err := s.pool.Query(ctx, `
+	    SELECT seq_index, step_name,
+	           COALESCE((array_agg(step_desc ORDER BY start_ts DESC))[1], ''),
+	           count(*)::int,
+	           count(*) FILTER (WHERE was_faulted)::int,
+	           min(duration_ms)::float8,
+	           percentile_cont(0.05) WITHIN GROUP (ORDER BY duration_ms),
+	           percentile_cont(0.25) WITHIN GROUP (ORDER BY duration_ms),
+	           percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms),
+	           percentile_cont(0.75) WITHIN GROUP (ORDER BY duration_ms),
+	           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms),
+	           max(duration_ms)::float8,
+	           avg(duration_ms)::float8
+	    FROM step_event
+	    WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
+	    GROUP BY seq_index, step_name
+	    ORDER BY percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms) DESC`,
+		emID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StepStat{}
+	for rows.Next() {
+		var v StepStat
+		if err := rows.Scan(&v.SeqIndex, &v.Step, &v.Desc, &v.Count, &v.Faulted,
+			&v.MinMs, &v.P05Ms, &v.P25Ms, &v.P50Ms, &v.P75Ms, &v.P95Ms,
+			&v.MaxMs, &v.AvgMs); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 type CycleStats struct {

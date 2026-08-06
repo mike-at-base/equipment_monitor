@@ -155,6 +155,17 @@ export type StepsPage = {
   next_offset?: number;
 };
 
+// Per-step duration distribution over the whole window (server-side).
+export type StepStat = {
+  seq_index: number;
+  step: string;
+  description: string;
+  count: number;
+  faulted: number;
+  min_ms: number; p05_ms: number; p25_ms: number; p50_ms: number;
+  p75_ms: number; p95_ms: number; max_ms: number; avg_ms: number;
+};
+
 export type ThroughputBucket = {
   bucket_ts: string;
   count: number;
@@ -301,6 +312,9 @@ export const api = {
   stepsRange: (l: string, s: string, e: string, from: string, to: string) =>
     get<StepsPage>(`/api/v2/ems/${l}/${s}/${e}/steps?from=${encodeURIComponent(from)}` +
       `&to=${encodeURIComponent(to)}&limit=500&offset=0`),
+  stepStats: (l: string, s: string, e: string, win: string) =>
+    get<{ from: string; to: string; steps: StepStat[] }>(
+      `/api/v2/ems/${l}/${s}/${e}/stepstats?window=${win}`),
   cycles: (l: string, s: string, e: string, win: string) =>
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?window=${win}`),

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
-import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
-import { Bars, ErrorBox, Gantt, Loading, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
+import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, StepStat, STATE_LABEL, STATE_ORDER } from "../api";
+import { Bars, BoxPlot, ErrorBox, Gantt, Loading, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
 export default function EMPage() {
@@ -85,27 +85,9 @@ function Steps({ l, s, e }: P) {
   const fromN = total === 0 ? 0 : page * STEPS_PAGE + 1;
   const toN = Math.min((page + 1) * STEPS_PAGE, total);
 
-  // per-step aggregate for the summary bars (this page only)
-  const agg: Record<string, { total: number; n: number }> = {};
-  for (const st of steps) {
-    agg[st.step] = agg[st.step] ?? { total: 0, n: 0 };
-    agg[st.step].total += st.duration_ms;
-    agg[st.step].n++;
-  }
-  const avg = Object.entries(agg)
-    .map(([step, a]) => ({ step, avg: a.total / a.n, n: a.n }))
-    .sort((a, b) => b.avg - a.avg)
-    .slice(0, 12);
-
   return (
     <>
-      <div className="card">
-        <h2>Average step duration ({win}) · this page</h2>
-        <Bars rows={avg.map((r) => ({
-          name: `${r.step} (×${r.n})`, value: r.avg / 1000, suffix: " s",
-          color: "var(--grounded)",
-        }))} />
-      </div>
+      <StepSpread l={l} s={s} e={e} />
       <div className="card">
         <div className="pager">
           <h2 style={{ margin: 0 }}>
@@ -146,6 +128,84 @@ function Steps({ l, s, e }: P) {
           </table>
         </div>
       </div>
+    </>
+  );
+}
+
+// Duration spread per step, over the WHOLE window (the table below is
+// paged; averaging only the visible page is a biased sample). Pick a step
+// to see its numbers.
+function StepSpread({ l, s, e }: P) {
+  const { win } = useWindow();
+  const q = usePolledAsync(() => api.stepStats(l, s, e, win), [l, s, e, win]);
+  const [sel, setSel] = useState<string>();
+  const [showAll, setShowAll] = useState(false);
+  if (q.err) return <ErrorBox err={q.err} />;
+  if (!q.data) return <Loading />;
+  const all = q.data.steps;
+  if (all.length === 0) {
+    return (
+      <div className="card">
+        <h2>Step duration spread ({win})</h2>
+        <div className="empty">No step history in this window.</div>
+      </div>
+    );
+  }
+  const multiSeq = new Set(all.map((r) => r.seq_index)).size > 1;
+  const key = (r: StepStat) => (multiSeq ? `${r.seq_index}·${r.step}` : r.step);
+  const shown = showAll ? all : all.slice(0, 15);
+  const picked = all.find((r) => key(r) === sel);
+
+  return (
+    <>
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <h2 style={{ margin: 0 }}>Step duration spread ({win})</h2>
+          <span className="muted" style={{ fontSize: 13 }}>
+            {all.length} steps · slowest median first · click a step for detail
+          </span>
+        </div>
+        <BoxPlot
+          rows={shown.map((r) => ({
+            name: key(r),
+            min: r.min_ms, p05: r.p05_ms, p25: r.p25_ms, p50: r.p50_ms,
+            p75: r.p75_ms, p95: r.p95_ms, max: r.max_ms, n: r.count,
+            flagged: r.faulted > 0,
+          }))}
+          fmt={(v) => fmtMs(v)}
+          selected={sel}
+          onSelect={(n) => setSel(n === sel ? undefined : n)}
+        />
+        {all.length > 15 && (
+          <button type="button" className="linkbtn" style={{ marginTop: 10 }}
+                  onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "Show top 15" : `Show all ${all.length} steps`}
+          </button>
+        )}
+      </div>
+      {picked && (
+        <div className="card">
+          <h2>
+            Step {picked.step}
+            {picked.description ? ` · ${picked.description}` : ""}
+          </h2>
+          <div className="tiles">
+            <T label="Executions" v={`${picked.count}`} />
+            <T label="Faulted" v={`${picked.faulted}`} />
+            <T label="Min" v={fmtMs(picked.min_ms)} />
+            <T label="p25" v={fmtMs(picked.p25_ms)} />
+            <T label="Median" v={fmtMs(picked.p50_ms)} />
+            <T label="p75" v={fmtMs(picked.p75_ms)} />
+            <T label="p95" v={fmtMs(picked.p95_ms)} />
+            <T label="Max" v={fmtMs(picked.max_ms)} />
+          </div>
+          <p className="muted" style={{ marginTop: 12, marginBottom: 0 }}>
+            Spread p25–p75 is {fmtMs(picked.p75_ms - picked.p25_ms)}; the
+            slowest execution took {fmtMs(picked.max_ms)}, {" "}
+            {picked.p50_ms > 0 ? (picked.max_ms / picked.p50_ms).toFixed(1) : "–"}× the median.
+          </p>
+        </div>
+      )}
     </>
   );
 }
