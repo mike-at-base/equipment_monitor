@@ -168,6 +168,7 @@ function StepSpread({ l, s, e }: P) {
         <BoxPlot
           rows={shown.map((r) => ({
             name: key(r),
+            detail: r.description,
             min: r.min_ms, p05: r.p05_ms, p25: r.p25_ms, p50: r.p50_ms,
             p75: r.p75_ms, p95: r.p95_ms, max: r.max_ms, n: r.count,
             flagged: r.faulted > 0,

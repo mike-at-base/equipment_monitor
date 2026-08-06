@@ -510,3 +510,27 @@ table.data tr.sel td { background: var(--livewire); }
    state colors for CVD separation before adding */
 :root { --st-nva: #8a6fb0; }
 .stepchip.on.nva { background: var(--st-nva); color: var(--strike); border-color: var(--st-nva); }
+
+/* box plot row label: step name + description */
+.bp-name { display: flex; flex-direction: column; gap: 0; line-height: 1.25; min-width: 0; }
+.bp-name b { font: 700 12px ui-monospace, Consolas, monospace; }
+.bp-name em {
+  font-style: normal; font-size: 11px; color: var(--secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* drift chart crosshair + value tooltip */
+.pband-wrap { position: relative; cursor: crosshair; }
+.pband-tip {
+  position: absolute; top: 6px; z-index: 3; pointer-events: none;
+  transform: translateX(8px);
+  background: var(--strike); border: 1px solid var(--subtle);
+  border-radius: 8px; padding: 7px 10px; min-width: 132px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / .12); font-size: 12px;
+}
+.pband-tip.flip { transform: translateX(calc(-100% - 8px)); }
+.pband-tip-rows {
+  display: grid; grid-template-columns: auto auto; gap: 1px 10px; margin-top: 4px;
+}
+.pband-tip-rows span { color: var(--secondary); }
+.pband-tip-rows b { text-align: right; font-variant-numeric: tabular-nums; }

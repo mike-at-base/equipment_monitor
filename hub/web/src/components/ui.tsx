@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { customWin, Interval, parseCustomWin, STATE_LABEL, STATE_ORDER, stateColor } from "../api";
 
 // ── shared window (time range) context ───────────────────────────────────
@@ -152,12 +152,30 @@ export function PercentileBand({ points, fmt }: {
   points: { t: number; p25: number; p50: number; p75: number; p95: number; n: number }[];
   fmt: (v: number) => string;
 }) {
-  if (points.length === 0) return <div className="empty">No executions in this window.</div>;
+  // hooks before any early return (rules of hooks)
+  const [hover, setHover] = useState<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
   const W = 1000, H = 180, padL = 4, padR = 4;
-  const hi = Math.max(...points.map((p) => p.p95), 1);
   const n = points.length;
+  const hi = Math.max(...points.map((p) => p.p95), 1);
   const x = (i: number) => padL + (n === 1 ? (W - padL - padR) / 2 : (i / (n - 1)) * (W - padL - padR));
   const y = (v: number) => H - (v / hi) * (H - 8) - 4;
+
+  // snap to the nearest bucket as the pointer moves. The SVG is stretched
+  // (preserveAspectRatio="none"), so work in fractions of the container
+  // width rather than SVG units.
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = wrapRef.current;
+    if (!el || n === 0) return;
+    const r = el.getBoundingClientRect();
+    const frac = (e.clientX - r.left) / Math.max(r.width, 1);
+    const i = n === 1 ? 0 : Math.round(frac * (n - 1));
+    setHover(Math.max(0, Math.min(n - 1, i)));
+  };
+
+  if (n === 0) return <div className="empty">No executions in this window.</div>;
+
   const path = (sel: (p: typeof points[0]) => number) =>
     points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(sel(p)).toFixed(1)}`).join(" ");
   const band = [
@@ -168,20 +186,43 @@ export function PercentileBand({ points, fmt }: {
     }),
     "Z",
   ].join(" ");
+
+  const hp = hover != null ? points[hover] : null;
+  const hpct = hover != null ? (x(hover) / W) * 100 : 0;
+  const flip = hpct > 60; // keep the tooltip inside the card near the right edge
+
   return (
     <div>
-      <svg className="pband" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
-           style={{ height: H }}>
-        <path d={band} fill="var(--grounded)" opacity="0.18" />
-        <path d={path((p) => p.p95)} fill="none" stroke="var(--st-starved)" strokeWidth="2" />
-        <path d={path((p) => p.p50)} fill="none" stroke="var(--grounded)" strokeWidth="2" />
-        {points.map((p, i) => (
-          <circle key={i} cx={x(i)} cy={y(p.p50)} r="4" fill="var(--grounded)">
-            <title>{`${new Date(p.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}  (n=${p.n})
-p25 ${fmt(p.p25)} · median ${fmt(p.p50)} · p75 ${fmt(p.p75)} · p95 ${fmt(p.p95)}`}</title>
-          </circle>
-        ))}
-      </svg>
+      <div className="pband-wrap" ref={wrapRef}
+           onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        <svg className="pband" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
+             style={{ height: H }}>
+          <path d={band} fill="var(--grounded)" opacity="0.18" />
+          <path d={path((p) => p.p95)} fill="none" stroke="var(--st-starved)" strokeWidth="2" />
+          <path d={path((p) => p.p50)} fill="none" stroke="var(--grounded)" strokeWidth="2" />
+          {hover != null && (
+            <line x1={x(hover)} x2={x(hover)} y1={0} y2={H}
+                  stroke="var(--secondary)" strokeWidth="1" strokeDasharray="3 3" />
+          )}
+          {points.map((p, i) => (
+            <circle key={i} cx={x(i)} cy={y(p.p50)} r={i === hover ? 6 : 4}
+                    fill="var(--grounded)"
+                    stroke={i === hover ? "var(--strike)" : "none"} strokeWidth="2" />
+          ))}
+        </svg>
+        {hp && (
+          <div className={`pband-tip${flip ? " flip" : ""}`} style={{ left: `${hpct}%` }}>
+            <b>{new Date(hp.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</b>
+            <span className="muted"> · n={hp.n}</span>
+            <div className="pband-tip-rows">
+              <span>p95</span><b>{fmt(hp.p95)}</b>
+              <span>p75</span><b>{fmt(hp.p75)}</b>
+              <span>median</span><b>{fmt(hp.p50)}</b>
+              <span>p25</span><b>{fmt(hp.p25)}</b>
+            </div>
+          </div>
+        )}
+      </div>
       <div className="gantt-axis">
         {[0, Math.floor((n - 1) / 2), n - 1].filter((i, k, a) => a.indexOf(i) === k).map((i) => (
           <span key={i}>
@@ -238,7 +279,10 @@ export function BoxPlot({ rows, fmt, selected, onSelect }: {
 min ${fmt(r.min)} · p05 ${fmt(r.p05)} · p25 ${fmt(r.p25)}
 median ${fmt(r.p50)}
 p75 ${fmt(r.p75)} · p95 ${fmt(r.p95)} · max ${fmt(r.max)}`}>
-            <span className="bp-name">{r.name}</span>
+            <span className="bp-name">
+              <b>{r.name}</b>
+              {r.detail && <em title={r.detail}>{r.detail}</em>}
+            </span>
             <div className="bp-track">
               {/* whisker p05..p95 */}
               <div className="bp-whisker"
