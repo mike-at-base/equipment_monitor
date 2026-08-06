@@ -7,13 +7,18 @@ TITLE = EM telemetry datagram payload
 // bumping VERSION and updating the collector parser.
 //
 // All fields land on even byte offsets so the serialized layout has no
-// alignment padding surprises.  Serialized size: v3 = 1108 bytes; v4 = 1142
-// (lineName appended last, so v3 byte offsets are unchanged and a v4
-// datagram is a strict superset of v3).
+// alignment padding surprises.  Serialized size: v3 = 1108 bytes; v4 = 1142;
+// v5 = 1406.  Members are APPEND-ONLY, so every earlier offset is unchanged
+// and each version is a strict superset of the one before — the collector
+// accepts v4 and v5 side by side across a mixed fleet.
 //
-VERSION : 0.4
+VERSION : 0.5
    STRUCT
-      version : USInt := 4;               // wire format version
+      // NOTE: "version" must stay quoted — VERSION is a TIA keyword (it is the
+      // block attribute above), and an unquoted member trips the external
+      // source import with: Syntax error: The specified value "version" is
+      // invalid. Same reason "step" is quoted below.
+      "version" : USInt := 5;             // wire format version
       msgType : USInt;                    // 1 = event, 2 = heartbeat
       statusBits : Word;                  // bit0 automatic, bit1 fault, bit2 running,
                                           // bit3 paused, bit4 stopped, bit5 unknown,

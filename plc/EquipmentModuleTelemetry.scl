@@ -179,7 +179,7 @@ BEGIN
         // input — e.g. wiring lineName after the FB already ran — takes effect
         // on the next scan without a memory reset. These fields are excluded
         // from change detection, so re-writing them never triggers an event.
-        #statSnapshot.version := 5;
+        #statSnapshot."version" := 5;   // quoted: VERSION is a TIA keyword
         #statSnapshot.lineName := #lineName;
         #statSnapshot.stationName := #stationName;
         #statSnapshot.emLabel := #emLabel;
