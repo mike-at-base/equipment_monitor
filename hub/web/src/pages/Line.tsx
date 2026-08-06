@@ -12,9 +12,14 @@ export default function Line({ live }: { live: LiveEM[] }) {
   const sum = usePolledAsync(() => api.summary(line, win), [line, win]);
   const comp = usePolledAsync(() => api.lineComposed(line, win), [line, win]);
 
+  const lineLive = live.filter((e) => e.line === line);
   const liveByKey: Record<string, LiveEM> = {};
-  for (const e of live.filter((e) => e.line === line)) {
+  let liveDown = 0, liveStarved = 0, liveBlocked = 0;
+  for (const e of lineLive) {
     liveByKey[`${e.station}|${e.em_label}`.toLowerCase()] = e;
+    if (e.state === "down") liveDown++;
+    else if (e.state === "starved") liveStarved++;
+    else if (e.state === "blocked") liveBlocked++;
   }
 
   if (sum.err) return <ErrorBox err={sum.err} />;
@@ -30,14 +35,12 @@ export default function Line({ live }: { live: LiveEM[] }) {
       </div>
       <div className="tiles" style={{ marginTop: 8 }}>
         <Tile label={`Composed availability (${win})`}
-          value={comp.data?.composed.pct != null ? `${comp.data.composed.pct.toFixed(1)}` : "–"} unit="%" />
-        <Tile label={`Availability (EM avg, ${win})`}
           value={s.availability_pct != null ? `${s.availability_pct.toFixed(1)}` : "–"} unit="%" />
-        <Tile label="Cycles" value={`${s.cycles.count}`} unit={s.cycles.per_hour ? ` · ${s.cycles.per_hour}/h` : ""} />
-        <Tile label="Cycle p50" value={s.cycles.p50_ms != null ? (s.cycles.p50_ms / 1000).toFixed(1) : "–"} unit=" s" />
-        <Tile label="Down" value={(s.state_min["down"] ?? 0).toFixed(1)} unit=" min" />
-        <Tile label="Starved" value={(s.state_min["starved"] ?? 0).toFixed(1)} unit=" min" />
-        <Tile label="Blocked" value={(s.state_min["blocked"] ?? 0).toFixed(1)} unit=" min" />
+        <Tile label={`Composed downtime (${win})`}
+          value={s.episodes?.minutes != null ? s.episodes.minutes.toFixed(1) : "–"} unit=" min" />
+        <Tile label="Live · down" value={`${liveDown}`} unit={` / ${lineLive.length} EMs`} />
+        <Tile label="Live · starved" value={`${liveStarved}`} unit={` / ${lineLive.length} EMs`} />
+        <Tile label="Live · blocked" value={`${liveBlocked}`} unit={` / ${lineLive.length} EMs`} />
       </div>
 
       {groupByStation(s.ems).map(([station, ems]) => (
@@ -88,17 +91,30 @@ export default function Line({ live }: { live: LiveEM[] }) {
 
       {s.top_down_reasons.length > 0 && (
         <div className="card">
-          <h2>Top down reasons ({win})</h2>
-          <Bars rows={s.top_down_reasons.map((r) => ({
-            name: `${r.reason} (×${r.count})`, value: r.minutes, color: "var(--st-down)",
+          <h2>Top composed down reasons ({win})</h2>
+          <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
+            Wall-clock line downtime by sticky reason (k-of-n model). Concurrent identical
+            reasons across EMs count once. ×N is how many distinct line-down stretches carried the reason.
+          </p>
+          <Bars stacked rows={s.top_down_reasons.map((r) => ({
+            name: r.reason || "(no reason)",
+            detail: `${r.reason_type || "fault"} · ×${r.count} stretch${r.count === 1 ? "" : "es"}`,
+            value: r.minutes,
+            color: "var(--st-down)",
           }))} />
         </div>
       )}
       {s.flow_losses.length > 0 && (
         <div className="card">
           <h2>Flow losses ({win})</h2>
-          <Bars rows={s.flow_losses.map((f) => ({
-            name: `${f.station} ${f.state} — ${f.top_reason}`, value: f.minutes,
+          <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
+            Per-EM starved/blocked minutes (not composed). Useful to find which station is waiting —
+            totals can overlap in time across EMs.
+          </p>
+          <Bars stacked rows={s.flow_losses.map((f) => ({
+            name: `${f.station}${f.em_label !== "main" ? ` · ${f.em_label}` : ""} · ${f.state}`,
+            detail: f.top_reason || "(no reason text)",
+            value: f.minutes,
             color: `var(--st-${f.state})`,
           }))} />
         </div>

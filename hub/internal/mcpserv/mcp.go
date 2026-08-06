@@ -65,7 +65,7 @@ func tools() []tool {
 		},
 		{
 			Name: "line_summary",
-			Description: "Full performance summary of one line over a window: availability %, minutes per state, cycle statistics (count/p50/p90/work-vs-exchange split), top down reasons, flow losses (starved/blocked with the failing-permissive reasons), mode context (dry cycle etc.), and MTTR split into response vs repair time. Per-EM breakdown included.",
+			Description: "Full performance summary of one line over a window. availability_pct and top_down_reasons are COMPOSED (k-of-n time-domain): they describe real line downtime, so N EMs sharing one reason for T minutes contribute T minutes — not N×T. em_avg_availability_pct is the old independent-EM average (usually pessimistic). Also returns minutes per state (EM-summed, display only), cycle stats, flow losses, mode context, MTTR, and per-EM breakdown. Prefer availability_pct + top_down_reasons when answering how the line is running.",
 			InputSchema: json.RawMessage(`{"type":"object","required":["line"],"properties":{"line":{"type":"string","description":"line name, e.g. CELL1"},` + windowProp() + `}}`),
 			path: func(a map[string]any) string {
 				return "/api/v2/lines/" + url.PathEscape(str(a["line"])) + "/summary?" + win(a)
@@ -162,7 +162,7 @@ func tools() []tool {
 		},
 		{
 			Name:        "line_composed_availability",
-			Description: "Composed availability for a line and each of its stations, evaluated over the configured k-of-n redundancy models in the TIME DOMAIN (never by multiplying percentages). Differs from line_summary's availability, which treats each equipment module independently — use this one when redundancy matters.",
+			Description: "Composed availability detail for a line and each station: up/down spans, station-cause pareto, and the k-of-n model. line_summary.availability_pct already uses the same composed percentage — use this tool when you need the timeline, per-station %, or which stations broke redundancy.",
 			InputSchema: lineSchema(),
 			path: func(a map[string]any) string {
 				return linePath(a, "composed") + "?" + win(a)

@@ -54,7 +54,7 @@ Seventeen tools covering every read endpoint of the query API.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `line_summary` | `line`, `window` | Availability %, minutes per state, cycle stats (count/p50/p90, work-vs-exchange), top down reasons, flow losses, mode context, MTTR split response/repair, per-EM breakdown. |
+| `line_summary` | `line`, `window` | **Composed** availability % + top down reasons (wall-clock line downtime; concurrent identical EM reasons count once), plus `em_avg_availability_pct`, minutes per state, cycle stats, flow losses, MTTR, per-EM breakdown. |
 | `compare_lines` | `a`, `b`, `window` | Both summaries plus a delta. The tool for *"why is A running better than B"*. |
 | `line_composed_availability` | `line`, `window` | Composed k-of-n availability for the line + each station. |
 | `station_composed_availability` | `line`, `station`, `window` | Station %, up spans, down segments naming the EMs that broke the requirement, cause pareto, model in use. |
@@ -96,9 +96,11 @@ body = json.loads(resp["result"]["content"][0]["text"])
 
 - Discover before you query: `list_lines` → `line_summary` → drill into a
   specific EM. Line and station names are case-insensitive in paths.
-- When explaining a difference, **cite the reason text**. `top_down_reasons`
+- When explaining how a line is running, use `line_summary`'s
+  `availability_pct` and `top_down_reasons` — both are **composed**
+  (k-of-n wall-clock). Do not sum per-EM down minutes. `top_down_reasons`
   and `flow_losses` carry the actual failing permissive conditions from the
-  PLC scan — that is the answer to "why", not the percentage.
+  PLC scan — that is the answer to "why", not the percentage alone.
 - `starved` and `blocked` are *not* equipment failures — they mean the
   equipment was fine and starved of parts or blocked downstream. Blaming a
   machine for its starved time is the most common misreading.

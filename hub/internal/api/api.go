@@ -29,6 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/mike-at-base/equipment_monitor/hub/internal/compose"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/ingest"
 	"github.com/mike-at-base/equipment_monitor/hub/internal/model"
 )
@@ -631,15 +632,76 @@ func topEpisodeReasons(eps []EpisodeRow, n int) []ReasonAgg {
 		agg[key].Count++
 		agg[key].Minutes = round1(agg[key].Minutes + e.Minutes)
 	}
+	return rankReasons(agg, n)
+}
+
+// composedDownReasons attributes LINE downtime to sticky episode reasons
+// using the composed-down timeline. For each composed-down segment, episode
+// intervals that overlap it are UNIONED per reason — so eight EMs sharing
+// "air pressure" for 10 minutes contribute 10 minutes, not 80. Episodes that
+// fall only while the line is still up (redundancy covering) do not count.
+// Minutes are optionally clipped to production ranges (pass nil for none).
+// Count is the number of composed-down segments that carried the reason.
+func composedDownReasons(downs []compose.DownSeg, eps []EpisodeRow, prod []compose.Span, n int) []ReasonAgg {
+	agg := map[string]*ReasonAgg{}
+	for _, d := range downs {
+		byKey := map[string][]compose.Span{}
+		meta := map[string]ReasonAgg{}
+		for _, e := range eps {
+			lo := max64(e.StartTs.UnixMilli(), d.Start)
+			hi := min64(e.EndTs.UnixMilli(), d.End)
+			if hi <= lo {
+				continue
+			}
+			key := e.ReasonType + "|" + e.Reason
+			byKey[key] = append(byKey[key], compose.Span{Start: lo, End: hi})
+			if _, ok := meta[key]; !ok {
+				meta[key] = ReasonAgg{Reason: e.Reason, ReasonType: e.ReasonType}
+			}
+		}
+		for key, spans := range byKey {
+			var ms int64
+			for _, sp := range mergeSpans(spans) {
+				ms += compose.ClipMs(sp, prod)
+			}
+			if ms == 0 {
+				continue
+			}
+			if agg[key] == nil {
+				a := meta[key]
+				agg[key] = &a
+			}
+			agg[key].Count++
+			agg[key].Minutes = round1(agg[key].Minutes + float64(ms)/60000.0)
+		}
+	}
+	return rankReasons(agg, n)
+}
+
+func rankReasons(agg map[string]*ReasonAgg, n int) []ReasonAgg {
 	out := make([]ReasonAgg, 0, len(agg))
 	for _, a := range agg {
 		out = append(out, *a)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Minutes > out[j].Minutes })
-	if len(out) > n {
+	if n > 0 && len(out) > n {
 		out = out[:n]
 	}
 	return out
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // episodeAvailability: unavailable time = episode spans (inter-states and

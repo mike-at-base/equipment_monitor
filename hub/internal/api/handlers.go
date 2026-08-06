@@ -43,11 +43,12 @@ type LineSummary struct {
 	Line            string             `json:"line"`
 	From            time.Time          `json:"from"`
 	To              time.Time          `json:"to"`
-	AvailabilityPct *float64           `json:"availability_pct,omitempty"`
+	AvailabilityPct *float64           `json:"availability_pct,omitempty"` // composed (k-of-n) over production
+	EMAvgAvailPct   *float64           `json:"em_avg_availability_pct,omitempty"`
 	StateMin        map[string]float64 `json:"state_min"`
 	Episodes        EpisodeStats       `json:"episodes"`
 	Cycles          CycleStats         `json:"cycles"`
-	TopDownReasons  []ReasonAgg        `json:"top_down_reasons"`
+	TopDownReasons  []ReasonAgg        `json:"top_down_reasons"` // composed wall-clock, not EM-summed
 	FlowLosses      []FlowAgg          `json:"flow_losses"`
 	ModeMin         map[string]float64 `json:"mode_min"`
 	MTTR            MTTR               `json:"mttr"`
@@ -90,12 +91,11 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 
 	sum := &LineSummary{
 		Line: l.Name, From: from, To: to,
-		EMs:            []EMSummary{},
-		StateMin:       map[string]float64{},
-		Cycles:         cycles,
-		TopDownReasons: topEpisodeReasons(episodes, 5),
-		FlowLosses:     flow,
-		ModeMin:        modes,
+		EMs:        []EMSummary{},
+		StateMin:   map[string]float64{},
+		Cycles:     cycles,
+		FlowLosses: flow,
+		ModeMin:    modes,
 	}
 
 	// production ranges for this line (the whole window if unscheduled) — E10
@@ -104,9 +104,26 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 	if err != nil {
 		return nil, err
 	}
+	prod := spansFromRanges(ranges)
 	agg, err := s.prodStateAgg(ctx, ids, from, to, idSet, ranges)
 	if err != nil {
 		return nil, err
+	}
+
+	// Line-level availability + top down reasons use the composed (k-of-n)
+	// timeline so concurrent identical reasons across EMs do not multiply.
+	lineRes, _, _, _, err := s.evalLineComposed(ctx, l, from, to)
+	if err != nil {
+		return nil, err
+	}
+	sum.TopDownReasons = composedDownReasons(lineRes.Down, episodes, prod, 5)
+	var prodMs int64
+	for _, p := range prod {
+		prodMs += p.End - p.Start
+	}
+	if prodMs > 0 {
+		p := round1(100 * float64(lineRes.UpMs(prod)) / float64(prodMs))
+		sum.AvailabilityPct = &p
 	}
 
 	// per-EM episode minutes WITHIN production (episode-based availability)
@@ -118,12 +135,14 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 			}
 		}
 		sum.Episodes.Count++
-		sum.Episodes.Minutes = round1(sum.Episodes.Minutes + e.Minutes)
 		sum.Episodes.Retries += e.Retries
 		if e.Ongoing {
 			sum.Episodes.Ongoing++
 		}
 	}
+	// Line episode minutes = composed-down wall clock (production-clipped),
+	// not the sum of per-EM episode minutes.
+	sum.Episodes.Minutes = round1(float64(lineRes.DownMs(prod)) / 60000.0)
 
 	lineMs := map[string]int64{}
 	var lineAvail, lineDown, lineEp int64
@@ -158,7 +177,7 @@ func (s *Server) lineSummary(ctx context.Context, l *LineInfo, from, to time.Tim
 	}
 	if pct, ok := episodeAvailability(lineAvail, lineDown, lineEp); ok {
 		p := round1(pct)
-		sum.AvailabilityPct = &p
+		sum.EMAvgAvailPct = &p
 	}
 
 	// MTTR decomposition — per EPISODE (sticky root cause), not raw interval

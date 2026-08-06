@@ -275,6 +275,31 @@ func (s *Server) handleStationComposed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// evalLineComposed evaluates every station, then the line tree. stationUps
+// maps station name → that station's composed-up spans (line leaf inputs).
+func (s *Server) evalLineComposed(ctx context.Context, l *LineInfo, from, to time.Time) (
+	compose.Result, *compose.Node, bool, map[string][]compose.Span, error) {
+	stationUps := map[string][]compose.Span{}
+	for i := range l.Stations {
+		st := &l.Stations[i]
+		res, _, _, err := s.composeStation(ctx, l, st, from, to)
+		if err != nil {
+			return compose.Result{}, nil, false, nil, err
+		}
+		stationUps[st.Name] = res.Up
+	}
+	node, err := s.loadLineModel(ctx, l.Name)
+	if err != nil {
+		return compose.Result{}, nil, false, nil, err
+	}
+	isDefault := node == nil
+	if isDefault {
+		node = defaultLineModel(l)
+	}
+	res := compose.Eval(node, stationUps, from.UnixMilli(), to.UnixMilli())
+	return res, node, isDefault, stationUps, nil
+}
+
 func (s *Server) handleLineComposed(w http.ResponseWriter, r *http.Request) {
 	l := s.findLine(r.PathValue("line"))
 	if l == nil {
@@ -293,39 +318,25 @@ func (s *Server) handleLineComposed(w http.ResponseWriter, r *http.Request) {
 	}
 	prod := spansFromRanges(ranges)
 
-	// each station's composed up spans become the line tree's leaf inputs
-	stationUps := map[string][]compose.Span{}
-	stationPct := map[string]*float64{}
-	var prodMs int64
-	for _, p := range prod {
-		prodMs += p.End - p.Start
-	}
-	for i := range l.Stations {
-		st := &l.Stations[i]
-		res, _, _, err := s.composeStation(r.Context(), l, st, from, to)
-		if err != nil {
-			httpErr(w, 500, err)
-			return
-		}
-		stationUps[st.Name] = res.Up
-		if prodMs > 0 {
-			pct := round1(100 * float64(res.UpMs(prod)) / float64(prodMs))
-			stationPct[st.Name] = &pct
-		} else {
-			stationPct[st.Name] = nil
-		}
-	}
-
-	node, err := s.loadLineModel(r.Context(), l.Name)
+	res, node, isDefault, stationUps, err := s.evalLineComposed(r.Context(), l, from, to)
 	if err != nil {
 		httpErr(w, 500, err)
 		return
 	}
-	isDefault := node == nil
-	if isDefault {
-		node = defaultLineModel(l)
+	var prodMs int64
+	for _, p := range prod {
+		prodMs += p.End - p.Start
 	}
-	res := compose.Eval(node, stationUps, from.UnixMilli(), to.UnixMilli())
+	stationPct := map[string]*float64{}
+	for name, ups := range stationUps {
+		stRes := compose.Result{Up: ups}
+		if prodMs > 0 {
+			pct := round1(100 * float64(stRes.UpMs(prod)) / float64(prodMs))
+			stationPct[name] = &pct
+		} else {
+			stationPct[name] = nil
+		}
+	}
 	dto := buildComposedDTO(res, node, isDefault, prod)
 	writeJSON(w, map[string]any{
 		"from": from, "to": to, "line": l.Name,

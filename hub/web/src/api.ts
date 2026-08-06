@@ -90,9 +90,15 @@ export type LineSummary = {
   line: string;
   from: string;
   to: string;
+  /** Composed (k-of-n) availability over production time. */
   availability_pct?: number;
+  /** Simple average of per-EM episode availability (not line reality). */
+  em_avg_availability_pct?: number;
   state_min: Record<string, number>;
+  /** minutes = composed-down wall clock; count = EM episode count. */
+  episodes: { count: number; minutes: number; retries: number; ongoing: number };
   cycles: CycleStats;
+  /** Wall-clock composed-down minutes by reason (not EM-summed). */
   top_down_reasons: ReasonAgg[];
   flow_losses: FlowAgg[];
   mode_min: Record<string, number>;

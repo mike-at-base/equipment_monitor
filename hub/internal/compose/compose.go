@@ -236,7 +236,16 @@ func sameCauses(a, b []string) bool {
 func (r Result) UpMs(ranges []Span) int64 {
 	var total int64
 	for _, s := range r.Up {
-		total += clipMs(s, ranges)
+		total += ClipMs(s, ranges)
+	}
+	return total
+}
+
+// DownMs sums composed-down spans, optionally clipped to ranges.
+func (r Result) DownMs(ranges []Span) int64 {
+	var total int64
+	for _, d := range r.Down {
+		total += ClipMs(d.Span, ranges)
 	}
 	return total
 }
@@ -246,7 +255,7 @@ func (r Result) UpMs(ranges []Span) int64 {
 func (r Result) CausePareto(ranges []Span) map[string]int64 {
 	out := map[string]int64{}
 	for _, d := range r.Down {
-		ms := clipMs(d.Span, ranges)
+		ms := ClipMs(d.Span, ranges)
 		if ms == 0 {
 			continue
 		}
@@ -255,6 +264,12 @@ func (r Result) CausePareto(ranges []Span) map[string]int64 {
 		}
 	}
 	return out
+}
+
+// ClipMs returns the length of s, optionally intersected with ranges
+// (pass nil for the unclipped length).
+func ClipMs(s Span, ranges []Span) int64 {
+	return clipMs(s, ranges)
 }
 
 func clipMs(s Span, ranges []Span) int64 {

@@ -43,17 +43,24 @@ export function StateChip({ state }: { state: string }) {
 }
 
 // ── horizontal bar list ──────────────────────────────────────────────────
-export function Bars({ rows, wrap, valueFmt }: {
-  rows: { name: string; value: number; color?: string; suffix?: string }[];
+// layout: default = truncated side label; wrap = wrapping side label;
+// stacked = full text above the bar (best for long PLC reason strings).
+export function Bars({ rows, wrap, stacked, valueFmt }: {
+  rows: { name: string; value: number; color?: string; suffix?: string; detail?: string }[];
   wrap?: boolean;
+  stacked?: boolean;
   valueFmt?: (v: number) => string;
 }) {
   const max = Math.max(...rows.map((r) => r.value), 0.001);
+  const cls = stacked ? "bars stacked" : wrap ? "bars wrap" : "bars";
   return (
-    <div className={wrap ? "bars wrap" : "bars"}>
+    <div className={cls}>
       {rows.map((r, i) => (
         <div className="row" key={i}>
-          <span className="name" title={r.name}>{r.name}</span>
+          <span className="name" title={r.detail ?? r.name}>{r.name}</span>
+          {r.detail && stacked && r.detail !== r.name && (
+            <span className="detail">{r.detail}</span>
+          )}
           <div className="track">
             <div className="fill" style={{
               width: `${(100 * r.value) / max}%`,
