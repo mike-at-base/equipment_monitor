@@ -65,7 +65,11 @@ VERSION : 0.1
       statQueueTail : Int;              // next read slot
       statQueueCount : Int;
       statTxPayload : "typeEquipmentModuleTelemetry";
-      statTxBuffer : Array[0..1179] of Byte;
+      // MUST be >= the serialized payload (v5 = 1406 bytes).  Sized EXACTLY
+      // to the payload on purpose: TUSEND with LEN = 0 transmits the whole
+      // DATA area, so an oversized buffer would put trailing garbage on the
+      // wire if LEN were ever wrong.  GROW THIS whenever the UDT grows.
+      statTxBuffer : Array[0..1405] of Byte;
       statTxLen : UDInt;
       statSendReq : Bool;
       statSendCooldown : Bool;
@@ -119,6 +123,7 @@ BEGIN
     // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
     // 0.2.0        2026-07-23              mwebb               wire v4: add lineName input, appended to payload (offset 1108); collector routes on it instead of source IP (NAT-proof, enables auto-registration). v3 offsets unchanged.
     // 0.2.1        2026-07-24              mwebb               set identity (lineName/stationName/emLabel/version) EVERY scan instead of first-scan only, so changing lineName after the FB has run takes effect without a memory reset
+    // 0.3.2        2026-08-06              mwebb               fix v5 regression: statTxBuffer was still 1180 bytes while the v5 payload is 1406, so Serialize failed, POS stayed 0, and TUSEND with LEN=0 transmitted the WHOLE buffer as 1180 zero bytes (version byte 0 -> collector drops it) while reporting DONE and sendErrors=0. Buffer grown to 1406 and the Serialize return is now checked instead of ignored.
     // 0.3.1        2026-08-06              mwebb               fix silent mis-send: statAddrParam (remote IP/port) was latched on first scan, so editing remoteIp*/remotePort on the call did nothing until a memory reset. UDP has no ack, so a stale destination still shows connected=TRUE, sendErrors=0, queueDrops=0 while nothing arrives. Now refreshed every scan (same fix as lineName in 0.2.1).
     // 0.3.0        2026-07-28              mwebb               wire v5: branch attribution. waitingOn unions ALL branches, so a multi-branch step always reports the not-taken branch's discriminator. Latch per-branch unmet conditions as a bitmask during the dwell and materialize dwellReason + branchTaken on the scan a branch's permissive satisfies (before activeStepBranch is overwritten). v4 offsets unchanged; collector still accepts v4.
     END_REGION
@@ -503,8 +508,20 @@ BEGIN
             #tempSerRet := Serialize(SRC_VARIABLE := #statTxPayload,
                                      DEST_ARRAY => #statTxBuffer,
                                      POS := #tempPos);
-            #statTxLen := DINT_TO_UDINT(#tempPos);
-            #statSendReq := TRUE;
+            // Serialize fails silently if statTxBuffer is smaller than the
+            // payload (it returns non-zero and leaves POS at 0).  Sending
+            // anyway is worse than not sending: TUSEND with LEN = 0 transmits
+            // the ENTIRE DATA area, so the collector receives a full-length
+            // datagram of zeros — version byte 0 — and drops it, while TUSEND
+            // reports DONE and sendErrors stays 0.  Check the return.
+            IF (#tempSerRet <> 0) OR (#tempPos <= 0) THEN
+                #sendErrors := #sendErrors + 1;
+                #lastError := W#16#8FFF;      // local: serialize failed
+                #statSendReq := FALSE;
+            ELSE
+                #statTxLen := DINT_TO_UDINT(#tempPos);
+                #statSendReq := TRUE;
+            END_IF;
         END_IF;
 
         #instTUSend(REQ := #statSendReq,
