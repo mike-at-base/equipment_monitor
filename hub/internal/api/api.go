@@ -632,6 +632,24 @@ type FlowReasonSeries struct {
 
 const flowTimelineTopN = 6
 
+// bucketRange returns the first and last bucket start covering [from,to].
+//
+// The last bucket is the one CONTAINING to — i.e. the current, partial
+// bucket is included. Stopping a bucket short (to - bucket) silently drops
+// every wait that ended inside the current bucket: while the wait is open it
+// is folded in from the live snapshot below and shows on the chart, then the
+// moment it closes and moves to state_interval it has no bucket to join to
+// and disappears until the clock rolls into the next bucket. The SUM in the
+// query clips to `to`, so a partial bucket reports only its elapsed part.
+func bucketRange(from, to time.Time, bucket time.Duration) (start, last time.Time) {
+	start = from.UTC().Truncate(bucket)
+	last = to.UTC().Truncate(bucket)
+	if last.Before(start) {
+		last = start
+	}
+	return start, last
+}
+
 func (s *Server) flowReasonsTimeline(ctx context.Context, emID int, from, to time.Time,
 	bucketName string, bucket time.Duration) (FlowReasonTimeline, error) {
 	empty := FlowReasonTimeline{Bucket: bucketName, Buckets: []time.Time{}, Series: []FlowReasonSeries{}}
@@ -639,13 +657,7 @@ func (s *Server) flowReasonsTimeline(ctx context.Context, emID int, from, to tim
 		return empty, nil
 	}
 
-	start := from.UTC().Truncate(bucket)
-	end := to.UTC()
-	// generate_series stop must be >= start; for sub-bucket windows emit one bar.
-	seriesStop := end.Add(-bucket)
-	if seriesStop.Before(start) {
-		seriesStop = start
-	}
+	start, seriesStop := bucketRange(from, to, bucket)
 
 	rows, err := s.pool.Query(ctx, `
 	    WITH buckets AS (
@@ -739,9 +751,10 @@ func (s *Server) flowReasonsTimeline(ctx context.Context, emID int, from, to tim
 		return empty, nil
 	}
 
-	// Continuous bucket axis covering the window.
+	// Continuous bucket axis covering the window, inclusive of the current
+	// partial bucket (seriesStop is the bucket containing `to`).
 	buckets := []time.Time{}
-	for t := start; t.Before(end); t = t.Add(bucket) {
+	for t := start; !t.After(seriesStop); t = t.Add(bucket) {
 		buckets = append(buckets, t)
 	}
 	if len(buckets) == 0 {
