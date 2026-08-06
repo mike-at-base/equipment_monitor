@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
 import { Bars, ErrorBox, Gantt, Loading, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
@@ -154,19 +154,43 @@ function Cycles({ l, s, e }: P) {
   const { win } = useWindow();
   const q = usePolledAsync(() => api.cycles(l, s, e, win), [l, s, e, win]);
   const [selTs, setSelTs] = useState<string>();
+  const [pct, setPct] = useState<string>();
+  const waterfallRef = useRef<HTMLDivElement>(null);
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
   const { stats, cycles } = q.data;
   const points = [...cycles].reverse().map((c) => ({ t: Date.parse(c.start_ts), v: c.total_ms }));
   const selected = cycles.find((c) => c.start_ts === selTs) ?? cycles[0];
+
+  // Percentiles come from percentile_cont, which INTERPOLATES — the p50
+  // value often belongs to no actual cycle. And the stats span the whole
+  // window while this list is capped. So jump to the cycle nearest the
+  // value: always a real cycle, and never contradicts the tile.
+  const pickPct = (name: string, ms?: number) => {
+    if (ms == null || cycles.length === 0) return;
+    let best = cycles[0];
+    for (const c of cycles) {
+      if (Math.abs(c.total_ms - ms) < Math.abs(best.total_ms - ms)) best = c;
+    }
+    setSelTs(best.start_ts);
+    setPct(name);
+    requestAnimationFrame(() =>
+      waterfallRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
+  const pctTile = (name: string, ms?: number) => ({
+    onClick: ms != null && cycles.length > 0 ? () => pickPct(name, ms) : undefined,
+    active: pct === name,
+    title: ms != null ? `Show the cycle nearest ${name} (${fmtMs(ms)})` : undefined,
+  });
+
   return (
     <>
       <div className="tiles" style={{ marginTop: 16 }}>
         <T label="Cycles" v={`${stats.count}`} />
         <T label="Per hour" v={stats.per_hour != null ? `${stats.per_hour}` : "–"} />
-        <T label="p10" v={fmtMs(stats.p10_ms)} />
-        <T label="p50" v={fmtMs(stats.p50_ms)} />
-        <T label="p90" v={fmtMs(stats.p90_ms)} />
+        <T label="p10" v={fmtMs(stats.p10_ms)} {...pctTile("p10", stats.p10_ms)} />
+        <T label="p50" v={fmtMs(stats.p50_ms)} {...pctTile("p50", stats.p50_ms)} />
+        <T label="p90" v={fmtMs(stats.p90_ms)} {...pctTile("p90", stats.p90_ms)} />
         <T label="Work avg" v={fmtMs(stats.work_avg_ms)} />
         <T label="Exchange avg" v={fmtMs(stats.exchange_avg_ms)} />
         <T label="Interrupted" v={`${stats.interrupted}`} />
@@ -177,13 +201,16 @@ function Cycles({ l, s, e }: P) {
       </div>
       <Throughput l={l} s={s} e={e} />
       {selected && (
-        <div className="card">
+        <div className="card" ref={waterfallRef}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-            <h2 style={{ margin: 0 }}>Step waterfall · cycle at {fmtClock(selected.start_ts)}</h2>
+            <h2 style={{ margin: 0 }}>
+              Step waterfall · cycle at {fmtClock(selected.start_ts)}
+              {pct && <span className="muted" style={{ fontWeight: 400 }}> · nearest {pct}</span>}
+            </h2>
             <span className="muted" style={{ fontSize: 13 }}>
               {fmtMs(selected.total_ms)} total
               {selected.interrupted && <> · <span style={{ color: "var(--st-down)" }}>interrupted</span></>}
-              {" · pick a row below"}
+              {" · click a p10/p50/p90 tile or a row below"}
             </span>
           </div>
           <CycleWaterfall l={l} s={s} e={e} cyc={selected} />
@@ -200,7 +227,7 @@ function Cycles({ l, s, e }: P) {
             </tr></thead>
             <tbody>
               {cycles.map((c, i) => (
-                <tr key={i} onClick={() => setSelTs(c.start_ts)}
+                <tr key={i} onClick={() => { setSelTs(c.start_ts); setPct(undefined); }}
                     className={c.start_ts === selected?.start_ts ? "sel" : "clickable"}>
                   <td className="num">{fmtClock(c.start_ts)}</td>
                   <td className="num">{fmtMs(c.total_ms)}</td>
@@ -871,11 +898,24 @@ function StepPicker({ options, selected, cls, onAdd, onRemove }: {
   );
 }
 
-function T({ label, v }: { label: string; v: string }) {
+function T({ label, v, onClick, active, title }: {
+  label: string; v: string;
+  onClick?: () => void; active?: boolean; title?: string;
+}) {
+  if (!onClick) {
+    return (
+      <div className="tile">
+        <div className="n">{v}</div>
+        <div className="label">{label}</div>
+      </div>
+    );
+  }
+  // a real <button> so keyboard focus and Enter/Space work for free
   return (
-    <div className="tile">
+    <button type="button" title={title} onClick={onClick}
+            className={`tile tile-click${active ? " active" : ""}`}>
       <div className="n">{v}</div>
       <div className="label">{label}</div>
-    </div>
+    </button>
   );
 }

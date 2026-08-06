@@ -359,6 +359,15 @@ table.data tr.sel td { background: var(--livewire); }
 .avm-kids { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-top: 8px; }
 .avm-add { display: flex; gap: 8px; margin-top: 8px; }
 
+/* clickable stat tile (p10/p50/p90 -> jump to that cycle's waterfall) */
+.tile-click {
+  font: inherit; text-align: left; cursor: pointer;
+  border: 1px solid var(--subtle); transition: border-color .12s;
+}
+.tile-click:hover { border-color: var(--livewire); }
+.tile-click:focus-visible { outline: 2px solid var(--grounded); outline-offset: 1px; }
+.tile-click.active { border-color: var(--livewire); box-shadow: inset 0 0 0 1px var(--livewire); }
+
 /* ── availability dashboard (read-only, display-friendly) ─────────────── */
 .avdash-hero { display: flex; justify-content: center; text-align: center; padding: 28px 16px; }
 .avdash-big { font: 800 72px/1 "Inter", system-ui, sans-serif; color: var(--terminal); letter-spacing: -.02em; }
