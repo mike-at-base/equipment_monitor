@@ -119,6 +119,7 @@ BEGIN
     // 0.1.7        2026-07-23              mwebb               harden: single #tempSeqValid gate computed once, gates every stepControl[] access (build/fault-capture/waiting-on) so an out-of-range activeSequence can never reach an array read
     // 0.2.0        2026-07-23              mwebb               wire v4: add lineName input, appended to payload (offset 1108); collector routes on it instead of source IP (NAT-proof, enables auto-registration). v3 offsets unchanged.
     // 0.2.1        2026-07-24              mwebb               set identity (lineName/stationName/emLabel/version) EVERY scan instead of first-scan only, so changing lineName after the FB has run takes effect without a memory reset
+    // 0.3.1        2026-08-06              mwebb               fix silent mis-send: statAddrParam (remote IP/port) was latched on first scan, so editing remoteIp*/remotePort on the call did nothing until a memory reset. UDP has no ack, so a stale destination still shows connected=TRUE, sendErrors=0, queueDrops=0 while nothing arrives. Now refreshed every scan (same fix as lineName in 0.2.1).
     // 0.3.0        2026-07-28              mwebb               wire v5: branch attribution. waitingOn unions ALL branches, so a multi-branch step always reports the not-taken branch's discriminator. Latch per-branch unmet conditions as a bitmask during the dwell and materialize dwellReason + branchTaken on the scan a branch's permissive satisfies (before activeStepBranch is overwritten). v4 offsets unchanged; collector still accepts v4.
     END_REGION
 
@@ -137,14 +138,21 @@ BEGIN
             #statConnParam.RemotePort := 0;
             #statConnParam.LocalPort := #localPort;
 
-            #statAddrParam.REM_IP_ADDR[1] := #remoteIp1;
-            #statAddrParam.REM_IP_ADDR[2] := #remoteIp2;
-            #statAddrParam.REM_IP_ADDR[3] := #remoteIp3;
-            #statAddrParam.REM_IP_ADDR[4] := #remoteIp4;
-            #statAddrParam.REM_PORT_NR := #remotePort;
-
             #statFirstScan := FALSE;
         END_IF;
+
+        // Remote address refreshed EVERY scan, not latched on first scan.
+        // TUSEND reads ADDR per datagram, so this is free to rewrite — and
+        // latching it was a trap: UDP has no acknowledgement, so a stale
+        // destination still reports connected = TRUE, sendErrors = 0 and
+        // queueDrops = 0 while every datagram goes nowhere.  Retyping the
+        // right IP on the call did nothing until a memory reset.  Same
+        // first-scan trap as lineName in 0.2.1.
+        #statAddrParam.REM_IP_ADDR[1] := #remoteIp1;
+        #statAddrParam.REM_IP_ADDR[2] := #remoteIp2;
+        #statAddrParam.REM_IP_ADDR[3] := #remoteIp3;
+        #statAddrParam.REM_IP_ADDR[4] := #remoteIp4;
+        #statAddrParam.REM_PORT_NR := #remotePort;
     END_REGION
 
     REGION Connection Management
