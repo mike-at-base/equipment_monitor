@@ -597,7 +597,11 @@ function Debug({ l, s, e }: P) {
               <KV k="Alarm message" v={live.alarm_msg} mono />
               <KV k="Interlock fails" v={live.interlock_fails} mono />
               <KV k="Fault conditions" v={live.fault_conds} mono />
-              <KV k="Waiting on" v={live.waiting_on} mono />
+              <KV k="Waiting on (union of all branches)" v={live.waiting_on} mono />
+              <KV k="Branch taken (v5)"
+                  v={live.branch_taken || (live.wire_version >= 5 ? "— unresolved" : "— PLC is v" + live.wire_version)} mono />
+              <KV k="Dwell reason (v5, attributed)"
+                  v={live.dwell_reason || (live.wire_version >= 5 ? "— unresolved" : "n/a")} mono />
             </div>
           </>
         )}

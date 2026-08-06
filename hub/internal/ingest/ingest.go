@@ -88,7 +88,15 @@ type RawEM struct {
 	InterlockFails string    `json:"interlock_fails"`
 	FaultConds     string    `json:"fault_conds"`
 	WaitingOn      string    `json:"waiting_on"`
-	PLCTime        time.Time `json:"plc_time,omitzero"`
+	// v5 branch attribution. WaitingOn is the union over all enabled
+	// branches; these two say which branch the sequencer actually took and
+	// that branch's own unmet conditions. Empty on v4 PLCs and while the
+	// branch is still unresolved — surfaced here so the debug view can show
+	// whether attribution is reaching the collector at all.
+	WireVersion int       `json:"wire_version"`
+	BranchTaken string    `json:"branch_taken"`
+	DwellReason string    `json:"dwell_reason"`
+	PLCTime     time.Time `json:"plc_time,omitzero"`
 	RecvTime       time.Time `json:"recv_time"`
 	SkewMs         int64     `json:"skew_ms"`
 }
@@ -138,6 +146,8 @@ func (s *Service) RawSnapshot() []RawEM {
 			StatusBits: d.StatusBits, ModeBits: d.ModeBits,
 			AlarmMsg: d.AlarmMsg, InterlockFails: d.InterlockFails,
 			FaultConds: d.FaultConds, WaitingOn: d.WaitingOn,
+			WireVersion: int(d.Version),
+			BranchTaken: d.BranchTaken, DwellReason: d.DwellReason,
 			PLCTime: d.PLCTime, RecvTime: recv,
 		}
 		for _, f := range wire.StatusFlags {

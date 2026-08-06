@@ -220,6 +220,9 @@ export type RawEM = {
   interlock_fails: string;
   fault_conds: string;
   waiting_on: string;
+  wire_version: number;
+  branch_taken: string;
+  dwell_reason: string;
   plc_time?: string;
   recv_time: string;
   skew_ms: number;
