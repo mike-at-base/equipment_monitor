@@ -287,6 +287,47 @@ export type DebugResp = {
   states: RawState[];
 };
 
+// A window is either a named preset ("today", "8h", "prod") or a custom
+// absolute range encoded as "custom:<fromISO>|<toISO>". winQuery turns
+// either into the query string the API expects — the server has always
+// accepted ?from=&to=, so a custom range needs no backend change.
+export const CUSTOM_PREFIX = "custom:";
+
+export function isCustomWin(win: string): boolean {
+  return win.startsWith(CUSTOM_PREFIX);
+}
+
+export function customWin(fromISO: string, toISO: string): string {
+  return `${CUSTOM_PREFIX}${fromISO}|${toISO}`;
+}
+
+/** Parse a custom window back into its two ISO strings. */
+export function parseCustomWin(win: string): { from: string; to: string } | null {
+  if (!isCustomWin(win)) return null;
+  const [from, to] = win.slice(CUSTOM_PREFIX.length).split("|");
+  return from && to ? { from, to } : null;
+}
+
+/** Human label for a window — never the raw "custom:<iso>|<iso>" string. */
+export function winLabel(win: string): string {
+  const c = parseCustomWin(win);
+  if (!c) return win === "prod" ? "prod today" : win;
+  const f = new Date(c.from), t = new Date(c.to);
+  const hm = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const md = (d: Date) => d.toLocaleDateString([], { month: "numeric", day: "numeric" });
+  return f.toDateString() === t.toDateString()
+    ? `${md(f)} ${hm(f)}–${hm(t)}`
+    : `${md(f)} ${hm(f)} – ${md(t)} ${hm(t)}`;
+}
+
+export function winQuery(win: string): string {
+  const c = parseCustomWin(win);
+  if (c) {
+    return `from=${encodeURIComponent(c.from)}&to=${encodeURIComponent(c.to)}`;
+  }
+  return `window=${encodeURIComponent(win)}`;
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path);
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
@@ -312,34 +353,34 @@ export const api = {
   lines: () => get<LineRollup[]>("/api/v2/lines"),
   live: () => get<LiveEM[]>("/api/v2/live"),
   summary: (line: string, win: string) =>
-    get<LineSummary>(`/api/v2/lines/${encodeURIComponent(line)}/summary?window=${win}`),
+    get<LineSummary>(`/api/v2/lines/${encodeURIComponent(line)}/summary?${winQuery(win)}`),
   intervals: (l: string, s: string, e: string, win: string) =>
-    get<Interval[]>(`/api/v2/ems/${l}/${s}/${e}/intervals?window=${win}`),
+    get<Interval[]>(`/api/v2/ems/${l}/${s}/${e}/intervals?${winQuery(win)}`),
   steps: (l: string, s: string, e: string, win: string, limit = 800, offset = 0) =>
-    get<StepsPage>(`/api/v2/ems/${l}/${s}/${e}/steps?window=${win}&limit=${limit}&offset=${offset}`),
+    get<StepsPage>(`/api/v2/ems/${l}/${s}/${e}/steps?${winQuery(win)}&limit=${limit}&offset=${offset}`),
   stepsRange: (l: string, s: string, e: string, from: string, to: string) =>
     get<StepsPage>(`/api/v2/ems/${l}/${s}/${e}/steps?from=${encodeURIComponent(from)}` +
       `&to=${encodeURIComponent(to)}&limit=500&offset=0`),
   stepStats: (l: string, s: string, e: string, win: string) =>
     get<{ from: string; to: string; steps: StepStat[] }>(
-      `/api/v2/ems/${l}/${s}/${e}/stepstats?window=${win}`),
+      `/api/v2/ems/${l}/${s}/${e}/stepstats?${winQuery(win)}`),
   stepDetail: (l: string, s: string, e: string, win: string, step: string, seq: number) =>
-    get<StepDetail>(`/api/v2/ems/${l}/${s}/${e}/stepdetail?window=${win}` +
+    get<StepDetail>(`/api/v2/ems/${l}/${s}/${e}/stepdetail?${winQuery(win)}` +
       `&step=${encodeURIComponent(step)}&seq=${seq}`),
   cycles: (l: string, s: string, e: string, win: string) =>
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
-      `/api/v2/ems/${l}/${s}/${e}/cycles?window=${win}`),
+      `/api/v2/ems/${l}/${s}/${e}/cycles?${winQuery(win)}`),
   throughput: (l: string, s: string, e: string, win: string, bucket: string) =>
     get<{ bucket: string; buckets: ThroughputBucket[] }>(
-      `/api/v2/ems/${l}/${s}/${e}/throughput?window=${win}&bucket=${bucket}`),
+      `/api/v2/ems/${l}/${s}/${e}/throughput?${winQuery(win)}&bucket=${bucket}`),
   downs: (l: string, s: string, e: string, win: string) =>
     get<{ from: string; to: string; episodes: EpisodeRow[]; raw_downs: DownRow[];
           top_reasons: ReasonAgg[]; flow_reasons: FlowReasonAgg[];
           flow_reasons_timeline: FlowReasonTimeline;
           availability_pct?: number; state_min: Record<string, number> }>(
-      `/api/v2/ems/${l}/${s}/${e}/downs?window=${win}`),
+      `/api/v2/ems/${l}/${s}/${e}/downs?${winQuery(win)}`),
   debug: (l: string, s: string, e: string, win: string) =>
-    get<DebugResp>(`/api/v2/ems/${l}/${s}/${e}/debug?window=${win}`),
+    get<DebugResp>(`/api/v2/ems/${l}/${s}/${e}/debug?${winQuery(win)}`),
   unconfirmed: () => get<Unconfirmed[]>("/api/v2/unconfirmed"),
   emConfig: (l: string, s: string, e: string) =>
     get<EMConfig>(`/api/v2/ems/${l}/${s}/${e}/config`),
@@ -354,10 +395,10 @@ export const api = {
   lineComposed: (line: string, win: string) =>
     get<{ from: string; to: string; line: string; composed: ComposedResult;
           stations: Record<string, number | null> }>(
-      `/api/v2/lines/${encodeURIComponent(line)}/composed?window=${win}`),
+      `/api/v2/lines/${encodeURIComponent(line)}/composed?${winQuery(win)}`),
   stationComposed: (line: string, station: string, win: string) =>
     get<{ from: string; to: string; station: string; composed: ComposedResult }>(
-      `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/composed?window=${win}`),
+      `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/composed?${winQuery(win)}`),
   getLineModel: (line: string) =>
     get<AvailModelResp>(`/api/v2/lines/${encodeURIComponent(line)}/availmodel`),
   saveLineModel: (line: string, model: AvailNode | null) =>

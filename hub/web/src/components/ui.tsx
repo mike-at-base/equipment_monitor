@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import { Interval, STATE_LABEL, STATE_ORDER, stateColor } from "../api";
+import { customWin, Interval, parseCustomWin, STATE_LABEL, STATE_ORDER, stateColor } from "../api";
 
 // ── shared window (time range) context ───────────────────────────────────
 const WindowCtx = createContext<{ win: string; setWin: (w: string) => void }>({
@@ -11,15 +11,84 @@ export const useWindow = () => useContext(WindowCtx);
 const WINDOWS = ["1h", "8h", "today", "24h", "3d", "prod"];
 const WIN_LABEL: Record<string, string> = { prod: "prod today" };
 
+// <input type="datetime-local"> speaks LOCAL wall time with no zone, so
+// convert through the local offset in both directions rather than slicing
+// an ISO string (which would silently shift the range by the UTC offset).
+function toLocalInput(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+    `T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function fromLocalInput(v: string): Date | null {
+  const d = new Date(v); // parsed as local time
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmtRange(fromISO: string, toISO: string): string {
+  const f = new Date(fromISO), t = new Date(toISO);
+  const sameDay = f.toDateString() === t.toDateString();
+  const hm = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const md = (d: Date) => d.toLocaleDateString([], { month: "numeric", day: "numeric" });
+  return sameDay
+    ? `${md(f)} ${hm(f)}–${hm(t)}`
+    : `${md(f)} ${hm(f)} – ${md(t)} ${hm(t)}`;
+}
+
 export function WindowPicker() {
   const { win, setWin } = useWindow();
+  const [open, setOpen] = useState(false);
+  const custom = parseCustomWin(win);
+  const [from, setFrom] = useState(() => toLocalInput(new Date(Date.now() - 8 * 3600e3)));
+  const [to, setTo] = useState(() => toLocalInput(new Date()));
+
+  // seed the fields from the active range when opening
+  const openPanel = () => {
+    if (custom) {
+      setFrom(toLocalInput(new Date(custom.from)));
+      setTo(toLocalInput(new Date(custom.to)));
+    } else {
+      setFrom(toLocalInput(new Date(Date.now() - 8 * 3600e3)));
+      setTo(toLocalInput(new Date()));
+    }
+    setOpen((v) => !v);
+  };
+
+  const f = fromLocalInput(from), t = fromLocalInput(to);
+  const invalid = !f || !t || t <= f;
+  const apply = () => {
+    if (invalid) return;
+    setWin(customWin(f!.toISOString(), t!.toISOString()));
+    setOpen(false);
+  };
+
   return (
-    <div className="winpick" role="group" aria-label="time window">
-      {WINDOWS.map((w) => (
-        <button key={w} className={w === win ? "active" : ""} onClick={() => setWin(w)}>
-          {WIN_LABEL[w] ?? w}
+    <div className="winpick-wrap">
+      <div className="winpick" role="group" aria-label="time window">
+        {WINDOWS.map((w) => (
+          <button key={w} className={w === win ? "active" : ""} onClick={() => setWin(w)}>
+            {WIN_LABEL[w] ?? w}
+          </button>
+        ))}
+        <button className={custom ? "active" : ""} onClick={openPanel}
+                title="Pick an absolute date/time range">
+          {custom ? fmtRange(custom.from, custom.to) : "custom"}
         </button>
-      ))}
+      </div>
+      {open && (
+        <>
+          <div className="winpick-scrim" onClick={() => setOpen(false)} />
+          <div className="winpick-panel">
+            <label>From<input type="datetime-local" value={from}
+                              onChange={(e) => setFrom(e.target.value)} /></label>
+            <label>To<input type="datetime-local" value={to}
+                            onChange={(e) => setTo(e.target.value)} /></label>
+            {invalid && <span className="winpick-err">“To” must be after “From”.</span>}
+            <div className="winpick-actions">
+              <button className="btn-primary" disabled={invalid} onClick={apply}>Apply</button>
+              <button onClick={() => setOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -42,9 +111,6 @@ export function StateChip({ state }: { state: string }) {
   );
 }
 
-// ── horizontal bar list ──────────────────────────────────────────────────
-// layout: default = truncated side label; wrap = wrapping side label;
-// stacked = full text above the bar (best for long PLC reason strings).
 // ── histogram (distribution shape) ───────────────────────────────────────
 // Counts per equal-width duration bin. Reads bimodality straight off the
 // silhouette, which a box plot cannot show. Single series -> no legend.
@@ -206,6 +272,9 @@ p75 ${fmt(r.p75)} · p95 ${fmt(r.p95)} · max ${fmt(r.max)}`}>
   );
 }
 
+// ── horizontal bar list ──────────────────────────────────────────────────
+// layout: default = truncated side label; wrap = wrapping side label;
+// stacked = full text above the bar (best for long PLC reason strings).
 export function Bars({ rows, wrap, stacked, valueFmt }: {
   rows: { name: string; value: number; color?: string; suffix?: string; detail?: string }[];
   wrap?: boolean;

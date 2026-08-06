@@ -1,5 +1,5 @@
 import { Link, useParams } from "react-router-dom";
-import { api, ComposedResult, Interval } from "../api";
+import { api, ComposedResult, Interval, winLabel } from "../api";
 import { Bars, ErrorBox, Gantt, Loading, usePolledAsync, useWindow } from "../components/ui";
 
 // Read-only composed-availability dashboard for one line: the headline
@@ -23,7 +23,7 @@ export default function Availability() {
             {c.pct != null ? c.pct.toFixed(1) : "–"}<small>%</small>
           </div>
           <div className="avdash-sub">
-            {line} composed availability ({win}) ·
+            {line} composed availability ({winLabel(win)}) ·
             {" "}{c.production_min.toFixed(0)} min production time
             {c.default_model && " · default model (all stations in series)"}
           </div>
@@ -46,14 +46,14 @@ export default function Availability() {
       </div>
 
       <div className="card">
-        <h2>Line availability band ({win})</h2>
+        <h2>Line availability band ({winLabel(win)})</h2>
         <Gantt rows={[{ label: line, intervals: composedIntervals(c) }]}
                from={Date.parse(d.from)} to={Date.parse(d.to)} />
       </div>
 
       {(c.causes ?? []).length > 0 && (
         <div className="card">
-          <h2>Unavailability by cause ({win})</h2>
+          <h2>Unavailability by cause ({winLabel(win)})</h2>
           <Bars rows={(c.causes ?? []).slice(0, 10).map((r) => ({
             name: r.name, value: r.minutes, color: "var(--st-down)",
           }))} />

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, EMSummary, Interval, LiveEM, fmtClock, fmtSince, stateColor, STATE_LABEL } from "../api";
+import { api, EMSummary, Interval, LiveEM, fmtClock, fmtSince, stateColor, STATE_LABEL, winLabel } from "../api";
 import { Bars, Gantt, Loading, ErrorBox, REFRESH_MS, usePolledAsync, useNow, useWindow } from "../components/ui";
 
 // Line view — the SCADA mimic: EM tiles in config order with live state,
@@ -34,9 +34,9 @@ export default function Line({ live }: { live: LiveEM[] }) {
         <Link to={`/line/${line}/schedule`} className="linkbtn">Edit production schedule →</Link>
       </div>
       <div className="tiles" style={{ marginTop: 8 }}>
-        <Tile label={`Composed availability (${win})`}
+        <Tile label={`Composed availability (${winLabel(win)})`}
           value={s.availability_pct != null ? `${s.availability_pct.toFixed(1)}` : "–"} unit="%" />
-        <Tile label={`Composed downtime (${win})`}
+        <Tile label={`Composed downtime (${winLabel(win)})`}
           value={s.episodes?.minutes != null ? s.episodes.minutes.toFixed(1) : "–"} unit=" min" />
         <Tile label="Live · down" value={`${liveDown}`} unit={` / ${lineLive.length} EMs`} />
         <Tile label="Live · starved" value={`${liveStarved}`} unit={` / ${lineLive.length} EMs`} />
@@ -91,7 +91,7 @@ export default function Line({ live }: { live: LiveEM[] }) {
 
       {s.top_down_reasons.length > 0 && (
         <div className="card">
-          <h2>Top composed down reasons ({win})</h2>
+          <h2>Top composed down reasons ({winLabel(win)})</h2>
           <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
             Wall-clock line downtime by sticky reason (k-of-n model). Concurrent identical
             reasons across EMs count once. ×N is how many distinct line-down stretches carried the reason.
@@ -106,7 +106,7 @@ export default function Line({ live }: { live: LiveEM[] }) {
       )}
       {s.flow_losses.length > 0 && (
         <div className="card">
-          <h2>Flow losses ({win})</h2>
+          <h2>Flow losses ({winLabel(win)})</h2>
           <p className="muted" style={{ marginTop: 0, marginBottom: 8 }}>
             Per-EM starved/blocked minutes (not composed). Useful to find which station is waiting —
             totals can overlap in time across EMs.
@@ -166,7 +166,7 @@ function LineGantt({ line, win, from, to, ems }: {
   if (err) return <ErrorBox err={err} />;
   return (
     <div className="card">
-      <h2>State timeline ({win})</h2>
+      <h2>State timeline ({winLabel(win)})</h2>
       <p className="muted" style={{ marginTop: 0 }}>{fmtClock(from)} → {fmtClock(to)}</p>
       {rows ? <Gantt rows={rows} from={fromMs} to={toMs} /> : <Loading />}
     </div>

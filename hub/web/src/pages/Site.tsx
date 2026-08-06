@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, LiveEM, Unconfirmed, STATE_ORDER, stateColor, STATE_LABEL } from "../api";
+import { api, LiveEM, Unconfirmed, STATE_ORDER, stateColor, STATE_LABEL, winLabel } from "../api";
 import { REFRESH_MS, usePolledAsync, useWindow, Loading, ErrorBox } from "../components/ui";
 
 // Site overview: one card per line — live state strip + windowed KPIs.
@@ -80,7 +80,7 @@ function LineCard({ name, emCount, win, live }: {
           ))}
         </div>
         <div className="kvrow">
-          <span>Availability ({win})</span>
+          <span>Availability ({winLabel(win)})</span>
           <b>{s?.availability_pct != null ? `${s.availability_pct.toFixed(1)}%` : "–"}</b>
         </div>
         <div className="kvrow">

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
-import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, StepStat, STATE_LABEL, STATE_ORDER } from "../api";
+import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, StepStat, STATE_LABEL, STATE_ORDER, winLabel } from "../api";
 import { Bars, BoxPlot, ErrorBox, Gantt, Histogram, Loading, PercentileBand, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
@@ -146,7 +146,7 @@ function StepSpread({ l, s, e }: P) {
   if (all.length === 0) {
     return (
       <div className="card">
-        <h2>Step duration spread ({win})</h2>
+        <h2>Step duration spread ({winLabel(win)})</h2>
         <div className="empty">No step history in this window.</div>
       </div>
     );
@@ -160,7 +160,7 @@ function StepSpread({ l, s, e }: P) {
     <>
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-          <h2 style={{ margin: 0 }}>Step duration spread ({win})</h2>
+          <h2 style={{ margin: 0 }}>Step duration spread ({winLabel(win)})</h2>
           <span className="muted" style={{ fontSize: 13 }}>
             {all.length} steps · slowest median first · click a step for detail
           </span>
@@ -297,7 +297,7 @@ function Cycles({ l, s, e }: P) {
         <T label="Interrupted" v={`${stats.interrupted}`} />
       </div>
       <div className="card">
-        <h2>Cycle time trend ({win})</h2>
+        <h2>Cycle time trend ({winLabel(win)})</h2>
         <Trend points={points} unit="s" />
       </div>
       <Throughput l={l} s={s} e={e} />
@@ -360,7 +360,7 @@ function Throughput({ l, s, e }: P) {
   return (
     <div className="card">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-        <h2 style={{ margin: 0 }}>Throughput ({win})</h2>
+        <h2 style={{ margin: 0 }}>Throughput ({winLabel(win)})</h2>
         <div className="winpick" role="group" aria-label="bucket size">
           {BUCKETS.map((b) => (
             <button key={b} className={b === bucket ? "active" : ""} onClick={() => setBucket(b)}>{b}</button>
@@ -439,7 +439,7 @@ function Availability({ l, s, e }: P) {
   return (
     <>
       <div className="tiles" style={{ marginTop: 16 }}>
-        <T label={`Availability (${win})`}
+        <T label={`Availability (${winLabel(win)})`}
            v={downs.data.availability_pct != null ? `${downs.data.availability_pct.toFixed(1)}%` : "–"} />
         <T label="Down episodes" v={`${eps.length}`} />
         <T label="Down minutes" v={epMin.toFixed(1)} />

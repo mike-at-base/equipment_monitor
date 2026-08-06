@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { api, AvailNode, ComposedResult, Interval, LiveEM, fmtClock } from "../api";
+import { api, AvailNode, ComposedResult, Interval, LiveEM, fmtClock, winLabel } from "../api";
 import { Bars, ErrorBox, Gantt, Loading, REFRESH_MS, usePolledAsync, useWindow } from "../components/ui";
 import { ModelPanel, RBD } from "../components/availmodel";
 
@@ -27,7 +27,7 @@ export default function Station({ live }: { live: LiveEM[] }) {
       <div className="tiles" style={{ marginTop: 12 }}>
         <div className="tile">
           <div className="n">{c.pct != null ? c.pct.toFixed(1) : "–"}<small>%</small></div>
-          <div className="label">Composed availability ({win})</div>
+          <div className="label">Composed availability ({winLabel(win)})</div>
         </div>
         <div className="tile">
           <div className="n">{c.production_min.toFixed(0)}<small> min</small></div>
@@ -55,7 +55,7 @@ export default function Station({ live }: { live: LiveEM[] }) {
 
       {(c.causes ?? []).length > 0 && (
         <div className="card">
-          <h2>Composed unavailability by cause ({win})</h2>
+          <h2>Composed unavailability by cause ({winLabel(win)})</h2>
           <p className="muted" style={{ marginTop: 0 }}>
             Only time where the STATION went down is charged. Concurrent causes
             (e.g. all mags down together) are each charged in full.
@@ -116,7 +116,7 @@ function ComposedGantt({ line, station, win, from, to, composed }: {
   const fromMs = Date.parse(from), toMs = Date.parse(to);
   return (
     <div className="card">
-      <h2>Composed timeline ({win})</h2>
+      <h2>Composed timeline ({winLabel(win)})</h2>
       <p className="muted" style={{ marginTop: 0 }}>
         {fmtClock(from)} → {fmtClock(to)} · top row is the station; green =
         available, red = composed down. Member outages that redundancy absorbed
