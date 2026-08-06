@@ -276,7 +276,13 @@ func (s *Server) openContribution(emIDs map[int]bool, from, to time.Time,
 
 // ── aggregation ──────────────────────────────────────────────────────────
 
-const availStates = "productive standby starved blocked process_wait wait paused"
+// "nva" (non-value-added) counts as AVAILABLE: a purge does not make the
+// tool unavailable, it is uptime that simply is not adding value. Note
+// this is a lean concept, not a SEMI E10 state — E10 would classify most
+// of these as Scheduled Downtime and charge them against availability.
+// Chosen deliberately so tagging purge steps cannot move the availability
+// number; the time shows up as its own state instead.
+const availStates = "productive standby starved blocked process_wait wait paused nva"
 
 // availability = available / (available + down); manual and offline are
 // excluded from the denominator (non-scheduled / no-data time).

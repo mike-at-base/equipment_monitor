@@ -505,3 +505,8 @@ table.data tr.sel td { background: var(--livewire); }
   font: 500 13px Inter, system-ui, sans-serif; cursor: pointer;
 }
 .winpick-actions button:disabled { opacity: .45; cursor: default; }
+
+/* non-value-added state (purge/prime/clean) — validated against the other
+   state colors for CVD separation before adding */
+:root { --st-nva: #8a6fb0; }
+.stepchip.on.nva { background: var(--st-nva); color: var(--strike); border-color: var(--st-nva); }

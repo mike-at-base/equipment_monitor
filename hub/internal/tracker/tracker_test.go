@@ -358,6 +358,45 @@ func TestStepEventRecordsBranchTaken(t *testing.T) {
 	}
 }
 
+// A step tagged non-value-added (purge/prime/clean) is running and healthy
+// but not adding value, and the tag outranks a flow wait on the same step.
+func TestNVAStepClassification(t *testing.T) {
+	cap := &capture{}
+	cfg := Config{EMID: 1, Station: "ST52000", EMLabel: "main",
+		Sequences: map[int16]SeqConfig{1: {
+			Index: 1, IsProduction: true,
+			NVASteps:     map[string]bool{"900": true},
+			StarvedSteps: map[string]bool{"900": true, "20": true},
+		}}}
+	s := &sim{t: New(cfg, cap), cap: cap,
+		now: time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)}
+
+	// normal production step
+	s.send(AUTO|RUN|ILKOK, 0, "20", "Load", "", "", "", "")
+	s.advance(10 * time.Second)
+	// purge step — tagged NVA AND starved; NVA must win
+	s.send(AUTO|RUN|ILKOK, 0, "900", "Purge nozzle", "", "", "", "Upstream part present")
+	s.advance(30 * time.Second)
+	s.send(AUTO|RUN|ILKOK, 0, "30", "Weld", "", "", "", "")
+
+	var purge *model.StateInterval
+	for i := range s.cap.intervals {
+		if s.cap.intervals[i].StepName == "900" {
+			purge = &s.cap.intervals[i]
+		}
+	}
+	if purge == nil {
+		t.Fatal("no interval recorded for the purge step")
+	}
+	if purge.State != model.StateNVA {
+		t.Fatalf("purge state %q, want %q (NVA must outrank the starved tag)",
+			purge.State, model.StateNVA)
+	}
+	if got := purge.EndTs.Sub(purge.StartTs); got != 30*time.Second {
+		t.Fatalf("purge duration %v, want 30s", got)
+	}
+}
+
 // A v4 PLC (no branch fields) keeps the old union behavior — mixed fleets.
 func TestFlowReasonFallsBackToUnionOnV4(t *testing.T) {
 	cap := &capture{}

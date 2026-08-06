@@ -794,6 +794,7 @@ type seqConfigDTO struct {
 	CycleStart    string   `json:"cycle_start_step"`
 	CycleComplete string   `json:"cycle_complete_step"`
 	StarvedSteps  []string `json:"starved_steps"`
+	NVASteps []string `json:"nva_steps"`
 	BlockedSteps  []string `json:"blocked_steps"`
 }
 
@@ -822,7 +823,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	seqs := []seqConfigDTO{}
 	rows, err := s.pool.Query(ctx, `
 	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step,
-	           starved_steps, blocked_steps
+	           starved_steps, blocked_steps, nva_steps
 	    FROM sequence WHERE em_id = $1 ORDER BY seq_index`, em.ID)
 	if err != nil {
 		httpErr(w, 500, err)
@@ -830,14 +831,15 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	for rows.Next() {
 		var so seqConfigDTO
-		var starved, blocked string
+		var starved, blocked, nvaSteps string
 		if err := rows.Scan(&so.Index, &so.Name, &so.IsProduction, &so.CycleStart,
-			&so.CycleComplete, &starved, &blocked); err != nil {
+			&so.CycleComplete, &starved, &blocked, &nvaSteps); err != nil {
 			rows.Close()
 			httpErr(w, 500, err)
 			return
 		}
 		so.StarvedSteps, so.BlockedSteps = store.SplitSteps(starved), store.SplitSteps(blocked)
+		so.NVASteps = store.SplitSteps(nvaSteps)
 		seqs = append(seqs, so)
 	}
 	rows.Close()
@@ -906,16 +908,18 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		if _, err := s.pool.Exec(ctx, `
 		    INSERT INTO sequence (em_id, seq_index, name, is_production,
 		                          cycle_start_step, cycle_complete_step,
-		                          starved_steps, blocked_steps)
-		    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		                          starved_steps, blocked_steps, nva_steps)
+		    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		    ON CONFLICT (em_id, seq_index) DO UPDATE SET
 		      name=EXCLUDED.name, is_production=EXCLUDED.is_production,
 		      cycle_start_step=EXCLUDED.cycle_start_step,
 		      cycle_complete_step=EXCLUDED.cycle_complete_step,
+		      nva_steps=EXCLUDED.nva_steps,
 		      starved_steps=EXCLUDED.starved_steps,
 		      blocked_steps=EXCLUDED.blocked_steps`,
 			em.ID, sq.Index, sq.Name, sq.IsProduction, sq.CycleStart, sq.CycleComplete,
-			store.JoinSteps(sq.StarvedSteps), store.JoinSteps(sq.BlockedSteps)); err != nil {
+			store.JoinSteps(sq.StarvedSteps), store.JoinSteps(sq.BlockedSteps),
+			store.JoinSteps(sq.NVASteps)); err != nil {
 			httpErr(w, 500, err)
 			return
 		}

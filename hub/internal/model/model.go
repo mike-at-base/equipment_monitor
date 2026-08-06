@@ -15,6 +15,11 @@ const (
 	StateDown        = "down"
 	StateStarved     = "starved"
 	StateBlocked     = "blocked"
+	// Non-value-added: the equipment is running and healthy but the step is
+	// not adding value (purge, prime, clean, calibrate). A lean/VSM concept,
+	// NOT one of the six SEMI E10 states — E10 would split these between
+	// Scheduled Downtime and Productive/Rework. Counted as AVAILABLE.
+	StateNVA = "nva"
 	StateProcessWait = "process_wait"
 	StateWait        = "wait"
 	StateOffline     = "offline"

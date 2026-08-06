@@ -87,6 +87,7 @@ export type SeqConfig = {
   cycle_complete_step: string;
   starved_steps: string[];
   blocked_steps: string[];
+  nva_steps: string[]; // non-value-added (purge/prime/clean)
 };
 
 export type EMConfig = {
@@ -434,12 +435,12 @@ export function streamLive(onData: (ems: LiveEM[]) => void, onStatus: (ok: boole
 }
 
 export const STATE_ORDER = [
-  "productive", "standby", "starved", "blocked", "process_wait", "wait",
+  "productive", "nva", "standby", "starved", "blocked", "process_wait", "wait",
   "paused", "down", "manual", "offline", "no_data",
 ];
 
 export const STATE_LABEL: Record<string, string> = {
-  productive: "Productive", standby: "Standby", starved: "Starved",
+  productive: "Productive", nva: "Non-value-added", standby: "Standby", starved: "Starved",
   blocked: "Blocked", process_wait: "Process wait", wait: "Waiting",
   paused: "Paused", down: "Down", manual: "Manual", offline: "Offline",
   no_data: "No data",

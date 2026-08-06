@@ -63,6 +63,7 @@ var ddl = []string{
 	    cycle_complete_step TEXT NOT NULL DEFAULT '',
 	    starved_steps TEXT NOT NULL DEFAULT '',
 	    blocked_steps TEXT NOT NULL DEFAULT '',
+	    nva_steps TEXT NOT NULL DEFAULT '',
 	    UNIQUE (em_id, seq_index))`,
 	// per-line weekly production schedule: one row per shift. dow 0=Sunday..6,
 	// start/end are minutes from local midnight (0..1440, end exclusive).
@@ -140,6 +141,8 @@ var hypertables = [][2]string{
 var migrations = []string{
 	`ALTER TABLE sequence ADD COLUMN IF NOT EXISTS starved_steps TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE sequence ADD COLUMN IF NOT EXISTS blocked_steps TEXT NOT NULL DEFAULT ''`,
+	// Non-value-added steps: purge/prime/clean — running but not adding value.
+	`ALTER TABLE sequence ADD COLUMN IF NOT EXISTS nva_steps TEXT NOT NULL DEFAULT ''`,
 	// composed availability models: k-of-n trees stored as JSON documents.
 	// NULL = no model configured (station defaults to ALL of its EMs, line
 	// to ALL of its stations).
@@ -347,7 +350,7 @@ func (p *PG) DeleteEM(ctx context.Context, emID int) error {
 func (p *PG) SeqConfigFor(ctx context.Context, emID int) ([]SeqConfig, error) {
 	rows, err := p.pool.Query(ctx, `
 	    SELECT seq_index, name, is_production, cycle_start_step, cycle_complete_step,
-	           starved_steps, blocked_steps
+	           starved_steps, blocked_steps, nva_steps
 	    FROM sequence WHERE em_id = $1 ORDER BY seq_index`, emID)
 	if err != nil {
 		return nil, err
@@ -356,12 +359,13 @@ func (p *PG) SeqConfigFor(ctx context.Context, emID int) ([]SeqConfig, error) {
 	var out []SeqConfig
 	for rows.Next() {
 		var s SeqConfig
-		var starved, blocked string
+		var starved, blocked, nvaSteps string
 		if err := rows.Scan(&s.Index, &s.Name, &s.IsProduction,
-			&s.CycleStart, &s.CycleComplete, &starved, &blocked); err != nil {
+			&s.CycleStart, &s.CycleComplete, &starved, &blocked, &nvaSteps); err != nil {
 			return nil, err
 		}
 		s.StarvedSteps, s.BlockedSteps = SplitSteps(starved), SplitSteps(blocked)
+		s.NVASteps = SplitSteps(nvaSteps)
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -375,7 +379,7 @@ func (p *PG) LoadHierarchy(ctx context.Context) ([]LineRec, error) {
 	seqByEM := map[int][]SeqConfig{}
 	seqRows, err := p.pool.Query(ctx, `
 	    SELECT em_id, seq_index, name, is_production, cycle_start_step, cycle_complete_step,
-	           starved_steps, blocked_steps
+	           starved_steps, blocked_steps, nva_steps
 	    FROM sequence ORDER BY em_id, seq_index`)
 	if err != nil {
 		return nil, err
@@ -383,13 +387,14 @@ func (p *PG) LoadHierarchy(ctx context.Context) ([]LineRec, error) {
 	for seqRows.Next() {
 		var emID int
 		var s SeqConfig
-		var starved, blocked string
+		var starved, blocked, nvaSteps string
 		if err := seqRows.Scan(&emID, &s.Index, &s.Name, &s.IsProduction,
-			&s.CycleStart, &s.CycleComplete, &starved, &blocked); err != nil {
+			&s.CycleStart, &s.CycleComplete, &starved, &blocked, &nvaSteps); err != nil {
 			seqRows.Close()
 			return nil, err
 		}
 		s.StarvedSteps, s.BlockedSteps = SplitSteps(starved), SplitSteps(blocked)
+		s.NVASteps = SplitSteps(nvaSteps)
 		seqByEM[emID] = append(seqByEM[emID], s)
 	}
 	seqRows.Close()
@@ -451,6 +456,7 @@ type SeqConfig struct {
 	Name                      string
 	IsProduction              bool
 	CycleStart, CycleComplete string
+	NVASteps        []string // E10 scheduled downtime (purge/prime/clean)
 	StarvedSteps              []string // steps that mean "waiting on upstream"
 	BlockedSteps              []string // steps that mean "waiting on downstream"
 }

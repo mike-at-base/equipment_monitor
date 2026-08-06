@@ -846,7 +846,7 @@ function Config({ l, s, e }: P) {
       .sort((a, b) => a - b);
     setSeqs(idxs.map((idx) => c.sequences.find((x) => x.index === idx) ?? {
       index: idx, name: "", is_production: false, cycle_start_step: "", cycle_complete_step: "",
-      starved_steps: [], blocked_steps: [],
+      starved_steps: [], blocked_steps: [], nva_steps: [],
     }));
   }, [q.data]);
 
@@ -863,18 +863,30 @@ function Config({ l, s, e }: P) {
     [sq.cycle_start_step, sq.cycle_complete_step].forEach((x) => x && set.add(x));
     sq.starved_steps.forEach((x) => set.add(x));
     sq.blocked_steps.forEach((x) => set.add(x));
+    (sq.nva_steps ?? []).forEach((x) => set.add(x));
     return [...set].sort();
   };
-  // toggle a step into starved/blocked (mutually exclusive: added to one is
-  // removed from the other; clicking its current tag clears it)
-  const toggleStep = (i: number, kind: "starved" | "blocked", step: string) =>
+  // toggle a step into starved/blocked/nva. The three are mutually
+  // exclusive: a step is one kind of thing, so adding it to one list
+  // removes it from the others; clicking its current tag clears it.
+  type StepKind = "starved" | "blocked" | "nva";
+  const toggleStep = (i: number, kind: StepKind, step: string) =>
     setSeqs((cur) => cur.map((sq, j) => {
       if (j !== i) return sq;
-      const had = kind === "starved" ? sq.starved_steps.includes(step) : sq.blocked_steps.includes(step);
-      const starved = sq.starved_steps.filter((x) => x !== step);
-      const blocked = sq.blocked_steps.filter((x) => x !== step);
-      if (!had) (kind === "starved" ? starved : blocked).push(step);
-      return { ...sq, starved_steps: starved, blocked_steps: blocked };
+      const lists: Record<StepKind, string[]> = {
+        starved: sq.starved_steps ?? [],
+        blocked: sq.blocked_steps ?? [],
+        nva: sq.nva_steps ?? [],
+      };
+      const had = lists[kind].includes(step);
+      const next = {
+        starved: lists.starved.filter((x) => x !== step),
+        blocked: lists.blocked.filter((x) => x !== step),
+        nva: lists.nva.filter((x) => x !== step),
+      };
+      if (!had) next[kind].push(step);
+      return { ...sq, starved_steps: next.starved, blocked_steps: next.blocked,
+               nva_steps: next.nva };
     }));
   const save = () => {
     setSaving(true); setSaved(false); setSaveErr(undefined);
@@ -942,6 +954,11 @@ function Config({ l, s, e }: P) {
               <StepPicker options={stepUniverse(sq)} selected={sq.blocked_steps} cls="blocked"
                 onAdd={(x) => toggleStep(i, "blocked", x)} onRemove={(x) => toggleStep(i, "blocked", x)} />
             </div>
+            <div className="cfg-flow-row">
+              <span className="cfg-flow-label">Non-value-added <em>(purge, prime, clean — running but not adding value)</em></span>
+              <StepPicker options={stepUniverse(sq)} selected={sq.nva_steps ?? []} cls="nva"
+                onAdd={(x) => toggleStep(i, "nva", x)} onRemove={(x) => toggleStep(i, "nva", x)} />
+            </div>
           </div>
         </div>
       ))}
@@ -966,7 +983,7 @@ function Config({ l, s, e }: P) {
 // and adds via a type-to-filter box, so it scales to hundreds of long-named
 // steps without a wall of chips.
 function StepPicker({ options, selected, cls, onAdd, onRemove }: {
-  options: string[]; selected: string[]; cls: "starved" | "blocked";
+  options: string[]; selected: string[]; cls: "starved" | "blocked" | "nva";
   onAdd: (s: string) => void; onRemove: (s: string) => void;
 }) {
   const [q, setQ] = useState("");

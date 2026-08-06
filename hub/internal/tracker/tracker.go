@@ -23,6 +23,9 @@ type SeqConfig struct {
 	IsProduction  bool
 	CycleStart    string
 	CycleComplete string
+	// Non-value-added steps (purge/prime/clean): running but not adding
+	// value. Intrinsic to the step, so it outranks flow waits.
+	NVASteps map[string]bool
 	StarvedSteps  map[string]bool // dwell here waiting -> starved (authoritative)
 	BlockedSteps  map[string]bool // dwell here waiting -> blocked (authoritative)
 }
@@ -342,6 +345,12 @@ func (t *EM) classify(d *wire.Datagram, alarmActive bool) (state, rtype, reason 
 		return model.StateDown, model.ReasonInterlock, reason
 	case !auto:
 		return model.StateManual, "", "Manual mode"
+	case running && t.isNVAStep(d.ActiveSequence, d.Step):
+		// Non-value-added: purge / prime / clean. The equipment is running
+		// and healthy, it is just not adding value. Checked BEFORE the flow
+		// cases because the classification is intrinsic to the step — a purge
+		// that also happens to be waiting is still a purge.
+		return model.StateNVA, "", d.StepDesc
 	case running && d.WaitingOn != "":
 		// a flow wait counts as starved/blocked only at a configured step;
 		// waiting anywhere else is normal automatic running -> productive.
@@ -375,6 +384,11 @@ func composeFaultReason(alarmMsg, conds string) string {
 	default:
 		return "Step fault"
 	}
+}
+
+func (t *EM) isNVAStep(seq int16, step string) bool {
+	sc, ok := t.cfg.Sequences[seq]
+	return ok && sc.NVASteps[step]
 }
 
 // classifyWait maps a flow wait to starved/blocked strictly from the

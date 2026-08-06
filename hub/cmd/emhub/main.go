@@ -284,6 +284,7 @@ func toSeqConfig(s store.SeqConfig) tracker.SeqConfig {
 		Index: s.Index, IsProduction: s.IsProduction,
 		CycleStart: s.CycleStart, CycleComplete: s.CycleComplete,
 		StarvedSteps: toSet(s.StarvedSteps), BlockedSteps: toSet(s.BlockedSteps),
+		NVASteps: toSet(s.NVASteps),
 	}
 }
 
