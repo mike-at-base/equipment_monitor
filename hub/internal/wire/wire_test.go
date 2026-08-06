@@ -64,6 +64,44 @@ func TestDecodeV4LineName(t *testing.T) {
 	}
 }
 
+func TestDecodeV5BranchAttribution(t *testing.T) {
+	raw := BuildTestV5(MsgEvent, 0, 0, 1, 1, "240", "", "", "", "",
+		"dispense work state complete; 7 stacks; 8 stacks", "CELL1",
+		"250", "7 stacks; 8 stacks", time.Now())
+	if len(raw) != PayloadLenV5 || raw[0] != CurrentVersion {
+		t.Fatalf("v5 payload len=%d ver=%d, want %d/%d",
+			len(raw), raw[0], PayloadLenV5, CurrentVersion)
+	}
+	d, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.BranchTaken != "250" || d.DwellReason != "7 stacks; 8 stacks" {
+		t.Fatalf("branch=%q dwell=%q", d.BranchTaken, d.DwellReason)
+	}
+	// the union text is still carried, unchanged
+	if d.WaitingOn != "dispense work state complete; 7 stacks; 8 stacks" {
+		t.Fatalf("waitingOn %q", d.WaitingOn)
+	}
+}
+
+// The fleet runs mixed FB versions: bumping to v5 must NOT reject a v4 PLC.
+func TestDecodeV4StillAcceptedAfterV5(t *testing.T) {
+	raw := BuildTestLine(MsgEvent, 0, 0, 1, 1, "20", "", "", "", "", "",
+		"MOD1", time.Now())
+	d, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("v4 datagram rejected after v5 bump: %v", err)
+	}
+	if d.LineName != "MOD1" {
+		t.Fatalf("lineName %q", d.LineName)
+	}
+	if d.BranchTaken != "" || d.DwellReason != "" {
+		t.Fatalf("v4 should carry no branch fields, got %q/%q",
+			d.BranchTaken, d.DwellReason)
+	}
+}
+
 // Forward compatibility: a newer PLC (higher version, at least the length this
 // build knows) must still decode — the collector reads the fields it knows
 // and ignores anything newer appended past them.

@@ -43,11 +43,21 @@ VERSION : 0.4
                                           // reason (blocked/starved deduced
                                           // collector-side); '' when not dwelling
       lineName : String[32];              // v4: line/site id the PLC self-declares,
-                                          // e.g. 'MOD1'.  MUST be the last member
-                                          // so it serializes at offset 1108 and
-                                          // v3 offsets are unchanged.  The
+                                          // e.g. 'MOD1'.  Serializes at offset
+                                          // 1108; v3 offsets are unchanged.  The
                                           // collector routes on this (not source
                                           // IP), so it survives NAT / re-IP.
+      branchTaken : String[60];           // v5 @1142: nextStep of the branch that
+                                          // actually satisfied on this step; ''
+                                          // until the sequencer's path is known
+      dwellReason : String[200];          // v5 @1204: conditions of THAT branch
+                                          // which were unmet during the dwell —
+                                          // waitingOn is the union over ALL
+                                          // branches and so always carries the
+                                          // discriminator of the branch not
+                                          // taken.  This is the attributable
+                                          // flow reason; '' when unresolved.
+                                          // APPEND new members after this one.
    END_STRUCT;
 
 END_TYPE
