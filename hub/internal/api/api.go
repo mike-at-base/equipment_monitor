@@ -614,13 +614,75 @@ type ThroughputBucket struct {
 	Count    int       `json:"count"`
 }
 
-// bucketDurations are the toggle options the throughput chart offers.
+// bucketDurations are the toggle options the charts offer. The fine end
+// exists for the step-drift line chart, which can carry far more points
+// than a bar chart.
 var bucketDurations = map[string]time.Duration{
+	"10s": 10 * time.Second,
+	"30s": 30 * time.Second,
+	"1m":  time.Minute,
+	"2m":  2 * time.Minute,
+	"5m":  5 * time.Minute,
+	"10m": 10 * time.Minute,
 	"15m": 15 * time.Minute,
 	"30m": 30 * time.Minute,
 	"1h":  time.Hour,
+	"2h":  2 * time.Hour,
 	"4h":  4 * time.Hour,
+	"12h": 12 * time.Hour,
 	"1d":  24 * time.Hour,
+}
+
+// niceBuckets is the ladder auto-sizing snaps to, ascending.
+var niceBuckets = []struct {
+	name string
+	d    time.Duration
+}{
+	{"10s", 10 * time.Second}, {"30s", 30 * time.Second},
+	{"1m", time.Minute}, {"2m", 2 * time.Minute}, {"5m", 5 * time.Minute},
+	{"10m", 10 * time.Minute}, {"15m", 15 * time.Minute}, {"30m", 30 * time.Minute},
+	{"1h", time.Hour}, {"2h", 2 * time.Hour}, {"4h", 4 * time.Hour},
+	{"12h", 12 * time.Hour}, {"1d", 24 * time.Hour},
+}
+
+// driftTargetBuckets is how many points the drift line aims for. At ~300
+// each point is well under 1% of the chart width, so the crosshair reads as
+// continuous rather than stepping between hours. A few hundred points is
+// nothing for an SVG path or for one GROUP BY.
+const driftTargetBuckets = 300
+
+// minSamplesPerBucket keeps percentiles meaningful. The binding limit on
+// granularity is NOT query cost — Postgres groups tens of thousands of rows
+// without noticing — it is samples: p95 of three executions is just the
+// max, so a chart bucketed finer than the data lies with a straight face.
+const minSamplesPerBucket = 8
+
+// autoStepDriftBucket sizes the drift bucket from BOTH the window span (so
+// the line has ~driftTargetBuckets points regardless of range) and the
+// execution count (so each bucket still holds enough samples to have
+// percentiles). The coarser of the two wins.
+func autoStepDriftBucket(from, to time.Time, n int) (string, time.Duration) {
+	span := to.Sub(from)
+	if span <= 0 {
+		return "1h", time.Hour
+	}
+	want := span / driftTargetBuckets
+	if n > 0 {
+		maxBuckets := n / minSamplesPerBucket
+		if maxBuckets < 1 {
+			maxBuckets = 1
+		}
+		if bySamples := span / time.Duration(maxBuckets); bySamples > want {
+			want = bySamples
+		}
+	}
+	for _, b := range niceBuckets {
+		if b.d >= want {
+			return b.name, b.d
+		}
+	}
+	last := niceBuckets[len(niceBuckets)-1]
+	return last.name, last.d
 }
 
 func parseBucket(s string) (string, time.Duration) {

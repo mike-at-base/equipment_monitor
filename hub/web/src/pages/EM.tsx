@@ -215,13 +215,18 @@ function StepSpread({ l, s, e }: P) {
 
 // The two questions the box plot raises but cannot answer: what SHAPE is
 // the distribution (one tight mode, or two?), and is the spread MOVING?
+const DRIFT_BUCKETS = ["auto", "1m", "5m", "15m", "1h"];
+
 function StepShapeAndDrift({ l, s, e, step, seq }: P & { step: string; seq: number }) {
   const { win } = useWindow();
-  const q = usePolledAsync(() => api.stepDetail(l, s, e, win, step, seq),
-    [l, s, e, win, step, seq]);
+  // "auto" lets the server size it from the window AND the execution
+  // count; the others force a fixed width.
+  const [bucketSel, setBucketSel] = useState("auto");
+  const q = usePolledAsync(() => api.stepDetail(l, s, e, win, step, seq, bucketSel),
+    [l, s, e, win, step, seq, bucketSel]);
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
-  const { histogram: h, drift, bucket } = q.data;
+  const { histogram: h, drift, bucket: resolved } = q.data;
   const total = h.bins.reduce((a, b) => a + b, 0) + h.overflow;
   return (
     <>
@@ -239,7 +244,17 @@ function StepShapeAndDrift({ l, s, e, step, seq }: P & { step: string; seq: numb
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
           <h2 style={{ margin: 0 }}>Drift over time · step {step}</h2>
-          <span className="muted" style={{ fontSize: 13 }}>{bucket} buckets</span>
+          <div className="winpick" role="group" aria-label="bucket size">
+            {DRIFT_BUCKETS.map((b) => (
+              <button key={b} className={b === bucketSel ? "active" : ""}
+                      onClick={() => setBucketSel(b)}
+                      title={b === "auto"
+                        ? "size buckets from the window and how many executions there are"
+                        : `force ${b} buckets`}>
+                {b === "auto" ? `auto · ${resolved}` : b}
+              </button>
+            ))}
+          </div>
         </div>
         <PercentileBand
           points={drift.map((d) => ({

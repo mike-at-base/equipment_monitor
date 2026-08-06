@@ -365,9 +365,10 @@ export const api = {
   stepStats: (l: string, s: string, e: string, win: string) =>
     get<{ from: string; to: string; steps: StepStat[] }>(
       `/api/v2/ems/${l}/${s}/${e}/stepstats?${winQuery(win)}`),
-  stepDetail: (l: string, s: string, e: string, win: string, step: string, seq: number) =>
+  stepDetail: (l: string, s: string, e: string, win: string, step: string,
+               seq: number, bucket = "auto") =>
     get<StepDetail>(`/api/v2/ems/${l}/${s}/${e}/stepdetail?${winQuery(win)}` +
-      `&step=${encodeURIComponent(step)}&seq=${seq}`),
+      `&step=${encodeURIComponent(step)}&seq=${seq}&bucket=${bucket}`),
   cycles: (l: string, s: string, e: string, win: string) =>
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?${winQuery(win)}`),

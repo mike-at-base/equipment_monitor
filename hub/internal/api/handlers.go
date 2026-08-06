@@ -495,8 +495,13 @@ func (s *Server) handleStepDetail(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	bName, bDur := autoFlowBucket(from, to)
-	if q := r.URL.Query().Get("bucket"); q != "" {
+	// total executions drives the sample floor in the auto-sizer
+	total := hist.Overflow
+	for _, c := range hist.Bins {
+		total += c
+	}
+	bName, bDur := autoStepDriftBucket(from, to, total)
+	if q := r.URL.Query().Get("bucket"); q != "" && q != "auto" {
 		bName, bDur = parseBucket(q)
 	}
 	drift, err := s.stepDrift(r.Context(), em.ID, int16(seq), step, from, to, bDur)
