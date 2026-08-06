@@ -21,6 +21,10 @@ Phase 2 (query surface — the math lives here, UI/agents/CLI all read it):
     GET /api/v2/compare?a=LINE&b=LINE&window=...        decomposed line delta
     GET /api/v2/ems/{line}/{station}/{label}/intervals|steps|cycles|downs
 
+**No download button in the UI** — pull the same data the screens use over
+HTTP. Full export guide (endpoints, shapes, Python/CSV recipes):
+[API.md](./API.md).
+
 MCP server (same binary, streamable HTTP) at /mcp — connect agents with:
 
     claude mcp add --transport http emhub http://localhost:8062/mcp

@@ -385,10 +385,26 @@ func (s *Server) handleSteps(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+	offset := 0
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if n, err := strconv.Atoi(o); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	var total int
+	if err := s.pool.QueryRow(r.Context(), `
+	    SELECT COUNT(*) FROM step_event
+	    WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3`,
+		em.ID, from, to).Scan(&total); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+
 	rows, err := s.pool.Query(r.Context(), `
 	    SELECT start_ts, end_ts, seq_index, step_name, step_desc, duration_ms, was_faulted
 	    FROM step_event WHERE em_id=$1 AND start_ts >= $2 AND start_ts < $3
-	    ORDER BY start_ts DESC LIMIT $4`, em.ID, from, to, limit)
+	    ORDER BY start_ts DESC LIMIT $4 OFFSET $5`, em.ID, from, to, limit, offset)
 	if err != nil {
 		httpErr(w, 500, err)
 		return
@@ -413,7 +429,16 @@ func (s *Server) handleSteps(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, v)
 	}
-	writeJSON(w, out)
+	resp := map[string]any{
+		"steps":  out,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	}
+	if next := offset + len(out); next < total {
+		resp["next_offset"] = next
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
@@ -517,6 +542,21 @@ func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
 		stateMin[st] = round1(float64(v) / 60000.0)
 	}
 
+	flowReasons, err := s.flowReasons(r.Context(), em.ID, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	bName, bDur := autoFlowBucket(from, to)
+	if q := r.URL.Query().Get("flow_bucket"); q != "" {
+		bName, bDur = parseBucket(q)
+	}
+	flowTimeline, err := s.flowReasonsTimeline(r.Context(), em.ID, from, to, bName, bDur)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+
 	// availability is production-clipped (E10): numerator/denominator measured
 	// over the line's production ranges within [from,to].
 	ranges, err := s.lineProductionRanges(r.Context(), r.PathValue("line"), from, to)
@@ -542,13 +582,15 @@ func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := map[string]any{
-		"from":           from,
-		"to":             to,
-		"episodes":       episodes,
-		"raw_downs":      raw,
-		"top_reasons":    topEpisodeReasons(episodes, 10),
-		"state_min":      stateMin,
-		"production_min": round1(float64(rangesMs(ranges)) / 60000.0),
+		"from":                   from,
+		"to":                     to,
+		"episodes":               episodes,
+		"raw_downs":              raw,
+		"top_reasons":            topEpisodeReasons(episodes, 10),
+		"flow_reasons":           flowReasons,
+		"flow_reasons_timeline":  flowTimeline,
+		"state_min":              stateMin,
+		"production_min":         round1(float64(rangesMs(ranges)) / 60000.0),
 	}
 	if pct, ok := episodeAvailability(a.avail, a.down, epMs); ok {
 		out["availability_pct"] = round1(pct)

@@ -9,7 +9,7 @@
 //	GET /api/v2/lines/{line}/summary           full line summary
 //	GET /api/v2/compare?a=LINE&b=LINE          decomposed delta of two lines
 //	GET /api/v2/ems/{line}/{station}/{label}/intervals?state=
-//	GET /api/v2/ems/{line}/{station}/{label}/steps?limit=
+//	GET /api/v2/ems/{line}/{station}/{label}/steps?limit=&offset=
 //	GET /api/v2/ems/{line}/{station}/{label}/cycles
 //	GET /api/v2/ems/{line}/{station}/{label}/downs
 //	GET /api/v2/ems/{line}/{station}/{label}/debug   raw telemetry + resets + modes
@@ -400,6 +400,7 @@ type CycleStats struct {
 	Count       int      `json:"count"`
 	Interrupted int      `json:"interrupted"`
 	AvgMs       *float64 `json:"avg_ms,omitempty"`
+	P10Ms       *float64 `json:"p10_ms,omitempty"`
 	P50Ms       *float64 `json:"p50_ms,omitempty"`
 	P90Ms       *float64 `json:"p90_ms,omitempty"`
 	WorkAvgMs   *float64 `json:"work_avg_ms,omitempty"`
@@ -413,13 +414,14 @@ func (s *Server) cycleStats(ctx context.Context, ids []int, from, to time.Time) 
 	    SELECT count(*),
 	           count(*) FILTER (WHERE interrupted),
 	           avg(total_ms),
+	           percentile_cont(0.1) WITHIN GROUP (ORDER BY total_ms),
 	           percentile_cont(0.5) WITHIN GROUP (ORDER BY total_ms),
 	           percentile_cont(0.9) WITHIN GROUP (ORDER BY total_ms),
 	           avg(work_ms), avg(exchange_ms)
 	    FROM cycle
 	    WHERE em_id = ANY($1) AND start_ts >= $2 AND start_ts < $3`,
 		ids, from, to).Scan(&cs.Count, &cs.Interrupted, &cs.AvgMs,
-		&cs.P50Ms, &cs.P90Ms, &cs.WorkAvgMs, &cs.ExchAvgMs)
+		&cs.P10Ms, &cs.P50Ms, &cs.P90Ms, &cs.WorkAvgMs, &cs.ExchAvgMs)
 	if err != nil {
 		return cs, err
 	}
@@ -428,7 +430,7 @@ func (s *Server) cycleStats(ctx context.Context, ids []int, from, to time.Time) 
 		ph := round1(float64(cs.Count) / hours)
 		cs.PerHour = &ph
 	}
-	for _, p := range []**float64{&cs.AvgMs, &cs.P50Ms, &cs.P90Ms, &cs.WorkAvgMs, &cs.ExchAvgMs} {
+	for _, p := range []**float64{&cs.AvgMs, &cs.P10Ms, &cs.P50Ms, &cs.P90Ms, &cs.WorkAvgMs, &cs.ExchAvgMs} {
 		if *p != nil {
 			v := round1(**p)
 			*p = &v
@@ -447,6 +449,8 @@ var bucketDurations = map[string]time.Duration{
 	"15m": 15 * time.Minute,
 	"30m": 30 * time.Minute,
 	"1h":  time.Hour,
+	"4h":  4 * time.Hour,
+	"1d":  24 * time.Hour,
 }
 
 func parseBucket(s string) (string, time.Duration) {
@@ -454,6 +458,22 @@ func parseBucket(s string) (string, time.Duration) {
 		return s, d
 	}
 	return "1h", time.Hour // default: per hour
+}
+
+// autoFlowBucket picks a chart bucket width from the window span so a
+// typical view stays around ~8–48 bars.
+func autoFlowBucket(from, to time.Time) (string, time.Duration) {
+	span := to.Sub(from)
+	switch {
+	case span <= 4*time.Hour:
+		return "15m", 15 * time.Minute
+	case span <= 36*time.Hour:
+		return "1h", time.Hour
+	case span <= 7*24*time.Hour:
+		return "4h", 4 * time.Hour
+	default:
+		return "1d", 24 * time.Hour
+	}
 }
 
 // cycleThroughput counts completed cycles per fixed-width time bucket.
@@ -509,6 +529,286 @@ type FlowAgg struct {
 	Minutes float64 `json:"minutes"`
 	Count   int     `json:"count"`
 	Reason  string  `json:"top_reason"`
+}
+
+// FlowReasonAgg is one starved/blocked reason for a single EM: minutes and
+// occurrences of that exact waiting_on / reason text within the window.
+type FlowReasonAgg struct {
+	Reason  string  `json:"reason"`
+	State   string  `json:"state"` // starved | blocked
+	Minutes float64 `json:"minutes"`
+	Count   int     `json:"count"`
+}
+
+func (s *Server) flowReasons(ctx context.Context, emID int, from, to time.Time) ([]FlowReasonAgg, error) {
+	rows, err := s.pool.Query(ctx, `
+	    SELECT COALESCE(NULLIF(BTRIM(reason), ''), '(no reason reported)'),
+	           state,
+	           SUM(EXTRACT(EPOCH FROM (LEAST(end_ts,$3) - GREATEST(start_ts,$2)))/60.0),
+	           count(*)::int
+	    FROM state_interval
+	    WHERE em_id=$1 AND state IN ('starved','blocked')
+	      AND end_ts > $2 AND start_ts < $3
+	    GROUP BY 1, 2`, emID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type key struct{ reason, state string }
+	agg := map[key]*FlowReasonAgg{}
+	for rows.Next() {
+		var reason, state string
+		var minutes float64
+		var count int
+		if err := rows.Scan(&reason, &state, &minutes, &count); err != nil {
+			return nil, err
+		}
+		k := key{reason, state}
+		agg[k] = &FlowReasonAgg{Reason: reason, State: state, Minutes: minutes, Count: count}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fold the live open interval so "today" includes the wait happening now.
+	for _, le := range s.live() {
+		if le.EMID != emID {
+			continue
+		}
+		if le.State != model.StateStarved && le.State != model.StateBlocked {
+			continue
+		}
+		ms := overlapMs(le.Since, time.Now().UTC(), from, to)
+		if ms <= 0 {
+			continue
+		}
+		reason := strings.TrimSpace(le.Reason)
+		if reason == "" {
+			reason = "(no reason reported)"
+		}
+		k := key{reason, le.State}
+		if a := agg[k]; a != nil {
+			a.Minutes += float64(ms) / 60000.0
+			a.Count++
+		} else {
+			agg[k] = &FlowReasonAgg{
+				Reason: reason, State: le.State,
+				Minutes: float64(ms) / 60000.0, Count: 1,
+			}
+		}
+	}
+
+	out := make([]FlowReasonAgg, 0, len(agg))
+	for _, a := range agg {
+		a.Minutes = round1(a.Minutes)
+		out = append(out, *a)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Minutes != out[j].Minutes {
+			return out[i].Minutes > out[j].Minutes
+		}
+		return out[i].Count > out[j].Count
+	})
+	if len(out) > 15 {
+		out = out[:15]
+	}
+	return out, nil
+}
+
+// FlowReasonTimeline is starved/blocked minutes by reason across time
+// buckets — used to show how waiting-on reasons shift over a window.
+type FlowReasonTimeline struct {
+	Bucket  string             `json:"bucket"`  // e.g. "1h"
+	Buckets []time.Time        `json:"buckets"` // bucket starts, ascending
+	Series  []FlowReasonSeries `json:"series"`  // top reasons (+ Other); values align with Buckets
+}
+
+type FlowReasonSeries struct {
+	Reason  string    `json:"reason"`
+	State   string    `json:"state"` // starved | blocked | other
+	Minutes []float64 `json:"minutes"`
+}
+
+const flowTimelineTopN = 6
+
+func (s *Server) flowReasonsTimeline(ctx context.Context, emID int, from, to time.Time,
+	bucketName string, bucket time.Duration) (FlowReasonTimeline, error) {
+	empty := FlowReasonTimeline{Bucket: bucketName, Buckets: []time.Time{}, Series: []FlowReasonSeries{}}
+	if !to.After(from) || bucket <= 0 {
+		return empty, nil
+	}
+
+	start := from.UTC().Truncate(bucket)
+	end := to.UTC()
+	// generate_series stop must be >= start; for sub-bucket windows emit one bar.
+	seriesStop := end.Add(-bucket)
+	if seriesStop.Before(start) {
+		seriesStop = start
+	}
+
+	rows, err := s.pool.Query(ctx, `
+	    WITH buckets AS (
+	      SELECT generate_series(
+	        $2::timestamptz,
+	        $3::timestamptz,
+	        make_interval(secs => $4)
+	      ) AS bucket_ts
+	    )
+	    SELECT b.bucket_ts,
+	           COALESCE(NULLIF(BTRIM(si.reason), ''), '(no reason reported)'),
+	           si.state,
+	           SUM(EXTRACT(EPOCH FROM (
+	             LEAST(si.end_ts, b.bucket_ts + make_interval(secs => $4), $5) -
+	             GREATEST(si.start_ts, b.bucket_ts, $6)
+	           ))/60.0)
+	    FROM buckets b
+	    JOIN state_interval si
+	      ON si.em_id = $1
+	     AND si.state IN ('starved','blocked')
+	     AND si.end_ts > GREATEST(b.bucket_ts, $6)
+	     AND si.start_ts < LEAST(b.bucket_ts + make_interval(secs => $4), $5)
+	    GROUP BY 1, 2, 3
+	    HAVING SUM(EXTRACT(EPOCH FROM (
+	             LEAST(si.end_ts, b.bucket_ts + make_interval(secs => $4), $5) -
+	             GREATEST(si.start_ts, b.bucket_ts, $6)
+	           ))/60.0) > 0.001`,
+		emID, start, seriesStop, int(bucket.Seconds()), to, from)
+	if err != nil {
+		return empty, err
+	}
+	defer rows.Close()
+
+	type key struct{ reason, state string }
+	type cell struct {
+		bucket time.Time
+		key    key
+		min    float64
+	}
+	var cells []cell
+	totals := map[key]float64{}
+	for rows.Next() {
+		var bts time.Time
+		var reason, state string
+		var minutes float64
+		if err := rows.Scan(&bts, &reason, &state, &minutes); err != nil {
+			return empty, err
+		}
+		k := key{reason, state}
+		cells = append(cells, cell{bts.UTC(), k, minutes})
+		totals[k] += minutes
+	}
+	if err := rows.Err(); err != nil {
+		return empty, err
+	}
+
+	// Fold the live open interval into its current bucket.
+	for _, le := range s.live() {
+		if le.EMID != emID {
+			continue
+		}
+		if le.State != model.StateStarved && le.State != model.StateBlocked {
+			continue
+		}
+		ms := overlapMs(le.Since, time.Now().UTC(), from, to)
+		if ms <= 0 {
+			continue
+		}
+		reason := strings.TrimSpace(le.Reason)
+		if reason == "" {
+			reason = "(no reason reported)"
+		}
+		k := key{reason, le.State}
+		// Attribute the open overlap to the bucket of "now" (clipped into window).
+		now := time.Now().UTC()
+		if now.After(to) {
+			now = to.Add(-time.Nanosecond)
+		}
+		if now.Before(from) {
+			continue
+		}
+		bts := now.Truncate(bucket)
+		if bts.Before(start) {
+			bts = start
+		}
+		cells = append(cells, cell{bts, k, float64(ms) / 60000.0})
+		totals[k] += float64(ms) / 60000.0
+	}
+
+	if len(totals) == 0 {
+		return empty, nil
+	}
+
+	// Continuous bucket axis covering the window.
+	buckets := []time.Time{}
+	for t := start; t.Before(end); t = t.Add(bucket) {
+		buckets = append(buckets, t)
+	}
+	if len(buckets) == 0 {
+		return empty, nil
+	}
+	idx := map[int64]int{}
+	for i, b := range buckets {
+		idx[b.UnixMilli()] = i
+	}
+
+	// Top N reasons by total minutes; remainder collapses to Other.
+	type ranked struct {
+		k key
+		m float64
+	}
+	rank := make([]ranked, 0, len(totals))
+	for k, m := range totals {
+		rank = append(rank, ranked{k, m})
+	}
+	sort.Slice(rank, func(i, j int) bool { return rank[i].m > rank[j].m })
+	keep := map[key]bool{}
+	seriesKeys := []key{}
+	for i, r := range rank {
+		if i >= flowTimelineTopN {
+			break
+		}
+		keep[r.k] = true
+		seriesKeys = append(seriesKeys, r.k)
+	}
+	hasOther := len(rank) > len(seriesKeys)
+
+	series := make([]FlowReasonSeries, 0, len(seriesKeys)+1)
+	seriesIdx := map[key]int{}
+	for _, k := range seriesKeys {
+		seriesIdx[k] = len(series)
+		series = append(series, FlowReasonSeries{
+			Reason: k.reason, State: k.state,
+			Minutes: make([]float64, len(buckets)),
+		})
+	}
+	otherIdx := -1
+	if hasOther {
+		otherIdx = len(series)
+		series = append(series, FlowReasonSeries{
+			Reason: "Other", State: "other",
+			Minutes: make([]float64, len(buckets)),
+		})
+	}
+
+	for _, c := range cells {
+		bi, ok := idx[c.bucket.UnixMilli()]
+		if !ok {
+			continue
+		}
+		if si, ok := seriesIdx[c.key]; ok {
+			series[si].Minutes[bi] += c.min
+		} else if otherIdx >= 0 {
+			series[otherIdx].Minutes[bi] += c.min
+		}
+	}
+	for i := range series {
+		for j, v := range series[i].Minutes {
+			series[i].Minutes[j] = round1(v)
+		}
+	}
+
+	return FlowReasonTimeline{Bucket: bucketName, Buckets: buckets, Series: series}, nil
 }
 
 func (s *Server) flowLosses(ctx context.Context, ids []int, byID map[int]EMInfo,

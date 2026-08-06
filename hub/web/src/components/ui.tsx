@@ -212,6 +212,69 @@ export function VBars({ bars, unit }: { bars: { t: number; v: number; label: str
   );
 }
 
+// ── stacked vertical bars over time (flow reasons by bucket) ─────────────
+export function StackedBars({
+  labels, series, unit = " min",
+}: {
+  labels: string[];
+  series: { name: string; color: string; values: number[] }[];
+  unit?: string;
+}) {
+  if (!labels.length || !series.length) return <div className="empty">No data in this window.</div>;
+  const width = 1000, height = 220, padL = 40, padB = 28, padT = 8;
+  const totals = labels.map((_, i) => series.reduce((a, s) => a + (s.values[i] ?? 0), 0));
+  const vmax = Math.max(...totals, 1) * 1.1;
+  const plotW = width - padL - 8, plotH = height - padB - padT;
+  const bw = plotW / labels.length;
+  const y = (v: number) => padT + plotH - (v / vmax) * plotH;
+  const labelEvery = Math.ceil(labels.length / 8);
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height }}>
+        {[0.25, 0.5, 0.75, 1].map((f) => (
+          <g key={f}>
+            <line x1={padL} x2={width - 8} y1={y(vmax * f / 1.1)} y2={y(vmax * f / 1.1)}
+                  stroke="var(--conduit)" strokeWidth={1} />
+            <text x={padL - 6} y={y(vmax * f / 1.1) + 4} textAnchor="end"
+                  fontSize={10} fill="var(--secondary)">
+              {Math.round(vmax * f / 1.1)}{unit.trim()}
+            </text>
+          </g>
+        ))}
+        {labels.map((label, i) => {
+          const x = padL + i * bw;
+          let top = padT + plotH; // stack upward; first series sits on the baseline
+          return (
+            <g key={i}>
+              {series.map((s) => {
+                const v = s.values[i] ?? 0;
+                if (v <= 0) return null;
+                const h = (v / vmax) * plotH;
+                top -= h;
+                return (
+                  <rect key={s.name} x={x + bw * 0.12} y={top} width={bw * 0.76}
+                        height={Math.max(h, 0)} fill={s.color}>
+                    <title>{`${label}\n${s.name}\n${v.toFixed(1)}${unit}`}</title>
+                  </rect>
+                );
+              })}
+              {i % labelEvery === 0 && (
+                <text x={x + bw / 2} y={height - 8} textAnchor="middle"
+                      fontSize={10} fill="var(--secondary)">{label}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="gantt-legend">
+        {series.map((s) => (
+          <span key={s.name}><i style={{ background: s.color }} />{s.name}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Loading() {
   return <div className="empty">Loading…</div>;
 }

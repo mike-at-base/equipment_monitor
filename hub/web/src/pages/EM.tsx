@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, STATE_LABEL, STATE_ORDER } from "../api";
-import { Bars, ErrorBox, Gantt, Loading, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
+import { Bars, ErrorBox, Gantt, Loading, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
 export default function EMPage() {
@@ -37,14 +37,55 @@ export default function EMPage() {
 
 type P = { l: string; s: string; e: string };
 
+const STEPS_PAGE = 800;
+
+function flowBucketLabel(iso: string, bucket: string): string {
+  const d = new Date(iso);
+  if (bucket === "1d") {
+    return d.toLocaleDateString([], { month: "numeric", day: "numeric" });
+  }
+  if (bucket === "4h") {
+    return d.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit" });
+  }
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function flowSeriesColor(state: string, i: number): string {
+  if (state === "other") return "var(--st-wait)";
+  if (state === "starved") {
+    const shades = ["var(--st-starved)", "#e0a82e", "#c99620", "#f5d56a"];
+    return shades[i % shades.length];
+  }
+  if (state === "blocked") {
+    const shades = ["var(--st-blocked)", "#d45a20", "#f09064", "#b84818"];
+    return shades[i % shades.length];
+  }
+  const palette = ["#048ee5", "#77a45a", "#9b59b6", "#54524f"];
+  return palette[i % palette.length];
+}
+
 function Steps({ l, s, e }: P) {
   const { win } = useWindow();
-  const q = usePolledAsync(() => api.steps(l, s, e, win, 800), [l, s, e, win]);
+  const [page, setPage] = useState(0); // 0-based; newest-first pages
+  useEffect(() => { setPage(0); }, [l, s, e, win]);
+  const q = usePolledAsync(
+    () => api.steps(l, s, e, win, STEPS_PAGE, page * STEPS_PAGE),
+    [l, s, e, win, page],
+  );
+  // Clamp if total shrank (e.g. window rolled) while sitting on a deep page.
+  useEffect(() => {
+    if (!q.data) return;
+    const pages = Math.max(1, Math.ceil(q.data.total / STEPS_PAGE));
+    if (page >= pages) setPage(pages - 1);
+  }, [q.data, page]);
   if (q.err) return <ErrorBox err={q.err} />;
   if (!q.data) return <Loading />;
-  const steps = q.data;
+  const { steps, total } = q.data;
+  const pageCount = Math.max(1, Math.ceil(total / STEPS_PAGE));
+  const fromN = total === 0 ? 0 : page * STEPS_PAGE + 1;
+  const toN = Math.min((page + 1) * STEPS_PAGE, total);
 
-  // per-step aggregate for the summary bars
+  // per-step aggregate for the summary bars (this page only)
   const agg: Record<string, { total: number; n: number }> = {};
   for (const st of steps) {
     agg[st.step] = agg[st.step] ?? { total: 0, n: 0 };
@@ -59,14 +100,25 @@ function Steps({ l, s, e }: P) {
   return (
     <>
       <div className="card">
-        <h2>Average step duration ({win})</h2>
+        <h2>Average step duration ({win}) · this page</h2>
         <Bars rows={avg.map((r) => ({
           name: `${r.step} (×${r.n})`, value: r.avg / 1000, suffix: " s",
           color: "var(--grounded)",
         }))} />
       </div>
       <div className="card">
-        <h2>Step history · {steps.length} events</h2>
+        <div className="pager">
+          <h2 style={{ margin: 0 }}>
+            Step history · {fromN}–{toN} of {total}
+          </h2>
+          <div className="pager-controls">
+            <button type="button" disabled={page <= 0}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}>Newer</button>
+            <span className="muted">page {Math.min(page + 1, pageCount)} / {pageCount}</span>
+            <button type="button" disabled={page + 1 >= pageCount}
+              onClick={() => setPage((p) => p + 1)}>Older</button>
+          </div>
+        </div>
         <div className="tablewrap">
           <table className="data">
             <thead><tr>
@@ -75,7 +127,7 @@ function Steps({ l, s, e }: P) {
             </tr></thead>
             <tbody>
               {steps.map((st, i) => (
-                <tr key={i}>
+                <tr key={`${st.start_ts}-${st.step}-${i}`}>
                   <td className="num">{fmtClock(st.start_ts)}</td>
                   <td className="num">{st.seq_index}</td>
                   <td className="num">{st.step}</td>
@@ -106,6 +158,7 @@ function Cycles({ l, s, e }: P) {
       <div className="tiles" style={{ marginTop: 16 }}>
         <T label="Cycles" v={`${stats.count}`} />
         <T label="Per hour" v={stats.per_hour != null ? `${stats.per_hour}` : "–"} />
+        <T label="p10" v={fmtMs(stats.p10_ms)} />
         <T label="p50" v={fmtMs(stats.p50_ms)} />
         <T label="p90" v={fmtMs(stats.p90_ms)} />
         <T label="Work avg" v={fmtMs(stats.work_avg_ms)} />
@@ -198,7 +251,7 @@ function CycleWaterfall({ l, s, e, cyc }: P & { cyc: CycleRow }) {
   if (!q.data) return <Loading />;
   const t0 = Date.parse(cyc.start_ts);
   const total = Math.max(cyc.total_ms, 1);
-  const steps = q.data
+  const steps = q.data.steps
     .filter((st) => st.seq_index === cyc.seq_index)
     .sort((a, b) => Date.parse(a.start_ts) - Date.parse(b.start_ts));
   if (!steps.length) return <div className="empty">No step detail retained for this cycle.</div>;
@@ -247,6 +300,7 @@ function Availability({ l, s, e }: P) {
   const eps = downs.data.episodes;
   const epMin = eps.reduce((a, e) => a + e.minutes, 0);
   const acked = eps.filter((e) => e.response_min != null);
+  const flowTimeline = downs.data.flow_reasons_timeline;
 
   return (
     <>
@@ -275,6 +329,45 @@ function Availability({ l, s, e }: P) {
           ...(noDataMin > 0.1 ? [{ name: "No data (not reporting)", value: noDataMin, color: "var(--st-no_data)" }] : []),
         ]} />
       </div>
+      {(downs.data.flow_reasons ?? []).length > 0 && (
+        <div className="card">
+          <h2>Starved / blocked reasons</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Why the EM was waiting on flow — minutes charged to each waiting-on
+            reason (from the PLC permissives).
+          </p>
+          <Bars wrap rows={(downs.data.flow_reasons ?? []).map((r) => ({
+            name: `${STATE_LABEL[r.state] ?? r.state} — ${r.reason} (×${r.count})`,
+            value: r.minutes,
+            color: stateColor(r.state),
+          }))} />
+        </div>
+      )}
+      {(flowTimeline?.series?.length ?? 0) > 0 && flowTimeline && (
+        <div className="card">
+          <h2>Flow reasons over time
+            <span className="muted" style={{ fontSize: 13, fontWeight: 400 }}>
+              {" "}· {flowTimeline.bucket} buckets
+            </span>
+          </h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Minutes of starved/blocked time by waiting-on reason in each bucket —
+            shows how the constraint shifts across the window (top reasons; rest as Other).
+          </p>
+          <StackedBars
+            labels={flowTimeline.buckets.map((b) => flowBucketLabel(b, flowTimeline.bucket))}
+            series={flowTimeline.series.map((s, i) => {
+              const short = s.reason.length > 42 ? `${s.reason.slice(0, 40)}…` : s.reason;
+              return {
+                name: s.reason === "Other" ? "Other"
+                  : `${STATE_LABEL[s.state] ?? s.state}: ${short}`,
+                color: flowSeriesColor(s.state, i),
+                values: s.minutes,
+              };
+            })}
+          />
+        </div>
+      )}
       {downs.data.top_reasons.length > 0 && (
         <div className="card">
           <h2>Down reasons</h2>

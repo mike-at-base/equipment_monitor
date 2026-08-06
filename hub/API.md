@@ -1,4 +1,12 @@
-# emhub API — for agents and integrations
+# emhub API — for agents, integrations, and data export
+
+There is no “Download CSV” button in the UI. **Everything the screens show
+is available as JSON over HTTP** — same numbers, same windows. Point a
+browser, `curl`, Python, or Excel Power Query at the hub and pull what you
+need.
+
+Base URL (local Docker default): `http://localhost:8062`  
+On the plant host, replace `localhost` with that machine’s name/IP.
 
 ## The design rule
 
@@ -7,17 +15,236 @@ MTTR, and composed availability are all computed server-side. The web UI,
 the MCP tools, and `emctl` are thin readers of the same endpoints — so a
 bot and a human looking at the same window can never disagree on a number.
 
-Corollary for integrators: **do not recompute.** If you find yourself
-averaging percentages or summing minutes client-side, there is almost
-certainly an endpoint that already returns the number you want, computed
-the way the plant defines it.
+Corollary for integrators: **prefer the aggregated fields** (`state_min`,
+`flow_reasons`, cycle `stats`, …) when you want the plant definition of a
+metric. Use the raw arrays (`intervals`, `steps`, `cycles`, `episodes`) when
+you need to slice the history yourself in a notebook.
 
 Two ways in:
 
 | | Use it for |
 |---|---|
+| **REST** (`/api/v2/...`) | Scripts, notebooks, Power BI, anything else. **Start here for analysis.** |
 | **MCP** (`POST /mcp`) | LLM agents. Tool-shaped, self-describing, read-only. |
-| **REST** (`/api/v2/...`) | Scripts, dashboards, anything else. Full surface, including writes. |
+
+---
+
+## Pulling data for analysis
+
+### Quick start
+
+1. Find the exact line / station / EM spelling:
+   ```bash
+   curl -s http://localhost:8062/api/v2/hierarchy
+   ```
+2. Pick a time window (`today`, `8h`, `24h`, `3d`, `prod`, or `from`/`to`).
+3. Hit the endpoint that matches the question (table below).
+4. Save the JSON, or pipe through Python/`jq` into CSV.
+
+**Windows note:** use `curl.exe` in PowerShell (plain `curl` is an alias for
+`Invoke-WebRequest`). Or use the Python snippets further down.
+
+### Which endpoint for which question?
+
+| I want… | Endpoint | Notes |
+|---|---|---|
+| Line rollup (availability, top reasons, flow losses, per-EM) | `GET /api/v2/lines/{line}/summary?window=` | Best first stop for a shift report. |
+| One EM’s availability + down + flow reasons | `GET /api/v2/ems/{line}/{station}/{label}/downs?window=` | Includes `state_min`, `flow_reasons`, `flow_reasons_timeline`, episodes. |
+| Raw state timeline (every productive/starved/blocked/down…) | `GET .../intervals?window=` | Up to **2000** rows (newest first). Optional `?state=starved`. |
+| Step history | `GET .../steps?window=&limit=&offset=` | Paginated; see below. |
+| Cycle times | `GET .../cycles?window=` | `{ stats, cycles[] }`. |
+| Cycles per hour / 15m | `GET .../throughput?window=&bucket=1h` | `bucket`: `15m`, `30m`, `1h`. |
+| Composed (k-of-n) station availability + causes | `GET /api/v2/lines/{line}/stations/{station}/composed?window=` | Time-domain redundancy, not %×%. |
+| What’s live right now | `GET /api/v2/live` | Snapshot of every EM. |
+
+`{label}` is the EM label (`main`, `rb01`, …). Default in MCP is `main`;
+in REST you must include it in the path.
+
+### Time windows (every historical endpoint)
+
+| Value | Meaning |
+|---|---|
+| *(omitted)* or `today` | Local midnight → now |
+| `8h`, `30m`, `3d` | Rolling duration back from now |
+| `prod` | Today’s **scheduled production** span for that line |
+| `?from=&to=` | Explicit RFC3339 range (`to` defaults to now) |
+
+Local midnight uses `APP_TIMEZONE` (default `America/Chicago`).
+Timestamps in responses are **RFC3339 UTC**. Durations: `*_ms` = milliseconds,
+`*_min` / `minutes` = minutes.
+
+Example with an explicit range:
+
+```bash
+curl.exe -s "http://localhost:8062/api/v2/ems/MOD1/ST22000/main/downs?from=2026-08-04T12:00:00Z&to=2026-08-04T20:00:00Z"
+```
+
+### EM downs — availability, flow reasons, episodes
+
+`GET /api/v2/ems/{line}/{station}/{label}/downs?window=`
+
+Useful fields:
+
+| Field | What it is |
+|---|---|
+| `from`, `to` | Exact window the numbers use |
+| `availability_pct` | Episode-based availability (`null` if no production/data — not zero) |
+| `production_min` | Minutes of scheduled production in the window |
+| `state_min` | Minutes in each state (`productive`, `starved`, `blocked`, `down`, …) |
+| `flow_reasons[]` | Starved/blocked **pareto** by waiting-on reason: `{ reason, state, minutes, count }` |
+| `flow_reasons_timeline` | Same reasons **over time** (see below) |
+| `top_reasons[]` | Down-episode reason pareto |
+| `episodes[]` | Sticky root-cause down episodes (ack, retries, response/repair minutes) |
+| `raw_downs[]` | Raw down intervals (every fault blip, not collapsed) |
+
+Optional: `?flow_bucket=15m|30m|1h|4h|1d` overrides the timeline bucket.
+If omitted, the hub picks one from the window span (≤4h → 15m, ≤36h → 1h,
+≤7d → 4h, else 1d).
+
+`flow_reasons_timeline` shape:
+
+```json
+{
+  "bucket": "1h",
+  "buckets": ["2026-08-04T12:00:00Z", "2026-08-04T13:00:00Z"],
+  "series": [
+    {
+      "reason": "AGV Present (Sensor); AGV Present (Carrier)",
+      "state": "starved",
+      "minutes": [55.2, 60.0]
+    }
+  ]
+}
+```
+
+`series[].minutes[i]` aligns with `buckets[i]`. Top 6 reasons are kept;
+the rest collapse into `"Other"`.
+
+### Steps — paginated raw history
+
+`GET /api/v2/ems/{line}/{station}/{label}/steps?window=&limit=&offset=`
+
+```json
+{
+  "steps": [
+    {
+      "start_ts": "...", "end_ts": "...", "seq_index": 1,
+      "step": "100", "description": "Wait for Part",
+      "duration_ms": 1234, "was_faulted": false
+    }
+  ],
+  "total": 922,
+  "limit": 1000,
+  "offset": 0,
+  "next_offset": 1000
+}
+```
+
+- Newest first.
+- REST default `limit` = 1000, max **20000**.
+- When `next_offset` is present, request again with `offset=next_offset`
+  until it disappears — that is the full history for the window.
+
+### Intervals — raw state timeline
+
+`GET /api/v2/ems/{line}/{station}/{label}/intervals?window=`  
+Optional: `&state=starved` (or `blocked`, `down`, …).
+
+Each row: `start_ts`, `end_ts`, `state`, `reason_type`, `reason`, `step_name`,
+`ack_ts`. Capped at **2000** rows (newest first), plus the live open
+interval when it matches. For multi-day exports of a busy EM, prefer
+`downs` aggregates or page with tighter `from`/`to` windows.
+
+### Cycles
+
+`GET /api/v2/ems/{line}/{station}/{label}/cycles?window=`
+
+```json
+{
+  "stats": { "count": 120, "p50_ms": 45000, "p90_ms": 61000, "interrupted": 3, "...": "..." },
+  "cycles": [
+    { "start_ts": "...", "end_ts": "...", "seq_index": 1,
+      "work_ms": 30000, "exchange_ms": 15000, "total_ms": 45000, "interrupted": false }
+  ]
+}
+```
+
+### Export recipes
+
+**Save one EM’s downs JSON (PowerShell):**
+```powershell
+curl.exe -s "http://localhost:8062/api/v2/ems/MOD1/ST22000/main/downs?window=8h" `
+  -o downs_ST22000.json
+```
+
+**All steps for a window → CSV (Python):**
+```python
+import csv, json, urllib.request
+
+BASE = "http://localhost:8062"
+LINE, STATION, EM = "MOD1", "ST22000", "main"
+WINDOW = "8h"
+
+def get(path):
+    with urllib.request.urlopen(BASE + path) as r:
+        return json.load(r)
+
+rows, offset, limit = [], 0, 5000
+while True:
+    page = get(
+        f"/api/v2/ems/{LINE}/{STATION}/{EM}/steps"
+        f"?window={WINDOW}&limit={limit}&offset={offset}"
+    )
+    rows.extend(page["steps"])
+    nxt = page.get("next_offset")
+    if nxt is None:
+        break
+    offset = nxt
+
+with open("steps.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.DictWriter(f, fieldnames=rows[0].keys() if rows else [])
+    if rows:
+        w.writeheader()
+        w.writerows(rows)
+print(f"wrote {len(rows)} of {page['total']} steps")
+```
+
+**Flow reasons pareto → CSV (Python):**
+```python
+import csv, json, urllib.request
+
+url = ("http://localhost:8062/api/v2/ems/MOD1/ST22000/main/downs"
+       "?window=8h")
+data = json.load(urllib.request.urlopen(url))
+
+with open("flow_reasons.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.DictWriter(f, fieldnames=["state", "reason", "minutes", "count"])
+    w.writeheader()
+    w.writerows(data.get("flow_reasons") or [])
+```
+
+**Flow reasons over time → long CSV (Python):**
+```python
+import csv, json, urllib.request
+
+data = json.load(urllib.request.urlopen(
+    "http://localhost:8062/api/v2/ems/MOD1/ST22000/main/downs?window=8h"))
+tl = data["flow_reasons_timeline"]
+
+with open("flow_reasons_timeline.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f)
+    w.writerow(["bucket_ts", "bucket", "state", "reason", "minutes"])
+    for s in tl["series"]:
+        for ts, mins in zip(tl["buckets"], s["minutes"]):
+            if mins:
+                w.writerow([ts, tl["bucket"], s["state"], s["reason"], mins])
+```
+
+**Line summary slice (`jq`):**
+```bash
+curl.exe -s "http://localhost:8062/api/v2/lines/MOD1/summary?window=today" \
+  | jq "{availability_pct, top_down_reasons, flow_losses, state_min}"
+```
 
 ---
 
@@ -65,9 +292,9 @@ Seventeen tools covering every read endpoint of the query API.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `em_downs` | `line`, `station`, `em_label`, `window` | Down episodes with scan-accurate reasons, ack timestamps, reason pareto. |
+| `em_downs` | `line`, `station`, `em_label`, `window` | Availability, `state_min`, flow-reason pareto + timeline, down episodes, raw downs. |
 | `em_cycles` | ″ | Cycle records + stats, interrupted count. |
-| `em_steps` | ″ | Step history: name, description, duration, faulted flag. |
+| `em_steps` | ″ + `limit?`, `offset?` | Paginated step history (`{steps, total, limit, offset, next_offset?}`). Default limit 500 (max 5000); page with `offset=next_offset` until `next_offset` is absent. |
 | `em_intervals` | ″ | Raw state timeline with reasons. |
 | `em_throughput` | ″ + `bucket` | Completed cycle counts per bucket (`15m`/`30m`/`1h`). |
 | `em_debug` | ″ | Latest raw datagram (decoded bits, clock skew), resets, mode windows. |
@@ -129,11 +356,11 @@ Base: `http://<host>:8062`. All responses `application/json`; errors are
 | `GET /api/v2/lines/{line}/schedule` | Weekly production shifts. |
 | `GET /api/v2/lines/{line}/availmodel` | Line redundancy model (+ the default, + member names). |
 | `GET /api/v2/lines/{line}/stations/{station}/availmodel` | Station redundancy model. |
-| `GET /api/v2/ems/{line}/{station}/{label}/intervals` | State timeline. |
-| `GET .../steps?limit=` | Step history. |
+| `GET /api/v2/ems/{line}/{station}/{label}/intervals` | Raw state timeline (≤2000 rows). Optional `?state=`. |
+| `GET .../steps?limit=&offset=` | Paginated step history: `{steps, total, limit, offset, next_offset?}`. Newest first; limit default 1000 (max 20000). |
 | `GET .../cycles` | Cycles + stats. |
 | `GET .../throughput?bucket=15m\|30m\|1h` | Counts per bucket. |
-| `GET .../downs` | Down episodes, raw downs, reason pareto, availability, `production_min`. |
+| `GET .../downs` | Availability, `state_min`, `flow_reasons`, `flow_reasons_timeline`, down episodes, raw downs. Optional `?flow_bucket=`. |
 | `GET .../debug` | Raw telemetry, resets, mode windows — engineering view. |
 | `GET .../config` | Sequence config + **observed** step names per sequence. |
 
@@ -153,16 +380,10 @@ clears a model back to the default.
 
 ### Time windows
 
-Every historical endpoint accepts the same selector:
-
-| Value | Meaning |
-|---|---|
-| *(omitted)* or `today` | Local midnight → now |
-| `8h`, `30m`, `3d` | Rolling duration back from now |
-| `prod` | **Today's scheduled production span** for that line |
-| `?from=&to=` | Explicit RFC3339 range (`to` defaults to now) |
-
-Local time is `APP_TIMEZONE` (default `America/Chicago`).
+Same selector on every historical endpoint — see
+[Time windows](#time-windows-every-historical-endpoint) under
+**Pulling data for analysis** above. Local midnight uses `APP_TIMEZONE`
+(default `America/Chicago`).
 
 ---
 

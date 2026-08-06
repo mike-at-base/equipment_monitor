@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 )
 
 const protocolVersion = "2025-06-18"
@@ -47,6 +48,40 @@ func win(args map[string]any) string {
 		return "window=" + url.QueryEscape(w)
 	}
 	return "window=today"
+}
+
+// intArg reads a JSON number/string arg, clamped to [min, max].
+func intArg(a map[string]any, key string, def, min, max int) int {
+	v, ok := a[key]
+	if !ok || v == nil {
+		return def
+	}
+	n := def
+	switch x := v.(type) {
+	case float64:
+		n = int(x)
+	case int:
+		n = x
+	case int64:
+		n = int(x)
+	case json.Number:
+		if i, err := x.Int64(); err == nil {
+			n = int(i)
+		}
+	case string:
+		if i, err := strconv.Atoi(x); err == nil {
+			n = i
+		}
+	default:
+		return def
+	}
+	if n < min {
+		return min
+	}
+	if n > max {
+		return max
+	}
+	return n
 }
 
 func tools() []tool {
@@ -97,11 +132,19 @@ func tools() []tool {
 			},
 		},
 		{
-			Name:        "em_steps",
-			Description: "Step-by-step execution history for one equipment module (step name, description, duration, faulted flag).",
-			InputSchema: emSchema(),
+			Name: "em_steps",
+			Description: "Step-by-step execution history for one equipment module (step name, description, duration, faulted flag). " +
+				"Paginated: returns {steps, total, limit, offset, next_offset?}. Pass limit (default 500, max 5000) and offset. " +
+				"When next_offset is present, call again with offset=next_offset to fetch the next batch until it is absent.",
+			InputSchema: emSchemaWith(
+				`,"limit":{"type":"integer","description":"page size, default 500, max 5000"}` +
+					`,"offset":{"type":"integer","description":"row offset into the window (newest first); use next_offset from the prior response to page"}`),
 			path: func(a map[string]any) string {
-				return emPath(a, "steps") + "?" + win(a) + "&limit=500"
+				limit := intArg(a, "limit", 500, 1, 5000)
+				offset := intArg(a, "offset", 0, 0, 1_000_000_000)
+				return emPath(a, "steps") + "?" + win(a) +
+					"&limit=" + strconv.Itoa(limit) +
+					"&offset=" + strconv.Itoa(offset)
 			},
 		},
 		{

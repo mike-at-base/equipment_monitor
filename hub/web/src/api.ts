@@ -23,6 +23,7 @@ export type CycleStats = {
   count: number;
   interrupted: number;
   avg_ms?: number;
+  p10_ms?: number;
   p50_ms?: number;
   p90_ms?: number;
   work_avg_ms?: number;
@@ -44,6 +45,19 @@ export type FlowAgg = {
   minutes: number;
   count: number;
   top_reason: string;
+};
+
+export type FlowReasonAgg = {
+  reason: string;
+  state: string; // starved | blocked
+  minutes: number;
+  count: number;
+};
+
+export type FlowReasonTimeline = {
+  bucket: string; // 15m | 30m | 1h | 4h | 1d
+  buckets: string[]; // RFC3339 bucket starts
+  series: { reason: string; state: string; minutes: number[] }[];
 };
 
 export type EMSummary = {
@@ -130,6 +144,14 @@ export type StepRow = {
   description: string;
   duration_ms: number;
   was_faulted: boolean;
+};
+
+export type StepsPage = {
+  steps: StepRow[];
+  total: number;
+  limit: number;
+  offset: number;
+  next_offset?: number;
 };
 
 export type ThroughputBucket = {
@@ -270,11 +292,11 @@ export const api = {
     get<LineSummary>(`/api/v2/lines/${encodeURIComponent(line)}/summary?window=${win}`),
   intervals: (l: string, s: string, e: string, win: string) =>
     get<Interval[]>(`/api/v2/ems/${l}/${s}/${e}/intervals?window=${win}`),
-  steps: (l: string, s: string, e: string, win: string, limit = 500) =>
-    get<StepRow[]>(`/api/v2/ems/${l}/${s}/${e}/steps?window=${win}&limit=${limit}`),
+  steps: (l: string, s: string, e: string, win: string, limit = 800, offset = 0) =>
+    get<StepsPage>(`/api/v2/ems/${l}/${s}/${e}/steps?window=${win}&limit=${limit}&offset=${offset}`),
   stepsRange: (l: string, s: string, e: string, from: string, to: string) =>
-    get<StepRow[]>(`/api/v2/ems/${l}/${s}/${e}/steps?from=${encodeURIComponent(from)}` +
-      `&to=${encodeURIComponent(to)}&limit=500`),
+    get<StepsPage>(`/api/v2/ems/${l}/${s}/${e}/steps?from=${encodeURIComponent(from)}` +
+      `&to=${encodeURIComponent(to)}&limit=500&offset=0`),
   cycles: (l: string, s: string, e: string, win: string) =>
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?window=${win}`),
@@ -283,8 +305,9 @@ export const api = {
       `/api/v2/ems/${l}/${s}/${e}/throughput?window=${win}&bucket=${bucket}`),
   downs: (l: string, s: string, e: string, win: string) =>
     get<{ from: string; to: string; episodes: EpisodeRow[]; raw_downs: DownRow[];
-          top_reasons: ReasonAgg[]; availability_pct?: number;
-          state_min: Record<string, number> }>(
+          top_reasons: ReasonAgg[]; flow_reasons: FlowReasonAgg[];
+          flow_reasons_timeline: FlowReasonTimeline;
+          availability_pct?: number; state_min: Record<string, number> }>(
       `/api/v2/ems/${l}/${s}/${e}/downs?window=${win}`),
   debug: (l: string, s: string, e: string, win: string) =>
     get<DebugResp>(`/api/v2/ems/${l}/${s}/${e}/debug?window=${win}`),
