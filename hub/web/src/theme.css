@@ -454,3 +454,26 @@ table.data tr.sel td { background: var(--livewire); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ── histogram (distribution shape) ────────────────────────────────────── */
+.hist {
+  display: flex; align-items: flex-end; gap: 2px;
+  height: 150px; padding: 4px 0;
+  border-bottom: 1px solid var(--subtle);
+}
+.hist-col { flex: 1; height: 100%; display: flex; align-items: flex-end; min-width: 3px; }
+.hist-bar {
+  width: 100%; background: var(--grounded);
+  border-radius: 3px 3px 0 0; min-height: 1px;
+}
+.hist-bar.over { background: var(--st-starved); }
+.hist-axis {
+  display: flex; justify-content: space-between; margin-top: 4px;
+  font-size: 11px; color: var(--secondary); font-variant-numeric: tabular-nums;
+}
+
+/* ── percentile band (drift) ───────────────────────────────────────────── */
+.pband { width: 100%; display: block; }
+.bp-k-band { width: 14px; height: 9px; border-radius: 2px; background: var(--grounded); opacity: .3; }
+.bp-k-p50 { width: 14px; height: 2px; background: var(--grounded); }
+.bp-k-p95 { width: 14px; height: 2px; background: var(--st-starved); }

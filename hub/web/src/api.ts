@@ -166,6 +166,14 @@ export type StepStat = {
   p75_ms: number; p95_ms: number; max_ms: number; avg_ms: number;
 };
 
+export type StepDetail = {
+  step: string;
+  seq_index: number;
+  bucket: string;
+  histogram: { lo_ms: number; hi_ms: number; bin_ms: number; bins: number[]; overflow: number };
+  drift: { bucket_ts: string; count: number; p25_ms: number; p50_ms: number; p75_ms: number; p95_ms: number }[];
+};
+
 export type ThroughputBucket = {
   bucket_ts: string;
   count: number;
@@ -315,6 +323,9 @@ export const api = {
   stepStats: (l: string, s: string, e: string, win: string) =>
     get<{ from: string; to: string; steps: StepStat[] }>(
       `/api/v2/ems/${l}/${s}/${e}/stepstats?window=${win}`),
+  stepDetail: (l: string, s: string, e: string, win: string, step: string, seq: number) =>
+    get<StepDetail>(`/api/v2/ems/${l}/${s}/${e}/stepdetail?window=${win}` +
+      `&step=${encodeURIComponent(step)}&seq=${seq}`),
   cycles: (l: string, s: string, e: string, win: string) =>
     get<{ stats: CycleStats; cycles: CycleRow[] }>(
       `/api/v2/ems/${l}/${s}/${e}/cycles?window=${win}`),

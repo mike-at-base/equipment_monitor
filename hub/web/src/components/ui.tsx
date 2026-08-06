@@ -45,6 +45,94 @@ export function StateChip({ state }: { state: string }) {
 // ── horizontal bar list ──────────────────────────────────────────────────
 // layout: default = truncated side label; wrap = wrapping side label;
 // stacked = full text above the bar (best for long PLC reason strings).
+// ── histogram (distribution shape) ───────────────────────────────────────
+// Counts per equal-width duration bin. Reads bimodality straight off the
+// silhouette, which a box plot cannot show. Single series -> no legend.
+export function Histogram({ bins, lo, hi, overflow, fmt }: {
+  bins: number[]; lo: number; hi: number; overflow: number;
+  fmt: (v: number) => string;
+}) {
+  const peak = Math.max(...bins, overflow, 1);
+  const binW = (hi - lo) / Math.max(bins.length, 1);
+  const cells = overflow > 0
+    ? [...bins.map((c, i) => ({ c, i, over: false })), { c: overflow, i: bins.length, over: true }]
+    : bins.map((c, i) => ({ c, i, over: false }));
+  return (
+    <div>
+      <div className="hist">
+        {cells.map(({ c, i, over }) => (
+          <div key={i} className="hist-col"
+               title={over
+                 ? `slower than ${fmt(hi)} — ${overflow} execution${overflow === 1 ? "" : "s"}`
+                 : `${fmt(lo + i * binW)} – ${fmt(lo + (i + 1) * binW)}\n${c} execution${c === 1 ? "" : "s"}`}>
+            <div className={`hist-bar${over ? " over" : ""}`}
+                 style={{ height: `${(c / peak) * 100}%` }} />
+          </div>
+        ))}
+      </div>
+      <div className="hist-axis">
+        <span>{fmt(lo)}</span>
+        <span className="muted">duration →</span>
+        <span>{fmt(hi)}{overflow > 0 ? " +over" : ""}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── percentile band over time (drift) ────────────────────────────────────
+// p25–p75 band with the median on top and p95 as a thin line: shows the
+// spread MOVING, which neither the box plot nor the histogram can.
+export function PercentileBand({ points, fmt }: {
+  points: { t: number; p25: number; p50: number; p75: number; p95: number; n: number }[];
+  fmt: (v: number) => string;
+}) {
+  if (points.length === 0) return <div className="empty">No executions in this window.</div>;
+  const W = 1000, H = 180, padL = 4, padR = 4;
+  const hi = Math.max(...points.map((p) => p.p95), 1);
+  const n = points.length;
+  const x = (i: number) => padL + (n === 1 ? (W - padL - padR) / 2 : (i / (n - 1)) * (W - padL - padR));
+  const y = (v: number) => H - (v / hi) * (H - 8) - 4;
+  const path = (sel: (p: typeof points[0]) => number) =>
+    points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(sel(p)).toFixed(1)}`).join(" ");
+  const band = [
+    ...points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.p75).toFixed(1)}`),
+    ...[...points].reverse().map((p, j) => {
+      const i = n - 1 - j;
+      return `L${x(i).toFixed(1)},${y(p.p25).toFixed(1)}`;
+    }),
+    "Z",
+  ].join(" ");
+  return (
+    <div>
+      <svg className="pband" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
+           style={{ height: H }}>
+        <path d={band} fill="var(--grounded)" opacity="0.18" />
+        <path d={path((p) => p.p95)} fill="none" stroke="var(--st-starved)" strokeWidth="2" />
+        <path d={path((p) => p.p50)} fill="none" stroke="var(--grounded)" strokeWidth="2" />
+        {points.map((p, i) => (
+          <circle key={i} cx={x(i)} cy={y(p.p50)} r="4" fill="var(--grounded)">
+            <title>{`${new Date(p.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}  (n=${p.n})
+p25 ${fmt(p.p25)} · median ${fmt(p.p50)} · p75 ${fmt(p.p75)} · p95 ${fmt(p.p95)}`}</title>
+          </circle>
+        ))}
+      </svg>
+      <div className="gantt-axis">
+        {[0, Math.floor((n - 1) / 2), n - 1].filter((i, k, a) => a.indexOf(i) === k).map((i) => (
+          <span key={i}>
+            {new Date(points[i].t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        ))}
+      </div>
+      <div className="bp-legend">
+        <span><i className="bp-k-band" />p25–p75</span>
+        <span><i className="bp-k-p50" />median</span>
+        <span><i className="bp-k-p95" />p95</span>
+        <span className="muted">peak {fmt(hi)}</span>
+      </div>
+    </div>
+  );
+}
+
 // ── horizontal box plot ──────────────────────────────────────────────────
 // One row per category. Box = p25..p75, rule = median, whiskers = p05..p95,
 // tick = max. Single series, so no legend and no categorical palette: the

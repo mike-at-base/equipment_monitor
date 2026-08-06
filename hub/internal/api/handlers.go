@@ -466,6 +466,50 @@ func (s *Server) handleStepStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"from": from, "to": to, "steps": stats})
 }
 
+// handleStepDetail returns the distribution SHAPE (histogram) and the
+// DRIFT (per-bucket percentiles) of one step — the two questions the box
+// plot raises but cannot answer: is it bimodal, and is it getting worse?
+func (s *Server) handleStepDetail(w http.ResponseWriter, r *http.Request) {
+	em, ok := s.emIDOr404(w, r)
+	if !ok {
+		return
+	}
+	from, to, err := s.window(r)
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	step := r.URL.Query().Get("step")
+	if step == "" {
+		httpErr(w, 400, jsonErr("step required"))
+		return
+	}
+	seq := 1
+	if v := r.URL.Query().Get("seq"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			seq = n
+		}
+	}
+	hist, err := s.stepHistogram(r.Context(), em.ID, int16(seq), step, from, to)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	bName, bDur := autoFlowBucket(from, to)
+	if q := r.URL.Query().Get("bucket"); q != "" {
+		bName, bDur = parseBucket(q)
+	}
+	drift, err := s.stepDrift(r.Context(), em.ID, int16(seq), step, from, to, bDur)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"step": step, "seq_index": seq, "from": from, "to": to,
+		"histogram": hist, "bucket": bName, "drift": drift,
+	})
+}
+
 func (s *Server) handleCycles(w http.ResponseWriter, r *http.Request) {
 	em, ok := s.emIDOr404(w, r)
 	if !ok {

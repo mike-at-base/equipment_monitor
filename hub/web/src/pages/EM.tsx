@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, StepStat, STATE_LABEL, STATE_ORDER } from "../api";
-import { Bars, BoxPlot, ErrorBox, Gantt, Loading, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
+import { Bars, BoxPlot, ErrorBox, Gantt, Histogram, Loading, PercentileBand, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
 export default function EMPage() {
@@ -206,6 +206,47 @@ function StepSpread({ l, s, e }: P) {
           </p>
         </div>
       )}
+      {picked && <StepShapeAndDrift l={l} s={s} e={e} step={picked.step}
+                                    seq={picked.seq_index} />}
+    </>
+  );
+}
+
+// The two questions the box plot raises but cannot answer: what SHAPE is
+// the distribution (one tight mode, or two?), and is the spread MOVING?
+function StepShapeAndDrift({ l, s, e, step, seq }: P & { step: string; seq: number }) {
+  const { win } = useWindow();
+  const q = usePolledAsync(() => api.stepDetail(l, s, e, win, step, seq),
+    [l, s, e, win, step, seq]);
+  if (q.err) return <ErrorBox err={q.err} />;
+  if (!q.data) return <Loading />;
+  const { histogram: h, drift, bucket } = q.data;
+  const total = h.bins.reduce((a, b) => a + b, 0) + h.overflow;
+  return (
+    <>
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <h2 style={{ margin: 0 }}>Distribution · step {step}</h2>
+          <span className="muted" style={{ fontSize: 13 }}>
+            {total} executions · bins to p95
+            {h.overflow > 0 && ` · ${h.overflow} slower than ${fmtMs(h.hi_ms)}`}
+          </span>
+        </div>
+        <Histogram bins={h.bins} lo={h.lo_ms} hi={h.hi_ms} overflow={h.overflow}
+                   fmt={(v) => fmtMs(v)} />
+      </div>
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <h2 style={{ margin: 0 }}>Drift over time · step {step}</h2>
+          <span className="muted" style={{ fontSize: 13 }}>{bucket} buckets</span>
+        </div>
+        <PercentileBand
+          points={drift.map((d) => ({
+            t: Date.parse(d.bucket_ts), n: d.count,
+            p25: d.p25_ms, p50: d.p50_ms, p75: d.p75_ms, p95: d.p95_ms,
+          }))}
+          fmt={(v) => fmtMs(v)} />
+      </div>
     </>
   );
 }

@@ -114,6 +114,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/intervals", s.handleIntervals)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/steps", s.handleSteps)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/stepstats", s.handleStepStats)
+	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/stepdetail", s.handleStepDetail)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/cycles", s.handleCycles)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/throughput", s.handleThroughput)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/downs", s.handleDowns)
@@ -450,6 +451,111 @@ func (s *Server) stepStats(ctx context.Context, emID int, from, to time.Time) ([
 			return nil, err
 		}
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// StepHistogram is the duration distribution SHAPE of one step: counts in
+// equal-width bins across [lo,hi]. The domain stops at p95 and everything
+// past it lands in Overflow, otherwise a single multi-minute execution puts
+// every real observation in bin 0.
+type StepHistogram struct {
+	LoMs     float64 `json:"lo_ms"`
+	HiMs     float64 `json:"hi_ms"`
+	BinMs    float64 `json:"bin_ms"`
+	Bins     []int   `json:"bins"`
+	Overflow int     `json:"overflow"` // executions slower than hi
+}
+
+// StepDriftPoint is one time bucket of a step's duration distribution, so
+// you can see the spread move rather than just its total.
+type StepDriftPoint struct {
+	BucketTs time.Time `json:"bucket_ts"`
+	Count    int       `json:"count"`
+	P25Ms    float64   `json:"p25_ms"`
+	P50Ms    float64   `json:"p50_ms"`
+	P75Ms    float64   `json:"p75_ms"`
+	P95Ms    float64   `json:"p95_ms"`
+}
+
+const stepHistogramBins = 24
+
+func (s *Server) stepHistogram(ctx context.Context, emID int, seq int16, step string,
+	from, to time.Time) (StepHistogram, error) {
+	h := StepHistogram{Bins: make([]int, stepHistogramBins)}
+	var lo, hi *float64
+	err := s.pool.QueryRow(ctx, `
+	    SELECT min(duration_ms)::float8,
+	           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)
+	    FROM step_event
+	    WHERE em_id=$1 AND seq_index=$2 AND step_name=$3
+	      AND start_ts >= $4 AND start_ts < $5`,
+		emID, seq, step, from, to).Scan(&lo, &hi)
+	if err != nil || lo == nil || hi == nil {
+		return h, err
+	}
+	// a step with no variation still needs a non-zero domain
+	if *hi <= *lo {
+		*hi = *lo + 1
+	}
+	h.LoMs, h.HiMs = *lo, *hi
+	h.BinMs = (*hi - *lo) / stepHistogramBins
+
+	rows, err := s.pool.Query(ctx, `
+	    SELECT width_bucket(duration_ms::float8, $6, $7, $8) AS bin, count(*)::int
+	    FROM step_event
+	    WHERE em_id=$1 AND seq_index=$2 AND step_name=$3
+	      AND start_ts >= $4 AND start_ts < $5
+	    GROUP BY bin ORDER BY bin`,
+		emID, seq, step, from, to, h.LoMs, h.HiMs, stepHistogramBins)
+	if err != nil {
+		return h, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var bin, n int
+		if err := rows.Scan(&bin, &n); err != nil {
+			return h, err
+		}
+		switch {
+		case bin > stepHistogramBins: // above hi
+			h.Overflow += n
+		case bin < 1: // below lo (cannot happen, lo is the min) — fold into bin 0
+			h.Bins[0] += n
+		default:
+			h.Bins[bin-1] += n
+		}
+	}
+	return h, rows.Err()
+}
+
+func (s *Server) stepDrift(ctx context.Context, emID int, seq int16, step string,
+	from, to time.Time, bucket time.Duration) ([]StepDriftPoint, error) {
+	rows, err := s.pool.Query(ctx, `
+	    SELECT to_timestamp(floor(extract(epoch FROM start_ts) / $6) * $6) AS bucket_ts,
+	           count(*)::int,
+	           percentile_cont(0.25) WITHIN GROUP (ORDER BY duration_ms),
+	           percentile_cont(0.50) WITHIN GROUP (ORDER BY duration_ms),
+	           percentile_cont(0.75) WITHIN GROUP (ORDER BY duration_ms),
+	           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)
+	    FROM step_event
+	    WHERE em_id=$1 AND seq_index=$2 AND step_name=$3
+	      AND start_ts >= $4 AND start_ts < $5
+	    GROUP BY 1 ORDER BY 1`,
+		emID, seq, step, from, to, int(bucket.Seconds()))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StepDriftPoint{}
+	for rows.Next() {
+		var p StepDriftPoint
+		if err := rows.Scan(&p.BucketTs, &p.Count, &p.P25Ms, &p.P50Ms,
+			&p.P75Ms, &p.P95Ms); err != nil {
+			return nil, err
+		}
+		p.BucketTs = p.BucketTs.UTC()
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
