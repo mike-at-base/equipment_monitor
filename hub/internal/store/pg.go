@@ -126,6 +126,18 @@ var ddl = []string{
 	    ts TIMESTAMPTZ NOT NULL,
 	    em_id INT NOT NULL,
 	    event TEXT NOT NULL)`,
+	// User-composed dashboards. spec is the widget document (see
+	// api/dashboards.go). There is no auth anywhere in this service, so
+	// dashboards are GLOBAL — author is a self-reported label, never an
+	// access control. updated_at exists so a concurrent-edit check is
+	// possible later; today saves are last-write-wins.
+	`CREATE TABLE IF NOT EXISTS dashboard (
+	    id SERIAL PRIMARY KEY,
+	    slug TEXT UNIQUE NOT NULL,
+	    name TEXT NOT NULL,
+	    author TEXT NOT NULL DEFAULT '',
+	    spec JSONB NOT NULL,
+	    updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
 }
 
 var hypertables = [][2]string{

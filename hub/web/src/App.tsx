@@ -5,6 +5,8 @@ import { WindowPicker, WindowProvider } from "./components/ui";
 import Site from "./pages/Site";
 import Line from "./pages/Line";
 import EMPage from "./pages/EM";
+import DashboardPage from "./pages/Dashboard";
+import DashboardsPage from "./pages/Dashboards";
 import Schedule from "./pages/Schedule";
 import Station from "./pages/Station";
 import LineModel from "./pages/LineModel";
@@ -79,6 +81,7 @@ function Shell({ live, connected }: { live: LiveEM[]; connected: boolean }) {
             </Link>
             <Crumbs />
             <span className="spacer" />
+            <Link to="/d" className="toplink">Dashboards</Link>
             <WindowPicker />
             <span className={`conn-dot ${connected ? "ok" : ""}`} />
             <span className="conn-label">{connected ? "live" : "reconnecting"}</span>
@@ -91,9 +94,29 @@ function Shell({ live, connected }: { live: LiveEM[]; connected: boolean }) {
             <Route path="/line/:line/availability" element={<Availability />} />
             <Route path="/line/:line/station/:station" element={<Station live={live} />} />
             <Route path="/em/:line/:station/:label/*" element={<EMPage />} />
+            <Route path="/d" element={<DashboardsPage />} />
+            <Route path="/d/:slug" element={<DashboardPage />} />
           </Routes>
         </div>
       </WindowProvider>
+  );
+}
+
+function NamedTopCrumb({ name }: { name: string }) {
+  return (
+    <nav className="crumbs">
+      <Link to="/">Site</Link><span>/</span><b>{name}</b>
+    </nav>
+  );
+}
+
+function DashCrumb() {
+  const { slug } = useParams();
+  return (
+    <nav className="crumbs">
+      <Link to="/">Site</Link><span>/</span>
+      <Link to="/d">Dashboards</Link><span>/</span><b>{slug}</b>
+    </nav>
   );
 }
 
@@ -107,6 +130,8 @@ function Crumbs() {
       <Route path="/line/:line/availability" element={<NamedCrumb name="Availability" />} />
       <Route path="/line/:line/station/:station" element={<StationCrumb />} />
       <Route path="/em/:line/:station/:label/*" element={<EMCrumb />} />
+      <Route path="/d" element={<NamedTopCrumb name="Dashboards" />} />
+      <Route path="/d/:slug" element={<DashCrumb />} />
     </Routes>
   );
 }

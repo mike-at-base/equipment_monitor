@@ -131,8 +131,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v2/lines/{line}/availmodel", s.handleSaveLineModel)
 	mux.HandleFunc("GET /api/v2/lines/{line}/stations/{station}/availmodel", s.handleGetStationModel)
 	mux.HandleFunc("PUT /api/v2/lines/{line}/stations/{station}/availmodel", s.handleSaveStationModel)
+	mux.HandleFunc("GET /api/v2/lines/{line}/emcompare", s.handleEMCompare)
 	mux.HandleFunc("GET /api/v2/lines/{line}/composed", s.handleLineComposed)
 	mux.HandleFunc("GET /api/v2/lines/{line}/stations/{station}/composed", s.handleStationComposed)
+	mux.HandleFunc("GET /api/v2/dashboards", s.handleListDashboards)
+	mux.HandleFunc("GET /api/v2/dashboards/{slug}", s.handleGetDashboard)
+	mux.HandleFunc("PUT /api/v2/dashboards/{slug}", s.handleSaveDashboard)
+	mux.HandleFunc("DELETE /api/v2/dashboards/{slug}", s.handleDeleteDashboard)
 }
 
 // handleHierarchy returns the full line -> station -> em tree (with display

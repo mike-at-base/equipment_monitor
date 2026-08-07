@@ -302,6 +302,64 @@ export type DebugResp = {
   states: RawState[];
 };
 
+// ── custom dashboards ─────────────────────────────────────────────────────
+// A dashboard is a saved list of widgets. The time window is deliberately NOT
+// part of the spec — it comes from the global picker (already in the URL), so
+// a shared dashboard link carries the range with it.
+export type WidgetScope = {
+  kind: "none" | "line" | "station" | "em" | "ems";
+  line?: string;
+  station?: string;
+  em?: string;
+  ems?: string[]; // "STATION/label"
+};
+
+export type DashWidget = {
+  id: string;
+  type: string;
+  span: number; // columns, 1..4
+  title?: string;
+  scope?: WidgetScope; // omitted = inherit the dashboard scope
+  opts?: Record<string, unknown>;
+};
+
+export type DashboardSpec = {
+  version: number;
+  scope?: WidgetScope;
+  widgets: DashWidget[];
+};
+
+// ── multi-EM comparison ───────────────────────────────────────────────────
+export type EMCompareRow = {
+  ref: string; station: string; em_label: string; display_name: string;
+  availability_pct?: number;
+  state_min: Record<string, number>;
+  cycles: CycleStats;
+  spread?: CycleSpreadRow;
+  intervals?: { start_ts: string; end_ts: string; state: string; reason?: string }[];
+};
+
+export type EMCompareResp = {
+  line: string; from: string; to: string;
+  ems: EMCompareRow[];
+  /** refs that no longer resolve — the dashboard outlived the equipment */
+  missing?: string[];
+};
+
+// The full equipment tree, for scope pickers.
+export type HierLine = {
+  name: string; display_name: string;
+  stations: { name: string; display_name: string; plc: string;
+              ems: { station: string; em_label: string;
+                     display_name: string; confirmed: boolean }[] }[];
+};
+
+export type DashboardMeta = {
+  slug: string; name: string; author: string; updated_at: string;
+};
+
+export type Dashboard = DashboardMeta & { spec: DashboardSpec };
+
 // A window is either a named preset ("today", "8h", "prod") or a custom
 // absolute range encoded as "custom:<fromISO>|<toISO>". winQuery turns
 // either into the query string the API expects — the server has always
@@ -430,6 +488,19 @@ export const api = {
     put<{ ok: boolean }>(
       `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/availmodel`,
       { model }),
+  emCompare: (line: string, ems: string[], win: string, intervals = false) =>
+    get<EMCompareResp>(`/api/v2/lines/${encodeURIComponent(line)}/emcompare` +
+      `?${winQuery(win)}&ems=${encodeURIComponent(ems.join(","))}` +
+      (intervals ? "&intervals=1" : "")),
+  hierarchy: () => get<HierLine[]>("/api/v2/hierarchy"),
+  dashboards: () => get<DashboardMeta[]>("/api/v2/dashboards"),
+  dashboard: (slug: string) =>
+    get<Dashboard>(`/api/v2/dashboards/${encodeURIComponent(slug)}`),
+  saveDashboard: (slug: string, name: string, author: string, spec: DashboardSpec) =>
+    put<{ ok: boolean; slug: string }>(
+      `/api/v2/dashboards/${encodeURIComponent(slug)}`, { name, author, spec }),
+  deleteDashboard: (slug: string) =>
+    del(`/api/v2/dashboards/${encodeURIComponent(slug)}`),
 };
 
 // SSE live stream with polling fallback
