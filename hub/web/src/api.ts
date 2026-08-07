@@ -283,6 +283,15 @@ export type ComposedResult = {
   production_min: number;
 };
 
+/** One station's composed up/down timeline, clipped to production time. */
+export type StationBand = {
+  station: string;
+  pct: number | null;
+  em_count: number;
+  up_spans: { start: number; end: number }[];
+  down: { start_ts: string; end_ts: string; causes: string[] }[];
+};
+
 export type AvailModelResp = {
   model: AvailNode | null;
   default_model: AvailNode;
@@ -540,7 +549,8 @@ export const api = {
     put<{ ok: boolean }>(`/api/v2/lines/${encodeURIComponent(line)}/schedule`, { shifts }),
   lineComposed: (line: string, win: string) =>
     get<{ from: string; to: string; line: string; composed: ComposedResult;
-          stations: Record<string, number | null> }>(
+          stations: Record<string, number | null>;
+          station_bands: StationBand[] }>(
       `/api/v2/lines/${encodeURIComponent(line)}/composed?${winQuery(win)}`),
   stationComposed: (line: string, station: string, win: string) =>
     get<{ from: string; to: string; station: string; composed: ComposedResult }>(

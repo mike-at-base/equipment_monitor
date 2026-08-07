@@ -191,13 +191,23 @@ func (s *Server) composeStation(ctx context.Context, l *LineInfo, st *StationInf
 }
 
 type composedDTO struct {
-	Pct           *float64        `json:"pct"`
-	UpSpans       []compose.Span  `json:"up_spans"`
-	Down          []composeDown   `json:"down"`
-	Causes        []causeRow      `json:"causes"`
-	Default       bool            `json:"default_model"`
-	Model         *compose.Node   `json:"model"`
-	ProductionMin float64         `json:"production_min"`
+	Pct           *float64       `json:"pct"`
+	UpSpans       []compose.Span `json:"up_spans"`
+	Down          []composeDown  `json:"down"`
+	Causes        []causeRow     `json:"causes"`
+	Default       bool           `json:"default_model"`
+	Model         *compose.Node  `json:"model"`
+	ProductionMin float64        `json:"production_min"`
+}
+
+// stationBand is one station's composed up/down timeline, for the per-station
+// chart on the line availability page.
+type stationBand struct {
+	Station string         `json:"station"`
+	Pct     *float64       `json:"pct"`
+	EMCount int            `json:"em_count"`
+	UpSpans []compose.Span `json:"up_spans"`
+	Down    []composeDown  `json:"down"`
 }
 
 type composeDown struct {
@@ -211,11 +221,44 @@ type causeRow struct {
 	Minutes float64 `json:"minutes"`
 }
 
+// clipSpans trims spans to the production ranges, dropping anything wholly
+// outside. Composed state is only meaningful during production: off shift no
+// EM reports, so the tree evaluates to "down" and an unclipped band paints
+// the night red when the line was simply switched off.
+func clipSpans(spans, prod []compose.Span) []compose.Span {
+	out := []compose.Span{}
+	for _, sp := range spans {
+		for _, p := range prod {
+			lo, hi := max64(sp.Start, p.Start), min64(sp.End, p.End)
+			if hi > lo {
+				out = append(out, compose.Span{Start: lo, End: hi})
+			}
+		}
+	}
+	return out
+}
+
+func clipDown(segs []compose.DownSeg, prod []compose.Span) []compose.DownSeg {
+	out := []compose.DownSeg{}
+	for _, d := range segs {
+		for _, p := range prod {
+			lo, hi := max64(d.Start, p.Start), min64(d.End, p.End)
+			if hi > lo {
+				out = append(out, compose.DownSeg{
+					Span: compose.Span{Start: lo, End: hi}, Causes: d.Causes})
+			}
+		}
+	}
+	return out
+}
+
 func buildComposedDTO(res compose.Result, node *compose.Node, isDefault bool,
 	prod []compose.Span) composedDTO {
+	// Clipped to production for the same reason the percentages are: the
+	// bands and the number above them have to describe the same time.
 	// Normalize nil to empty so JSON encodes "up_spans":[] — a nil slice
 	// marshals as null and the SPA crashes on up_spans.map(...).
-	up := res.Up
+	up := clipSpans(res.Up, prod)
 	if up == nil {
 		up = []compose.Span{}
 	}
@@ -232,7 +275,7 @@ func buildComposedDTO(res compose.Result, node *compose.Node, isDefault bool,
 		pct := round1(100 * float64(res.UpMs(prod)) / float64(prodMs))
 		dto.Pct = &pct
 	}
-	for _, d := range res.Down {
+	for _, d := range clipDown(res.Down, prod) {
 		dto.Down = append(dto.Down, composeDown{
 			Start: time.UnixMilli(d.Start).UTC(), End: time.UnixMilli(d.End).UTC(),
 			Causes: d.Causes,
@@ -277,8 +320,13 @@ func (s *Server) handleStationComposed(w http.ResponseWriter, r *http.Request) {
 
 // evalLineComposed evaluates every station, then the line tree. stationUps
 // maps station name → that station's composed-up spans (line leaf inputs).
+// evalLineComposed composes the line from its stations. The per-station
+// results come back too: the line band alone cannot show WHICH station was
+// down, and drawing one band per station is the point of the availability
+// page.
 func (s *Server) evalLineComposed(ctx context.Context, l *LineInfo, from, to time.Time) (
-	compose.Result, *compose.Node, bool, map[string][]compose.Span, error) {
+	compose.Result, *compose.Node, bool, map[string]compose.Result, error) {
+	stationRes := map[string]compose.Result{}
 	stationUps := map[string][]compose.Span{}
 	for i := range l.Stations {
 		st := &l.Stations[i]
@@ -286,6 +334,7 @@ func (s *Server) evalLineComposed(ctx context.Context, l *LineInfo, from, to tim
 		if err != nil {
 			return compose.Result{}, nil, false, nil, err
 		}
+		stationRes[st.Name] = res
 		stationUps[st.Name] = res.Up
 	}
 	node, err := s.loadLineModel(ctx, l.Name)
@@ -297,7 +346,7 @@ func (s *Server) evalLineComposed(ctx context.Context, l *LineInfo, from, to tim
 		node = defaultLineModel(l)
 	}
 	res := compose.Eval(node, stationUps, from.UnixMilli(), to.UnixMilli())
-	return res, node, isDefault, stationUps, nil
+	return res, node, isDefault, stationRes, nil
 }
 
 func (s *Server) handleLineComposed(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +367,7 @@ func (s *Server) handleLineComposed(w http.ResponseWriter, r *http.Request) {
 	}
 	prod := spansFromRanges(ranges)
 
-	res, node, isDefault, stationUps, err := s.evalLineComposed(r.Context(), l, from, to)
+	res, node, isDefault, stationRes, err := s.evalLineComposed(r.Context(), l, from, to)
 	if err != nil {
 		httpErr(w, 500, err)
 		return
@@ -328,20 +377,37 @@ func (s *Server) handleLineComposed(w http.ResponseWriter, r *http.Request) {
 		prodMs += p.End - p.Start
 	}
 	stationPct := map[string]*float64{}
-	for name, ups := range stationUps {
-		stRes := compose.Result{Up: ups}
+	// bands in the line's own station order, so the chart reads in process
+	// order rather than however the map iterated
+	bands := []stationBand{}
+	for i := range l.Stations {
+		name := l.Stations[i].Name
+		stRes := stationRes[name]
+		var pct *float64
 		if prodMs > 0 {
-			pct := round1(100 * float64(stRes.UpMs(prod)) / float64(prodMs))
-			stationPct[name] = &pct
-		} else {
-			stationPct[name] = nil
+			p := round1(100 * float64(stRes.UpMs(prod)) / float64(prodMs))
+			pct = &p
 		}
+		stationPct[name] = pct
+		band := stationBand{
+			Station: name, Pct: pct, EMCount: len(l.Stations[i].EMs),
+			UpSpans: clipSpans(stRes.Up, prod), Down: []composeDown{},
+		}
+		for _, d := range clipDown(stRes.Down, prod) {
+			band.Down = append(band.Down, composeDown{
+				Start:  time.UnixMilli(d.Start).UTC(),
+				End:    time.UnixMilli(d.End).UTC(),
+				Causes: d.Causes,
+			})
+		}
+		bands = append(bands, band)
 	}
 	dto := buildComposedDTO(res, node, isDefault, prod)
 	writeJSON(w, map[string]any{
 		"from": from, "to": to, "line": l.Name,
-		"composed": dto,
-		"stations": stationPct,
+		"composed":      dto,
+		"stations":      stationPct,
+		"station_bands": bands,
 	})
 }
 
