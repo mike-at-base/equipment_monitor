@@ -626,27 +626,20 @@ export function stateColor(state: string): string {
 }
 
 /**
- * Cycle durations, always in seconds.
+ * Durations: milliseconds below a second, seconds above it, never minutes.
  *
- * fmtMs switches unit by magnitude, which is right for steps — they span
- * milliseconds to minutes — but wrong for cycle time, where the whole job is
- * comparing one cycle against another. A p50 of "2m 3s" next to a p10 of
- * "58.2 s" cannot be read at a glance, and a box plot axis cannot change
- * unit halfway along. So: one unit, with the precision following the
- * magnitude rather than the unit doing so.
+ * Minutes were the problem. Comparing one duration with another is the whole
+ * job here — a p50 of "2m 3s" beside a p10 of "58.2 s" cannot be read at a
+ * glance, and a chart axis cannot change unit halfway along. Sub-second stays
+ * in milliseconds because a fast step reads better as "420 ms" than
+ * "0.42 s"; above that the unit is fixed and the precision moves instead.
  */
-export function fmtSec(ms?: number): string {
+export function fmtMs(ms?: number): string {
   if (ms == null) return "–";
+  if (Math.abs(ms) < 1000) return `${Math.round(ms)} ms`;
   const s = ms / 1000;
   const dp = Math.abs(s) < 10 ? 2 : Math.abs(s) < 100 ? 1 : 0;
   return `${s.toFixed(dp)} s`;
-}
-
-export function fmtMs(ms?: number): string {
-  if (ms == null) return "–";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
-  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`;
 }
 
 export function fmtSince(iso: string, now: number): string {

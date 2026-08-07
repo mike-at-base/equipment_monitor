@@ -2,7 +2,7 @@
 // chart body only — the card frame, title and empty/error states belong to the
 // dashboard cell, so every widget looks the same when it has nothing to show.
 
-import { api, fmtMs, fmtSec, type WidgetScope } from "../api";
+import { api, fmtMs, type WidgetScope } from "../api";
 import { BoxPlot, Histogram, PercentileBand, usePolledAsync, useWindow } from "../components/ui";
 import { Body, type WidgetProps } from "./frame";
 
@@ -21,9 +21,9 @@ export function CycleKPIs({ scope }: WidgetProps) {
         <div className="tiles">
           <Tile label="Cycles" v={`${d.stats.count}`} />
           <Tile label="Per hour" v={d.stats.per_hour?.toFixed(1) ?? "–"} />
-          <Tile label="p10" v={fmtSec(d.stats.p10_ms)} />
-          <Tile label="Median" v={fmtSec(d.stats.p50_ms)} />
-          <Tile label="p90" v={fmtSec(d.stats.p90_ms)} />
+          <Tile label="p10" v={fmtMs(d.stats.p10_ms)} />
+          <Tile label="Median" v={fmtMs(d.stats.p50_ms)} />
+          <Tile label="p90" v={fmtMs(d.stats.p90_ms)} />
           <Tile label="Interrupted" v={`${d.stats.interrupted}`} />
         </div>
       )}
@@ -46,10 +46,10 @@ export function CycleDistribution({ w, scope }: WidgetProps) {
           <>
             <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
               {total} cycles · bins to p95
-              {h.overflow > 0 && ` · ${h.overflow} slower than ${fmtSec(h.hi_ms)}`}
+              {h.overflow > 0 && ` · ${h.overflow} slower than ${fmtMs(h.hi_ms)}`}
             </p>
             <Histogram bins={h.bins} lo={h.lo_ms} hi={h.hi_ms} overflow={h.overflow}
-                       fmt={(v) => fmtSec(v)} />
+                       fmt={(v) => fmtMs(v)} />
           </>
         );
       }}
@@ -72,7 +72,7 @@ export function CycleDrift({ w, scope }: WidgetProps) {
             t: Date.parse(p.bucket_ts), n: p.count,
             p25: p.p25_ms, p50: p.p50_ms, p75: p.p75_ms, p95: p.p95_ms,
           }))}
-          fmt={(v) => fmtSec(v)} />
+          fmt={(v) => fmtMs(v)} />
       )}
     </Body>
   );
@@ -91,7 +91,7 @@ export function CycleSpread({ scope }: WidgetProps) {
             min: r.min_ms, p05: r.p05_ms, p25: r.p25_ms, p50: r.p50_ms,
             p75: r.p75_ms, p95: r.p95_ms, max: r.max_ms, n: r.count,
           }))}
-          fmt={(v) => fmtSec(v)} />
+          fmt={(v) => fmtMs(v)} />
       )}
     </Body>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
-import { api, CycleRow, fmtClock, fmtMs, fmtSec, fmtSince, SeqConfig, stateColor, StepStat, STATE_LABEL, STATE_ORDER, Utilization, winLabel } from "../api";
+import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, StepStat, STATE_LABEL, STATE_ORDER, Utilization, winLabel } from "../api";
 import { Bars, BoxPlot, ErrorBox, Gantt, Histogram, Loading, PercentileBand, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
@@ -313,7 +313,7 @@ function CycleShapeAndDrift({ l, s, e }: P) {
               min: r.min_ms, p05: r.p05_ms, p25: r.p25_ms, p50: r.p50_ms,
               p75: r.p75_ms, p95: r.p95_ms, max: r.max_ms, n: r.count,
             }))}
-            fmt={(v) => fmtSec(v)} />
+            fmt={(v) => fmtMs(v)} />
         </div>
       )}
       <div className="card">
@@ -323,10 +323,10 @@ function CycleShapeAndDrift({ l, s, e }: P) {
         </div>
         <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
           {total} cycles · bins to p95
-          {h.overflow > 0 && ` · ${h.overflow} slower than ${fmtSec(h.hi_ms)}`}
+          {h.overflow > 0 && ` · ${h.overflow} slower than ${fmtMs(h.hi_ms)}`}
         </p>
         <Histogram bins={h.bins} lo={h.lo_ms} hi={h.hi_ms} overflow={h.overflow}
-                   fmt={(v) => fmtSec(v)} />
+                   fmt={(v) => fmtMs(v)} />
       </div>
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
@@ -345,7 +345,7 @@ function CycleShapeAndDrift({ l, s, e }: P) {
             t: Date.parse(d.bucket_ts), n: d.count,
             p25: d.p25_ms, p50: d.p50_ms, p75: d.p75_ms, p95: d.p95_ms,
           }))}
-          fmt={(v) => fmtSec(v)} />
+          fmt={(v) => fmtMs(v)} />
       </div>
     </>
   );
@@ -381,7 +381,7 @@ function Cycles({ l, s, e }: P) {
   const pctTile = (name: string, ms?: number) => ({
     onClick: ms != null && cycles.length > 0 ? () => pickPct(name, ms) : undefined,
     active: pct === name,
-    title: ms != null ? `Show the cycle nearest ${name} (${fmtSec(ms)})` : undefined,
+    title: ms != null ? `Show the cycle nearest ${name} (${fmtMs(ms)})` : undefined,
   });
 
   return (
@@ -389,11 +389,11 @@ function Cycles({ l, s, e }: P) {
       <div className="tiles" style={{ marginTop: 16 }}>
         <T label="Cycles" v={`${stats.count}`} />
         <T label="Per hour" v={stats.per_hour != null ? `${stats.per_hour}` : "–"} />
-        <T label="p10" v={fmtSec(stats.p10_ms)} {...pctTile("p10", stats.p10_ms)} />
-        <T label="p50" v={fmtSec(stats.p50_ms)} {...pctTile("p50", stats.p50_ms)} />
-        <T label="p90" v={fmtSec(stats.p90_ms)} {...pctTile("p90", stats.p90_ms)} />
-        <T label="Work avg" v={fmtSec(stats.work_avg_ms)} />
-        <T label="Exchange avg" v={fmtSec(stats.exchange_avg_ms)} />
+        <T label="p10" v={fmtMs(stats.p10_ms)} {...pctTile("p10", stats.p10_ms)} />
+        <T label="p50" v={fmtMs(stats.p50_ms)} {...pctTile("p50", stats.p50_ms)} />
+        <T label="p90" v={fmtMs(stats.p90_ms)} {...pctTile("p90", stats.p90_ms)} />
+        <T label="Work avg" v={fmtMs(stats.work_avg_ms)} />
+        <T label="Exchange avg" v={fmtMs(stats.exchange_avg_ms)} />
         <T label="Interrupted" v={`${stats.interrupted}`} />
       </div>
       <div className="card">
@@ -410,7 +410,7 @@ function Cycles({ l, s, e }: P) {
               {pct && <span className="muted" style={{ fontWeight: 400 }}> · nearest {pct}</span>}
             </h2>
             <span className="muted" style={{ fontSize: 13 }}>
-              {fmtSec(selected.total_ms)} total
+              {fmtMs(selected.total_ms)} total
               {selected.interrupted && <> · <span style={{ color: "var(--st-down)" }}>interrupted</span></>}
               {" · click a p10/p50/p90 tile or a row below"}
             </span>
@@ -432,9 +432,9 @@ function Cycles({ l, s, e }: P) {
                 <tr key={i} onClick={() => { setSelTs(c.start_ts); setPct(undefined); }}
                     className={c.start_ts === selected?.start_ts ? "sel" : "clickable"}>
                   <td className="num">{fmtClock(c.start_ts)}</td>
-                  <td className="num">{fmtSec(c.total_ms)}</td>
-                  <td className="num">{fmtSec(c.work_ms)}</td>
-                  <td className="num">{fmtSec(c.exchange_ms)}</td>
+                  <td className="num">{fmtMs(c.total_ms)}</td>
+                  <td className="num">{fmtMs(c.work_ms)}</td>
+                  <td className="num">{fmtMs(c.exchange_ms)}</td>
                   <td>{c.interrupted ? <span className="chip" style={{ background: "var(--st-blocked)" }}>yes</span> : ""}</td>
                 </tr>
               ))}
@@ -505,9 +505,7 @@ function CycleWaterfall({ l, s, e, cyc }: P & { cyc: CycleRow }) {
             <div className="track">
               <div className="seg" style={{ left: `${leftPct}%`, width: `${Math.max(widthPct, 0.4)}%`, background: color }} />
             </div>
-            {/* seconds, like the cycle total in the header: the point of a
-                waterfall is that the parts visibly add up to the whole */}
-            <span className="val">{fmtSec(st.duration_ms)}</span>
+            <span className="val">{fmtMs(st.duration_ms)}</span>
           </div>
         );
       })}

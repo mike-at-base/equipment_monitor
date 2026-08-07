@@ -3,7 +3,7 @@
 // in one query rather than another round trip.
 
 import {
-  api, fmtSec, stateColor,
+  api, fmtMs, stateColor,
   type EMCompareRow, type Interval, type NodeCompareRow, type WidgetScope,
 } from "../api";
 import {
@@ -79,7 +79,7 @@ export function CycleCompare({ scope }: WidgetProps) {
                   p75: s.p75_ms, p95: s.p95_ms, max: s.max_ms, n: s.count,
                 };
               })}
-              fmt={(v) => fmtSec(v)} />
+              fmt={(v) => fmtMs(v)} />
             {d.ems.some((e) => !e.spread) && (
               <p className="muted" style={{ fontSize: 13, marginBottom: 0 }}>
                 No cycles: {d.ems.filter((e) => !e.spread).map(name).join(", ")}
