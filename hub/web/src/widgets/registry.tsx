@@ -131,18 +131,6 @@ export const WIDGETS: WidgetDef[] = [
   },
 ];
 
-/**
- * Every scope kind some widget can be pointed at, in display order.
- *
- * The dashboard's default-scope picker MUST offer all of them: a default it
- * cannot represent gets shown as some other kind and silently overwritten on
- * save. Derived from the registry so adding a widget with a new scope kind
- * cannot leave the picker behind.
- */
-export const DEFAULT_SCOPE_KINDS: ScopeKind[] =
-  (["nodes", "ems", "em", "station", "line"] as ScopeKind[])
-    .filter((k) => WIDGETS.some((d) => d.scopes.includes(k)));
-
 export function widgetDef(type: string): WidgetDef | undefined {
   return WIDGETS.find((d) => d.type === type);
 }
@@ -164,7 +152,7 @@ export function scopeIsEmpty(sc?: WidgetScope): boolean {
 
 /** Human label for a scope, for widget headers and the editor. */
 export function scopeLabel(sc?: WidgetScope): string {
-  if (!sc) return "inherited";
+  if (!sc) return "nothing selected";
   switch (sc.kind) {
     case "none": return "";
     case "line": return sc.line ?? "";

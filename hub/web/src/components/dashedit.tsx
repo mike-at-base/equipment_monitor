@@ -12,16 +12,11 @@ import type { OptSpec, ScopeKind, WidgetDef } from "../widgets/registry";
  * Picks an entity of one of `kinds`. When several kinds are allowed the user
  * chooses which; when only one is, the choice is implied and not shown.
  */
-export function ScopePicker({ kinds, value, hier, onChange, allowInherit,
-                              inheritLabel }: {
+export function ScopePicker({ kinds, value, hier, onChange }: {
   kinds: ScopeKind[];
   value?: WidgetScope;
   hier: HierLine[];
   onChange: (sc: WidgetScope | undefined) => void;
-  /** offer "inherit from dashboard" as an option */
-  allowInherit?: boolean;
-  /** what inheriting actually resolves to — "Inherit" alone tells you nothing */
-  inheritLabel?: string;
 }) {
   // a "none" widget (a note) has nothing to point at
   const usable = kinds.filter((k): k is Exclude<ScopeKind, "none"> => k !== "none");
@@ -50,80 +45,62 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit,
 
   return (
     <div className="dash-scopepick">
-      {allowInherit && (
+      {usable.length > 1 && (
         <label>
-          <span className="label">Scope</span>
-          <select value={value ? "own" : "inherit"}
-                  onChange={(e) => onChange(e.target.value === "inherit"
-                    ? undefined
-                    : { kind, line, ...defaultsFor(kind, hier, line) })}>
-            <option value="inherit">
-              {inheritLabel ? `Inherit — ${inheritLabel}` : "Inherit from dashboard"}
-            </option>
-            <option value="own">Choose equipment…</option>
+          <span className="label">Kind</span>
+          <select value={kind} onChange={(e) => {
+            const k = e.target.value as ScopeKind;
+            // an EM list carries its own lines; a stray scope-level
+            // `line` would just be dead weight in the saved spec
+            onChange(k === "ems" ? { kind: k, ems: [] }
+              : k === "nodes" ? { kind: k, nodes: [] }
+              : { kind: k, line, ...defaultsFor(k, hier, line) });
+          }}>
+            {usable.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
           </select>
         </label>
       )}
-      {(!allowInherit || value) && (
-        <>
-          {usable.length > 1 && (
-            <label>
-              <span className="label">Kind</span>
-              <select value={kind} onChange={(e) => {
-                const k = e.target.value as ScopeKind;
-                // an EM list carries its own lines; a stray scope-level
-                // `line` would just be dead weight in the saved spec
-                onChange(k === "ems" ? { kind: k, ems: [] }
-                  : k === "nodes" ? { kind: k, nodes: [] }
-                  : { kind: k, line, ...defaultsFor(k, hier, line) });
-              }}>
-                {usable.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
-              </select>
-            </label>
-          )}
-          {kind !== "ems" && (
-            <label>
-              <span className="label">Line</span>
-              <select value={line} onChange={(e) => onChange({
-                kind, line: e.target.value,
-                ...defaultsFor(kind, hier, e.target.value),
-              })}>
-                {hier.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
-              </select>
-            </label>
-          )}
-          {(kind === "station" || kind === "em") && (
-            <label>
-              <span className="label">Station</span>
-              <select value={station} onChange={(e) => {
-                const st = stations.find((s) => s.name === e.target.value);
-                set({ station: e.target.value, em: kind === "em" ? st?.ems[0]?.em_label : undefined });
-              }}>
-                {stations.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
-              </select>
-            </label>
-          )}
-          {kind === "em" && (
-            <label>
-              <span className="label">EM</span>
-              <select value={em} onChange={(e) => set({ em: e.target.value })}>
-                {ems.map((m) => (
-                  <option key={m.em_label} value={m.em_label}>
-                    {m.em_label}{m.display_name ? ` · ${m.display_name}` : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {kind === "ems" && (
-            <EMMultiPicker hier={hier} selected={value?.ems ?? []}
-                           onChange={(ems) => onChange({ kind: "ems", ems })} />
-          )}
-          {kind === "nodes" && (
-            <NodeMultiPicker hier={hier} selected={value?.nodes ?? []}
-                             onChange={(nodes) => onChange({ kind: "nodes", nodes })} />
-          )}
-        </>
+      {kind !== "ems" && (
+        <label>
+          <span className="label">Line</span>
+          <select value={line} onChange={(e) => onChange({
+            kind, line: e.target.value,
+            ...defaultsFor(kind, hier, e.target.value),
+          })}>
+            {hier.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
+          </select>
+        </label>
+      )}
+      {(kind === "station" || kind === "em") && (
+        <label>
+          <span className="label">Station</span>
+          <select value={station} onChange={(e) => {
+            const st = stations.find((s) => s.name === e.target.value);
+            set({ station: e.target.value, em: kind === "em" ? st?.ems[0]?.em_label : undefined });
+          }}>
+            {stations.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+          </select>
+        </label>
+      )}
+      {kind === "em" && (
+        <label>
+          <span className="label">EM</span>
+          <select value={em} onChange={(e) => set({ em: e.target.value })}>
+            {ems.map((m) => (
+              <option key={m.em_label} value={m.em_label}>
+                {m.em_label}{m.display_name ? ` · ${m.display_name}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {kind === "ems" && (
+        <EMMultiPicker hier={hier} selected={value?.ems ?? []}
+                       onChange={(ems) => onChange({ kind: "ems", ems })} />
+      )}
+      {kind === "nodes" && (
+        <NodeMultiPicker hier={hier} selected={value?.nodes ?? []}
+                         onChange={(nodes) => onChange({ kind: "nodes", nodes })} />
       )}
     </div>
   );

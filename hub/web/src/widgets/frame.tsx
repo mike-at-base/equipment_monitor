@@ -12,7 +12,7 @@ import { ErrorBox, Loading } from "../components/ui";
 
 export type WidgetProps = {
   w: DashWidget;
-  /** the widget's own scope, or the dashboard default it inherited */
+  /** the widget's own scope — every widget carries one */
   scope: WidgetScope;
 };
 

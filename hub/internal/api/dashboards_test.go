@@ -31,7 +31,6 @@ func TestSpecValidAcceptsRealEntities(t *testing.T) {
 	s := specServer()
 	spec := &DashboardSpec{
 		Version: 1,
-		Scope:   &WidgetScope{Kind: scopeLine, Line: "CELL1"},
 		Widgets: []Widget{
 			{ID: "w1", Type: "cycle_compare", Span: 2,
 				Scope: emScope("CELL1/ST34000/main", "CELL1/ST34000/rb01")},
@@ -111,23 +110,17 @@ func TestSpecRejectsStructuralProblems(t *testing.T) {
 	}
 }
 
-// A widget with no scope of its own inherits the dashboard's.
-func TestSpecWidgetInheritsDashboardScope(t *testing.T) {
+// Every widget carries its own scope; there is no dashboard-level default to
+// fall back on, so a widget that needs equipment and has none is invalid.
+func TestSpecRequiresAScopePerWidget(t *testing.T) {
 	s := specServer()
-	spec := &DashboardSpec{
-		Version: 1,
-		Scope:   &WidgetScope{Kind: scopeEM, Line: "CELL1", Station: "ST34000", EM: "main"},
-		Widgets: []Widget{{ID: "w1", Type: "cycle_kpis", Span: 1}},
+	spec := &DashboardSpec{Version: 1, Widgets: []Widget{
+		{ID: "w1", Type: "cycle_kpis", Span: 1}}}
+	err := s.validateSpec(spec)
+	if err == nil || !strings.Contains(err.Error(), "needs equipment") {
+		t.Fatalf("scope-less widget accepted: %v", err)
 	}
-	if err := s.validateSpec(spec); err != nil {
-		t.Fatalf("inherited scope rejected: %v", err)
-	}
-	// ...but a scope-needing widget with no default anywhere must fail
-	spec.Scope = nil
-	if err := s.validateSpec(spec); err == nil {
-		t.Fatal("widget with no scope and no default accepted")
-	}
-	// a "none" widget is fine without any scope
+	// ...but a scope-less TYPE is fine without one
 	spec.Widgets = []Widget{{ID: "w1", Type: "note", Span: 1}}
 	if err := s.validateSpec(spec); err != nil {
 		t.Fatalf("note without scope rejected: %v", err)

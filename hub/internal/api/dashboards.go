@@ -77,14 +77,17 @@ type Widget struct {
 	Type  string         `json:"type"`
 	Span  int            `json:"span"` // columns, 1..4
 	Title string         `json:"title,omitempty"`
-	Scope *WidgetScope   `json:"scope,omitempty"` // nil = inherit the dashboard scope
+	Scope *WidgetScope   `json:"scope,omitempty"` // omitted only by scope-less types
 	Opts  map[string]any `json:"opts,omitempty"`
 }
 
+// There is deliberately no dashboard-level default scope. Inheritance meant
+// a widget's equipment could be set in two places, and the editor had to
+// explain which one won; every widget carrying its own scope is one concept
+// instead of two.
 type DashboardSpec struct {
-	Version int          `json:"version"`
-	Scope   *WidgetScope `json:"scope,omitempty"` // default for widgets that omit one
-	Widgets []Widget     `json:"widgets"`
+	Version int      `json:"version"`
+	Widgets []Widget `json:"widgets"`
 }
 
 type DashboardMeta struct {
@@ -111,11 +114,6 @@ func (s *Server) validateSpec(spec *DashboardSpec) error {
 	if len(spec.Widgets) > 60 {
 		return fmt.Errorf("%d widgets is too many (max 60)", len(spec.Widgets))
 	}
-	if spec.Scope != nil {
-		if err := s.validateScope(spec.Scope); err != nil {
-			return fmt.Errorf("dashboard scope: %w", err)
-		}
-	}
 	seen := map[string]bool{}
 	for i := range spec.Widgets {
 		w := &spec.Widgets[i]
@@ -134,24 +132,18 @@ func (s *Server) validateSpec(spec *DashboardSpec) error {
 		if w.Span < 1 || w.Span > 4 {
 			return fmt.Errorf("widget %q: span %d out of range (1-4)", w.ID, w.Span)
 		}
-		// A widget that needs no entity (a note) must NOT pick up the
-		// dashboard's default scope — it would then be validated against a
-		// kind it does not accept.
-		sc := w.Scope
-		if sc == nil && contains(kinds, scopeNone) {
-			continue
+		// a widget that needs no entity (a note) simply has no scope
+		if w.Scope == nil {
+			if contains(kinds, scopeNone) {
+				continue
+			}
+			return fmt.Errorf("widget %q (%s): needs equipment selected", w.ID, w.Type)
 		}
-		if sc == nil {
-			sc = spec.Scope
-		}
-		if sc == nil {
-			return fmt.Errorf("widget %q: needs a scope and the dashboard has no default", w.ID)
-		}
-		if !contains(kinds, sc.Kind) {
+		if !contains(kinds, w.Scope.Kind) {
 			return fmt.Errorf("widget %q (%s): cannot be scoped to %q, expected %s",
-				w.ID, w.Type, sc.Kind, strings.Join(kinds, " or "))
+				w.ID, w.Type, w.Scope.Kind, strings.Join(kinds, " or "))
 		}
-		if err := s.validateScope(sc); err != nil {
+		if err := s.validateScope(w.Scope); err != nil {
 			return fmt.Errorf("widget %q: %w", w.ID, err)
 		}
 	}

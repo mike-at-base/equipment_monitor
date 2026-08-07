@@ -4,7 +4,7 @@
 // The time window is NOT part of the spec — it comes from the global picker,
 // which lives in the URL, so /d/<slug>?win=8h is a complete shareable link.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   api, winLabel,
@@ -13,7 +13,7 @@ import {
 import { AddWidget, OptsForm, ScopePicker } from "../components/dashedit";
 import { ErrorBox, Loading, useAsync, useWindow } from "../components/ui";
 import {
-  DEFAULT_SCOPE_KINDS, defaultOpts, scopeIsEmpty, scopeLabel, widgetDef, WIDGETS,
+  defaultOpts, scopeIsEmpty, scopeLabel, widgetDef, WIDGETS, type WidgetDef,
 } from "../widgets/registry";
 
 export default function DashboardPage() {
@@ -46,7 +46,6 @@ export default function DashboardPage() {
           <div className="name">{d.name}</div>
           <div className="muted" style={{ fontSize: 13 }}>
             {winLabel(win)}
-            {d.spec.scope && ` · ${scopeLabel(d.spec.scope)}`}
             {d.author && ` · ${d.author}`}
             {` · saved ${new Date(d.updated_at).toLocaleString()}`}
           </div>
@@ -66,25 +65,23 @@ function Grid({ spec }: { spec: DashboardSpec }) {
   }
   return (
     <div className="dash-grid">
-      {spec.widgets.map((w) => <Cell key={w.id} w={w} fallback={spec.scope} />)}
+      {spec.widgets.map((w) => <Cell key={w.id} w={w} />)}
     </div>
   );
 }
 
 /**
- * One grid cell. Resolves the widget's scope (its own, else the dashboard
- * default), looks up the renderer, and degrades to a message rather than
- * breaking the page when either is missing — a widget can outlive the EM it
- * points at, or the spec can name a type this build does not have.
+ * One grid cell. Every widget carries its own scope, so there is nothing to
+ * resolve — but it can still outlive the equipment it points at, or name a
+ * type this build does not have, and either must degrade to a message rather
+ * than break the page.
  */
-export function Cell({ w, fallback, children }: {
-  w: DashWidget; fallback?: WidgetScope; children?: React.ReactNode;
+export function Cell({ w, children }: {
+  w: DashWidget; children?: React.ReactNode;
 }) {
   const def = widgetDef(w.type);
-  // A widget that needs no entity does not inherit the dashboard scope —
-  // same rule the server validates by.
   const needsEntity = !def || !def.scopes.includes("none");
-  const scope = w.scope ?? (needsEntity ? fallback : undefined);
+  const scope = w.scope;
   const span = Math.min(4, Math.max(1, w.span || 1));
   const title = w.title || def?.title || w.type;
 
@@ -102,8 +99,6 @@ export function Cell({ w, fallback, children }: {
     <section className="card" style={{ gridColumn: `span ${span}` }}>
       <div className="dash-cellhead">
         <h2>{title}</h2>
-        {/* only when this widget overrides the dashboard default — otherwise
-            it is the same string on every cell */}
         {w.scope && w.scope.kind !== "none" && (
           <span className="muted dash-scope">{scopeLabel(w.scope)}</span>
         )}
@@ -130,19 +125,6 @@ function Editor({ dash, hier, onDone, onCancel }: {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
-
-  // A dashboard with no default scope leaves every inheriting widget pointing
-  // at nothing, so seed one from the hierarchy. Not marked dirty: if the user
-  // changes nothing there is nothing worth saving.
-  useEffect(() => {
-    if (spec.scope || hier.length === 0) return;
-    const st = hier[0].stations[0];
-    if (!st?.ems[0]) return;
-    setSpec((s) => ({
-      ...s,
-      scope: { kind: "em", line: hier[0].name, station: st.name, em: st.ems[0].em_label },
-    }));
-  }, [hier, spec.scope]);
 
   const mutate = (fn: (s: DashboardSpec) => DashboardSpec) => {
     setSpec((s) => fn(s));
@@ -196,28 +178,19 @@ function Editor({ dash, hier, onDone, onCancel }: {
       </div>
       {msg && <div className="card" style={{ color: "var(--st-down)" }}>{msg}</div>}
 
-      <div className="card">
-        <div className="dash-cellhead">
-          <h2>Default scope</h2>
-          <span className="muted" style={{ fontSize: 13 }}>
-            widgets use this unless they choose their own
-          </span>
-        </div>
-        {/* every kind any widget accepts — a default this picker cannot
-            represent would be shown as another kind and overwritten on save */}
-        <ScopePicker kinds={DEFAULT_SCOPE_KINDS} value={spec.scope}
-                     hier={hier} allowInherit={false}
-                     onChange={(sc) => mutate((s) => ({ ...s, scope: sc }))} />
-        <p className="muted" style={{ marginBottom: 0, fontSize: 13 }}>
-          Anyone with the link can edit or delete this dashboard; the last save wins.
-        </p>
-      </div>
+      <p className="muted" style={{ fontSize: 13, margin: "10px 0 0" }}>
+        Every widget picks its own equipment. Anyone with the link can edit or
+        delete this dashboard; the last save wins.
+      </p>
 
-      <div style={{ marginTop: 16 }}>
+      <div style={{ marginTop: 14 }}>
         <AddWidget defs={WIDGETS} onAdd={(def) => mutate((s) => ({
           ...s,
           widgets: [...s.widgets, {
             id: newID(s.widgets), type: def.type, span: def.defaultSpan,
+            // start on real equipment rather than an empty widget the user
+            // has to go and fix before anything renders
+            scope: firstScopeFor(def, hier),
             opts: defaultOpts(def),
           }],
         }))} />
@@ -228,8 +201,8 @@ function Editor({ dash, hier, onDone, onCancel }: {
       ) : (
         <div className="dash-grid">
           {spec.widgets.map((w, i) => (
-            <Cell key={w.id} w={w} fallback={spec.scope}>
-              <WidgetEditor w={w} hier={hier} fallback={spec.scope} first={i === 0}
+            <Cell key={w.id} w={w}>
+              <WidgetEditor w={w} hier={hier} first={i === 0}
                             last={i === spec.widgets.length - 1}
                             onMove={(d) => move(i, d)}
                             onChange={(patch) => setWidget(w.id, patch)}
@@ -244,8 +217,8 @@ function Editor({ dash, hier, onDone, onCancel }: {
   );
 }
 
-function WidgetEditor({ w, hier, fallback, first, last, onMove, onChange, onRemove }: {
-  w: DashWidget; hier: HierLine[]; fallback?: WidgetScope;
+function WidgetEditor({ w, hier, first, last, onMove, onChange, onRemove }: {
+  w: DashWidget; hier: HierLine[];
   first: boolean; last: boolean;
   onMove: (delta: number) => void;
   onChange: (patch: Partial<DashWidget>) => void;
@@ -253,7 +226,6 @@ function WidgetEditor({ w, hier, fallback, first, last, onMove, onChange, onRemo
 }) {
   const def = widgetDef(w.type);
   const needsEntity = !def || !def.scopes.includes("none");
-  const effective = w.scope ?? (needsEntity ? fallback : undefined);
   return (
     <div className="dash-wedit">
       <div className="dash-wedit-row">
@@ -277,22 +249,48 @@ function WidgetEditor({ w, hier, fallback, first, last, onMove, onChange, onRemo
       </div>
       {def && (
         <>
-          <ScopePicker kinds={def.scopes} value={w.scope} hier={hier} allowInherit
-                       inheritLabel={fallback ? scopeLabel(fallback) : undefined}
+          <ScopePicker kinds={def.scopes} value={w.scope} hier={hier}
                        onChange={(sc) => onChange({ scope: sc })} />
-          {/* say what this widget will actually draw, however the scope
-              was arrived at */}
           <div className="dash-effective">
             {!needsEntity ? "No equipment needed."
-              : scopeIsEmpty(effective)
+              : scopeIsEmpty(w.scope)
                 ? <span className="warn">No equipment selected — nothing will be drawn.</span>
-                : <>Drawing <b>{scopeLabel(effective!)}</b></>}
+                : <>Drawing <b>{scopeLabel(w.scope!)}</b></>}
           </div>
           <OptsForm def={def} opts={w.opts ?? {}} onChange={(o) => onChange({ opts: o })} />
         </>
       )}
     </div>
   );
+}
+
+/**
+ * A starting scope for a freshly added widget, so it renders real data
+ * immediately instead of arriving broken and needing to be fixed first.
+ * Multi-entity widgets start empty on purpose — guessing a set of EMs to
+ * compare would be presumptuous, and the picker says what to do.
+ */
+function firstScopeFor(def: WidgetDef, hier: HierLine[]): WidgetScope | undefined {
+  const kind = def.scopes[0];
+  const line = hier[0];
+  switch (kind) {
+    case "none": return undefined;
+    case "ems": return { kind: "ems", ems: [] };
+    case "nodes": return { kind: "nodes", nodes: [] };
+    case "line": return line ? { kind: "line", line: line.name } : undefined;
+    case "station": {
+      const st = line?.stations[0];
+      return st ? { kind: "station", line: line.name, station: st.name } : undefined;
+    }
+    case "em": {
+      const st = line?.stations.find((s) => s.ems.length > 0);
+      const em = st?.ems[0];
+      return em
+        ? { kind: "em", line: line.name, station: st!.name, em: em.em_label }
+        : undefined;
+    }
+    default: return undefined;
+  }
 }
 
 // Widget ids only need to be unique within the spec.
