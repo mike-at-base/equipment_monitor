@@ -12,13 +12,16 @@ import type { OptSpec, ScopeKind, WidgetDef } from "../widgets/registry";
  * Picks an entity of one of `kinds`. When several kinds are allowed the user
  * chooses which; when only one is, the choice is implied and not shown.
  */
-export function ScopePicker({ kinds, value, hier, onChange, allowInherit }: {
+export function ScopePicker({ kinds, value, hier, onChange, allowInherit,
+                              inheritLabel }: {
   kinds: ScopeKind[];
   value?: WidgetScope;
   hier: HierLine[];
   onChange: (sc: WidgetScope | undefined) => void;
   /** offer "inherit from dashboard" as an option */
   allowInherit?: boolean;
+  /** what inheriting actually resolves to — "Inherit" alone tells you nothing */
+  inheritLabel?: string;
 }) {
   // a "none" widget (a note) has nothing to point at
   const usable = kinds.filter((k): k is Exclude<ScopeKind, "none"> => k !== "none");
@@ -48,7 +51,9 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit }: {
                   onChange={(e) => onChange(e.target.value === "inherit"
                     ? undefined
                     : { kind, line, ...defaultsFor(kind, hier, line) })}>
-            <option value="inherit">Inherit from dashboard</option>
+            <option value="inherit">
+              {inheritLabel ? `Inherit — ${inheritLabel}` : "Inherit from dashboard"}
+            </option>
             <option value="own">Choose equipment…</option>
           </select>
         </label>
@@ -131,6 +136,20 @@ function defaultsFor(kind: ScopeKind, hier: HierLine[], line: string): Partial<W
   }
 }
 
+export const MAX_COMPARE_EMS = 40;
+
+/** Every EM in the hierarchy, flattened, in tree order. */
+export function flattenEMs(hier: HierLine[]): EMOption[] {
+  return hier.flatMap((l) => l.stations.flatMap((s) => s.ems.map((m) => ({
+    ref: `${l.name}/${s.name}/${m.em_label}`,
+    line: l.name, station: s.name, label: m.em_label, display: m.display_name,
+  }))));
+}
+
+export type EMOption = {
+  ref: string; line: string; station: string; label: string; display: string;
+};
+
 /**
  * Multi-select over EVERY line's EMs, ordered as the user picks them.
  *
@@ -144,70 +163,100 @@ function EMMultiPicker({ hier, selected, onChange }: {
   onChange: (ems: string[]) => void;
 }) {
   const [filter, setFilter] = useState("");
-  const lines = filter ? hier.filter((l) => l.name === filter) : hier;
-  const groups = lines.map((l) => ({
-    line: l.name,
-    options: l.stations.flatMap((s) => s.ems.map((m) => ({
-      ref: `${l.name}/${s.name}/${m.em_label}`,
-      label: `${s.name}/${m.em_label}${m.display_name ? ` · ${m.display_name}` : ""}`,
-    }))).filter((o) => !selected.includes(o.ref)),
-  })).filter((g) => g.options.length > 0);
-  const allRefs = hier.flatMap((l) =>
-    l.stations.flatMap((s) => s.ems.map((m) => `${l.name}/${s.name}/${m.em_label}`)));
+  const all = flattenEMs(hier);
+  const byRef = new Map(all.map((o) => [o.ref, o]));
+  const available = all.filter((o) => !selected.includes(o.ref)
+    && (!filter || o.line === filter));
+  const groups = [...new Set(available.map((o) => o.line))]
+    .map((line) => ({ line, options: available.filter((o) => o.line === line) }));
+  const full = selected.length >= MAX_COMPARE_EMS;
+  const multiLine = new Set(selected.map((r) => r.split("/")[0])).size > 1;
+
+  const add = (refs: string[]) =>
+    onChange([...selected, ...refs.filter((r) => !selected.includes(r))]
+      .slice(0, MAX_COMPARE_EMS));
 
   return (
     <div className="dash-emlist">
-      <span className="label">EMs to compare ({selected.length}, in display order)</span>
-      <div className="chips">
-        {selected.map((ref, i) => (
-          <span key={ref} className="chip">
-            {ref}
-            <button className="chip-x" title="move up" disabled={i === 0}
-                    onClick={() => onChange(swap(selected, i, i - 1))}>↑</button>
-            <button className="chip-x" title="move down" disabled={i === selected.length - 1}
-                    onClick={() => onChange(swap(selected, i, i + 1))}>↓</button>
-            <button className="chip-x" title="remove"
-                    onClick={() => onChange(selected.filter((r) => r !== ref))}>×</button>
-          </span>
-        ))}
-        {selected.length === 0 && <span className="muted">none yet</span>}
+      <div className="dash-emhead">
+        <span className="label">
+          Selected EMs · {selected.length}
+          {selected.length > 0 && " · drawn top to bottom in this order"}
+        </span>
+        {selected.length > 0 && (
+          <button type="button" className="linkbtn"
+                  onClick={() => onChange([])}>remove all</button>
+        )}
       </div>
+
+      {selected.length === 0 ? (
+        <div className="dash-emempty">
+          Nothing selected yet — this widget has nothing to draw.
+          Pick equipment with <b>add an EM</b> below.
+        </div>
+      ) : (
+        <ol className="dash-emrows">
+          {selected.map((ref, i) => {
+            const o = byRef.get(ref);
+            return (
+              <li key={ref} className={o ? "" : "gone"}>
+                <span className="n">{i + 1}</span>
+                {/* the line is only worth the space when the selection
+                    actually spans more than one */}
+                {multiLine && <span className="ln">{ref.split("/")[0]}</span>}
+                <span className="who">
+                  {o ? `${o.station}/${o.label}` : ref}
+                  {o?.display && <em>{o.display}</em>}
+                </span>
+                {!o && <span className="warn">no longer configured</span>}
+                <span className="sp" />
+                <button type="button" className="iconbtn" title="move up"
+                        disabled={i === 0}
+                        onClick={() => onChange(swap(selected, i, i - 1))}>↑</button>
+                <button type="button" className="iconbtn" title="move down"
+                        disabled={i === selected.length - 1}
+                        onClick={() => onChange(swap(selected, i, i + 1))}>↓</button>
+                <button type="button" className="iconbtn danger" title="remove"
+                        onClick={() => onChange(selected.filter((r) => r !== ref))}>×</button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
       <div className="dash-emadd">
         {hier.length > 1 && (
           <select value={filter} onChange={(e) => setFilter(e.target.value)}
-                  aria-label="limit the list below to one line">
+                  aria-label="limit the add list to one line">
             <option value="">all lines</option>
             {hier.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
           </select>
         )}
-        <select value="" aria-label="add an EM"
-                onChange={(e) => e.target.value && onChange([...selected, e.target.value])}>
+        <select value="" aria-label="add an EM" disabled={full}
+                onChange={(e) => e.target.value && add([e.target.value])}>
           <option value="">add an EM…</option>
           {groups.map((g) => (
             <optgroup key={g.line} label={g.line}>
-              {g.options.map((o) => <option key={o.ref} value={o.ref}>{o.label}</option>)}
+              {g.options.map((o) => (
+                <option key={o.ref} value={o.ref}>
+                  {o.station}/{o.label}{o.display ? ` · ${o.display}` : ""}
+                </option>
+              ))}
             </optgroup>
           ))}
         </select>
-        {lines.length === 1 && (
-          <button type="button" className="linkbtn" onClick={() => onChange([
-            ...selected,
-            ...lines[0].stations.flatMap((s) => s.ems
-              .map((m) => `${lines[0].name}/${s.name}/${m.em_label}`)
-              .filter((r) => !selected.includes(r))),
-          ].slice(0, 40))}>
-            add all of {lines[0].name}
+        {available.length > 0 && !full && (
+          <button type="button" className="linkbtn"
+                  onClick={() => add(available.map((o) => o.ref))}>
+            add all {available.length}{filter && ` on ${filter}`}
           </button>
         )}
-        {selected.length > 0 && (
-          <button type="button" className="linkbtn" onClick={() => onChange([])}>clear</button>
+        {full && (
+          <span className="muted" style={{ fontSize: 12 }}>
+            {MAX_COMPARE_EMS} is the maximum.
+          </span>
         )}
       </div>
-      {selected.length >= 40 && (
-        <span className="muted" style={{ fontSize: 12 }}>
-          40 is the maximum ({allRefs.length} EMs exist).
-        </span>
-      )}
     </div>
   );
 }

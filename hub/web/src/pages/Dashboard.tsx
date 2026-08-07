@@ -12,7 +12,9 @@ import {
 } from "../api";
 import { AddWidget, OptsForm, ScopePicker } from "../components/dashedit";
 import { ErrorBox, Loading, useAsync, useWindow } from "../components/ui";
-import { defaultOpts, scopeLabel, widgetDef, WIDGETS } from "../widgets/registry";
+import {
+  defaultOpts, scopeIsEmpty, scopeLabel, widgetDef, WIDGETS,
+} from "../widgets/registry";
 
 export default function DashboardPage() {
   const { slug = "" } = useParams();
@@ -89,7 +91,7 @@ export function Cell({ w, fallback, children }: {
   let body;
   if (!def) {
     body = <div className="empty">Unknown widget type “{w.type}”.</div>;
-  } else if (needsEntity && !scope) {
+  } else if (needsEntity && scopeIsEmpty(scope)) {
     body = <div className="empty">No equipment selected for this widget.</div>;
   } else {
     const { Render } = def;
@@ -227,7 +229,7 @@ function Editor({ dash, hier, onDone, onCancel }: {
         <div className="dash-grid">
           {spec.widgets.map((w, i) => (
             <Cell key={w.id} w={w} fallback={spec.scope}>
-              <WidgetEditor w={w} hier={hier} first={i === 0}
+              <WidgetEditor w={w} hier={hier} fallback={spec.scope} first={i === 0}
                             last={i === spec.widgets.length - 1}
                             onMove={(d) => move(i, d)}
                             onChange={(patch) => setWidget(w.id, patch)}
@@ -242,13 +244,16 @@ function Editor({ dash, hier, onDone, onCancel }: {
   );
 }
 
-function WidgetEditor({ w, hier, first, last, onMove, onChange, onRemove }: {
-  w: DashWidget; hier: HierLine[]; first: boolean; last: boolean;
+function WidgetEditor({ w, hier, fallback, first, last, onMove, onChange, onRemove }: {
+  w: DashWidget; hier: HierLine[]; fallback?: WidgetScope;
+  first: boolean; last: boolean;
   onMove: (delta: number) => void;
   onChange: (patch: Partial<DashWidget>) => void;
   onRemove: () => void;
 }) {
   const def = widgetDef(w.type);
+  const needsEntity = !def || !def.scopes.includes("none");
+  const effective = w.scope ?? (needsEntity ? fallback : undefined);
   return (
     <div className="dash-wedit">
       <div className="dash-wedit-row">
@@ -273,7 +278,16 @@ function WidgetEditor({ w, hier, first, last, onMove, onChange, onRemove }: {
       {def && (
         <>
           <ScopePicker kinds={def.scopes} value={w.scope} hier={hier} allowInherit
+                       inheritLabel={fallback ? scopeLabel(fallback) : undefined}
                        onChange={(sc) => onChange({ scope: sc })} />
+          {/* say what this widget will actually draw, however the scope
+              was arrived at */}
+          <div className="dash-effective">
+            {!needsEntity ? "No equipment needed."
+              : scopeIsEmpty(effective)
+                ? <span className="warn">No equipment selected — nothing will be drawn.</span>
+                : <>Drawing <b>{scopeLabel(effective!)}</b></>}
+          </div>
           <OptsForm def={def} opts={w.opts ?? {}} onChange={(o) => onChange({ opts: o })} />
         </>
       )}

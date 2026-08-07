@@ -121,6 +121,12 @@ export function defaultOpts(def: WidgetDef): Record<string, unknown> {
   return o;
 }
 
+/** True when a scope names no equipment, so a widget using it draws nothing. */
+export function scopeIsEmpty(sc?: WidgetScope): boolean {
+  if (!sc) return true;
+  return sc.kind === "ems" && (sc.ems?.length ?? 0) === 0;
+}
+
 /** Human label for a scope, for widget headers and the editor. */
 export function scopeLabel(sc?: WidgetScope): string {
   if (!sc) return "inherited";
@@ -131,10 +137,11 @@ export function scopeLabel(sc?: WidgetScope): string {
     case "em": return `${sc.station}/${sc.em}`;
     case "ems": {
       const refs = sc.ems ?? [];
+      if (refs.length === 0) return "no EMs selected";
+      const n = `${refs.length} EM${refs.length === 1 ? "" : "s"}`;
       const lines = [...new Set(refs.map((r) => r.split("/")[0]))];
-      return lines.length === 1
-        ? `${refs.length} EMs on ${lines[0]}`
-        : `${refs.length} EMs across ${lines.length} lines`;
+      return lines.length === 1 ? `${n} on ${lines[0]}`
+        : `${n} across ${lines.length} lines`;
     }
     default: return "";
   }
