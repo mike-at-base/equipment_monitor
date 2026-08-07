@@ -65,7 +65,8 @@ export default function Availability() {
           <Gantt
             from={Date.parse(d.from)} to={Date.parse(d.to)}
             rows={(d.station_bands ?? []).slice(0, 15).map((b) => ({
-              label: `${b.station}${b.pct != null ? `  ${b.pct.toFixed(0)}%` : ""}`,
+              // no percentage here — the station tiles above already carry it
+              label: b.station,
               intervals: bandIntervals(b),
             }))} />
           {(d.station_bands ?? []).length > 15 && (

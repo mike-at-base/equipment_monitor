@@ -408,55 +408,71 @@ function fmtTick(ms: number, spanMs: number): string {
 }
 
 // ── SVG state gantt ──────────────────────────────────────────────────────
+/**
+ * State bands over a shared time axis, one row per entity.
+ *
+ * The bars live in an SVG stretched to the container (preserveAspectRatio
+ * "none") so the time axis maps linearly to whatever width it gets. Nothing
+ * textual may live in there: the horizontal scale is ~1.2x the vertical, and
+ * glyphs come out visibly widened. Row labels and the axis are therefore
+ * HTML, laid out beside the plot rather than inside it.
+ */
 export function Gantt({ rows, from, to }: {
   rows: { label: string; intervals: Interval[] }[];
   from: number; to: number;
 }) {
-  const width = 1000, rowH = 26, labelW = 150;
+  const width = 1000, rowH = 26, barH = rowH - 8;
   const span = Math.max(to - from, 1);
-  const x = (t: number) => labelW + ((t - from) / span) * (width - labelW);
-  const height = rows.length * rowH + 22;
+  const x = (t: number) => ((t - from) / span) * width;
+  const height = rows.length * rowH;
   const usedStates = new Set<string>();
   rows.forEach((r) => r.intervals.forEach((iv) => usedStates.add(iv.state)));
   return (
     <div>
-      <svg className="gantt" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none"
-           style={{ height: Math.min(420, height) }}>
-        <defs>
-          {/* diagonal hatch = "no data / not reporting", so gaps read as
-              nothing rather than a flat grey state like waiting */}
-          <pattern id="gantt-nodata" width="7" height="7" patternUnits="userSpaceOnUse"
-                   patternTransform="rotate(45)">
-            <rect width="7" height="7" fill="var(--st-no_data)" />
-            <line x1="0" y1="0" x2="0" y2="7" stroke="var(--subtle)" strokeWidth="2.5" />
-          </pattern>
-        </defs>
-        {rows.map((r, i) => (
-          <g key={r.label}>
-            <text className="rowlabel" x={0} y={i * rowH + 17}>{r.label}</text>
-            <rect x={labelW} y={i * rowH + 4} width={width - labelW} height={rowH - 8}
-                  fill="url(#gantt-nodata)" rx={3} />
-            {r.intervals.map((iv, j) => {
-              const s = Math.max(Date.parse(iv.start_ts), from);
-              const e = Math.min(Date.parse(iv.end_ts), to);
-              if (e <= s) return null;
-              return (
-                <rect key={j} x={x(s)} y={i * rowH + 4}
-                      width={Math.max(x(e) - x(s), 1.5)} height={rowH - 8} rx={2}
-                      fill={stateColor(iv.state)}>
-                  <title>{`${STATE_LABEL[iv.state] ?? iv.state}  ${new Date(s).toLocaleTimeString()} – ${new Date(e).toLocaleTimeString()}${iv.reason ? "\n" + iv.reason : ""}`}</title>
-                </rect>
-              );
-            })}
-          </g>
-        ))}
-      </svg>
-      {/* time axis as HTML (the SVG is non-uniformly scaled, so text there
-          would stretch); aligned under the plot area, which starts at labelW */}
-      <div className="gantt-axis" style={{ marginLeft: `${(labelW / width) * 100}%` }}>
-        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
-          <span key={f}>{fmtTick(from + span * f, span)}</span>
-        ))}
+      <div className="gantt-wrap">
+        <div className="gantt-labels">
+          {rows.map((r) => (
+            <span key={r.label} className="gantt-rowlabel"
+                  style={{ height: rowH }} title={r.label}>{r.label}</span>
+          ))}
+        </div>
+        <div className="gantt-plot">
+          <svg className="gantt" viewBox={`0 0 ${width} ${height}`}
+               preserveAspectRatio="none" style={{ height }}>
+            <defs>
+              {/* diagonal hatch = "no data / not reporting", so gaps read as
+                  nothing rather than a flat grey state like waiting */}
+              <pattern id="gantt-nodata" width="7" height="7" patternUnits="userSpaceOnUse"
+                       patternTransform="rotate(45)">
+                <rect width="7" height="7" fill="var(--st-no_data)" />
+                <line x1="0" y1="0" x2="0" y2="7" stroke="var(--subtle)" strokeWidth="2.5" />
+              </pattern>
+            </defs>
+            {rows.map((r, i) => (
+              <g key={r.label}>
+                <rect x={0} y={i * rowH + 4} width={width} height={barH}
+                      fill="url(#gantt-nodata)" rx={3} />
+                {r.intervals.map((iv, j) => {
+                  const s = Math.max(Date.parse(iv.start_ts), from);
+                  const e = Math.min(Date.parse(iv.end_ts), to);
+                  if (e <= s) return null;
+                  return (
+                    <rect key={j} x={x(s)} y={i * rowH + 4}
+                          width={Math.max(x(e) - x(s), 1.5)} height={barH} rx={2}
+                          fill={stateColor(iv.state)}>
+                      <title>{`${STATE_LABEL[iv.state] ?? iv.state}  ${new Date(s).toLocaleTimeString()} – ${new Date(e).toLocaleTimeString()}${iv.reason ? "\n" + iv.reason : ""}`}</title>
+                    </rect>
+                  );
+                })}
+              </g>
+            ))}
+          </svg>
+          <div className="gantt-axis">
+            {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+              <span key={f}>{fmtTick(from + span * f, span)}</span>
+            ))}
+          </div>
+        </div>
       </div>
       <div className="gantt-legend">
         {STATE_ORDER.filter((s) => usedStates.has(s)).map((s) => (
