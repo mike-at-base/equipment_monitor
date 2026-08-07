@@ -614,6 +614,108 @@ export function StackedBars({
   );
 }
 
+/**
+ * Stacked columns, grouped: one column per entity inside each time slice.
+ *
+ * Colour carries the state, exactly as in StackedBars — position carries the
+ * entity. That leaves the entity unlabelled on the axis, which only works
+ * because the caller prints the left-to-right order underneath and every
+ * segment names its own entity on hover. Past a handful of entities this
+ * becomes slivers; the server coarsens the bucket to keep the bar count sane.
+ */
+export function GroupedStackedBars({
+  labels, groups, series, unit = " min", percent,
+}: {
+  /** one per time slice */
+  labels: string[];
+  /** one per entity, in the order they should appear within each slice */
+  groups: { name: string; values: Record<string, number[]> }[];
+  /** the stacking order, shared by every group */
+  series: { key: string; label: string; color: string }[];
+  unit?: string;
+  percent?: boolean;
+}) {
+  if (!labels.length || !groups.length) {
+    return <div className="empty">No data in this window.</div>;
+  }
+  const width = 1000, height = 240, padL = 40, padB = 34, padT = 8;
+  const plotW = width - padL - 8, plotH = height - padB - padT;
+  const groupW = plotW / labels.length;
+  const barW = (groupW * 0.86) / groups.length;
+
+  const colTotal = (g: (typeof groups)[number], i: number) =>
+    series.reduce((a, sr) => a + (g.values[sr.key]?.[i] ?? 0), 0);
+  const peak = Math.max(
+    ...groups.flatMap((g) => labels.map((_, i) => colTotal(g, i))), 1);
+  const vmax = percent ? 100 * 1.1 : peak * 1.1;
+  const y = (v: number) => padT + plotH - (v / vmax) * plotH;
+  const labelEvery = Math.ceil(labels.length / 8);
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: "auto" }}>
+        {[0.25, 0.5, 0.75, 1].map((f) => (
+          <g key={f}>
+            <line x1={padL} x2={width - 8} y1={y(vmax * f / 1.1)} y2={y(vmax * f / 1.1)}
+                  stroke="var(--conduit)" strokeWidth={1} />
+            <text x={padL - 6} y={y(vmax * f / 1.1) + 4} textAnchor="end"
+                  fontSize={10} fill="var(--secondary)">
+              {Math.round(vmax * f / 1.1)}{percent ? "%" : unit.trim()}
+            </text>
+          </g>
+        ))}
+        {labels.map((label, i) => (
+          <g key={i}>
+            {/* faint band behind alternate slices, so the eye groups the
+                columns by time rather than reading one long row of bars */}
+            {i % 2 === 1 && (
+              <rect x={padL + i * groupW} y={padT} width={groupW} height={plotH}
+                    fill="var(--conduit)" opacity={0.45} />
+            )}
+            {groups.map((g, gi) => {
+              const total = colTotal(g, i);
+              const x = padL + i * groupW + groupW * 0.07 + gi * barW;
+              let top = padT + plotH;
+              return series.map((sr) => {
+                const v = g.values[sr.key]?.[i] ?? 0;
+                if (v <= 0) return null;
+                const shown = percent ? (total > 0 ? (100 * v) / total : 0) : v;
+                const h = (shown / vmax) * plotH;
+                top -= h;
+                return (
+                  <rect key={`${gi}-${sr.key}`} x={x} y={top}
+                        width={Math.max(barW * 0.86, 0.8)} height={Math.max(h, 0)}
+                        fill={sr.color}>
+                    <title>{`${g.name}
+${label}
+${sr.label}: ${v.toFixed(1)}${unit}` +
+                      (percent && total > 0
+                        ? ` (${((100 * v) / total).toFixed(0)}%)` : "")}</title>
+                  </rect>
+                );
+              });
+            })}
+            {i % labelEvery === 0 && (
+              <text x={padL + i * groupW + groupW / 2} y={height - 20}
+                    textAnchor="middle" fontSize={10} fill="var(--secondary)">
+                {label}
+              </text>
+            )}
+          </g>
+        ))}
+      </svg>
+      <div className="gantt-legend">
+        {series.map((sr) => (
+          <span key={sr.key}><i style={{ background: sr.color }} />{sr.label}</span>
+        ))}
+      </div>
+      <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>
+        Within each slice, left to right: {groups.map((g) => g.name).join(", ")}
+      </p>
+    </div>
+  );
+}
+
 export function Loading() {
   return <div className="empty">Loading…</div>;
 }

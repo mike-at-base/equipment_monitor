@@ -7,8 +7,8 @@ import {
   type EMCompareRow, type Interval, type NodeCompareRow, type WidgetScope,
 } from "../api";
 import {
-  Bars, BoxPlot, Gantt, SegmentBars, StackedBars, StateChip, usePolledAsync,
-  useNow, useWindow,
+  Bars, BoxPlot, Gantt, GroupedStackedBars, SegmentBars, StackedBars, StateChip,
+  usePolledAsync, useNow, useWindow,
 } from "../components/ui";
 import { Body, type WidgetProps } from "./frame";
 
@@ -281,9 +281,11 @@ function bucketLabel(iso: string, bucket: string): string {
 export function StateStackWidget({ w, scope }: WidgetProps) {
   const axis = String(w.opts?.axis ?? "time") === "equipment" ? "equipment" : "time";
   const percent = String(w.opts?.mode ?? "minutes") === "percent";
-  return axis === "time"
-    ? <StateOverTime scope={scope} w={w} percent={percent} />
-    : <StateByEquipment scope={scope} w={w} percent={percent} />;
+  const split = String(w.opts?.split ?? "combined") === "em";
+  if (axis === "equipment") return <StateByEquipment scope={scope} w={w} percent={percent} />;
+  return split
+    ? <StateOverTimeSplit scope={scope} w={w} percent={percent} />
+    : <StateOverTime scope={scope} w={w} percent={percent} />;
 }
 
 function StateOverTime({ scope, w, percent }: WidgetProps & { percent: boolean }) {
@@ -312,6 +314,47 @@ function StateOverTime({ scope, w, percent }: WidgetProps & { percent: boolean }
           </p>
         </>
       )}
+    </Body>
+  );
+}
+
+/** One column per EM inside each time slice — who was doing what, and when. */
+function StateOverTimeSplit({ scope, w, percent }: WidgetProps & { percent: boolean }) {
+  const { win } = useWindow();
+  const ems = refs(scope);
+  const bucket = String(w.opts?.bucket ?? "auto");
+  const q = usePolledAsync(() => api.stateStack(ems, win, bucket, true),
+    [ems.join(","), win, bucket]);
+  return (
+    <Body q={q} empty={(d) => (ems.length === 0 && noEMs) ||
+                              ((d.groups ?? []).every((g) => g.series.length === 0) &&
+                               "No state history in this window.")}>
+      {(d) => {
+        const groups = d.groups ?? [];
+        const oneStation = new Set(groups.map((g) => g.station)).size <= 1;
+        // the stacking order has to be shared across groups, or the same
+        // state would sit at a different height in each column
+        const states = STATE_STACK_ORDER.filter((st) =>
+          groups.some((g) => g.series.some((sr) => sr.state === st)));
+        return (
+          <>
+            <GroupedStackedBars
+              labels={d.buckets.map((b) => bucketLabel(b, d.bucket))}
+              groups={groups.map((g) => ({
+                name: oneStation ? g.em_label : `${g.station}/${g.em_label}`,
+                values: Object.fromEntries(
+                  g.series.map((sr) => [sr.state, sr.minutes])),
+              }))}
+              series={states.map((st) => ({
+                key: st, label: stateName(st), color: stateColor(st),
+              }))}
+              percent={percent} />
+            <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
+              {d.bucket} slices · {groups.length} EMs
+            </p>
+          </>
+        );
+      }}
     </Body>
   );
 }

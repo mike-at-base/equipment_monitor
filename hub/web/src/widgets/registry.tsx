@@ -99,6 +99,13 @@ export const WIDGETS: WidgetDef[] = [
         ],
       },
       {
+        key: "split", label: "Within a time slice", type: "select", def: "combined",
+        choices: [
+          { value: "combined", label: "One column, EMs combined" },
+          { value: "em", label: "One column per EM" },
+        ],
+      },
+      {
         key: "mode", label: "Scale", type: "select", def: "minutes",
         choices: [
           { value: "minutes", label: "Minutes" },

@@ -383,11 +383,18 @@ export type NodeCompareResp = {
   missing?: string[];
 };
 
+export type StateSeries = { state: string; minutes: number[] };
+
 export type StateStack = {
   bucket: string; from: string; to: string;
   buckets: string[];
-  series: { state: string; minutes: number[] }[];
-  /** several EMs are summed, so a column can exceed its own wall clock */
+  /** combined view: EMs summed, so a column can exceed its own wall clock */
+  series: StateSeries[];
+  /** split view: the same numbers kept per EM, one column each per slice */
+  groups?: {
+    ref: string; station: string; em_label: string; display_name: string;
+    series: StateSeries[];
+  }[];
   em_count: number;
 };
 
@@ -540,9 +547,10 @@ export const api = {
   nodeCompare: (nodes: string[], win: string) =>
     get<NodeCompareResp>(`/api/v2/nodecompare?${winQuery(win)}` +
       `&nodes=${encodeURIComponent(nodes.join(","))}`),
-  stateStack: (ems: string[], win: string, bucket = "auto") =>
+  stateStack: (ems: string[], win: string, bucket = "auto", split = false) =>
     get<StateStack>(`/api/v2/statestack?${winQuery(win)}` +
-      `&ems=${encodeURIComponent(ems.join(","))}&bucket=${bucket}`),
+      `&ems=${encodeURIComponent(ems.join(","))}&bucket=${bucket}` +
+      (split ? "&split=em" : "")),
   hierarchy: () => get<HierLine[]>("/api/v2/hierarchy"),
   dashboards: () => get<DashboardMeta[]>("/api/v2/dashboards"),
   dashboard: (slug: string) =>

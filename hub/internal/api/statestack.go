@@ -19,16 +19,34 @@ import (
 // enough to read, so this is far coarser than the drift line chart.
 const columnTargetBuckets = 32
 
+// In split mode every slice holds one column per EM, so the budget is on the
+// total number of bars rather than the number of slices.
+const (
+	splitTargetColumns = 96
+	minSplitBuckets    = 6
+)
+
 type StateStack struct {
 	Bucket  string      `json:"bucket"`
 	From    time.Time   `json:"from"`
 	To      time.Time   `json:"to"`
 	Buckets []time.Time `json:"buckets"`
-	// one entry per state present, each with a value per bucket, in minutes
+	// one entry per state present, each with a value per bucket, in minutes.
+	// Summed across the selected EMs, so a bucket can hold more minutes than
+	// it has wall clock.
 	Series []StateSeries `json:"series"`
-	// EM-minutes: with several EMs selected the states are summed, so a
-	// bucket can hold more minutes than it has wall clock
-	EMCount int `json:"em_count"`
+	// With split=em the same numbers arrive broken out per EM instead, for a
+	// column per module within each time slice. Series is then empty.
+	Groups  []StateGroup `json:"groups,omitempty"`
+	EMCount int          `json:"em_count"`
+}
+
+type StateGroup struct {
+	Ref     string        `json:"ref"`
+	Station string        `json:"station"`
+	EMLabel string        `json:"em_label"`
+	Display string        `json:"display_name"`
+	Series  []StateSeries `json:"series"`
 }
 
 type StateSeries struct {
@@ -52,26 +70,52 @@ func (s *Server) handleStateStack(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, jsonErr("at most 40 EMs"))
 		return
 	}
+	split := r.URL.Query().Get("split") == "em"
 	var ids []int
+	byID := map[int]EMCompareRow{}
 	for _, ref := range refs {
 		line, station, label, ok := splitEMRef(ref)
 		if !ok {
 			continue
 		}
 		if _, em := s.findEM(line, station, label); em != nil {
+			if _, dup := byID[em.ID]; dup {
+				continue
+			}
 			ids = append(ids, em.ID)
+			byID[em.ID] = EMCompareRow{Ref: ref, Station: em.Station,
+				EMLabel: em.Label, Display: em.Display}
 		}
 	}
 
-	name, bucket := columnBucket(r.URL.Query().Get("bucket"), from, to)
+	// Split mode draws EMCount columns per slice, so the same number of
+	// buckets would give EMCount times as many bars. Coarsen to keep the
+	// total readable rather than rendering slivers.
+	target := columnTargetBuckets
+	if split && len(ids) > 1 {
+		target = splitTargetColumns / len(ids)
+		if target < minSplitBuckets {
+			target = minSplitBuckets
+		}
+		if target > columnTargetBuckets {
+			target = columnTargetBuckets
+		}
+	}
+	name, bucket := columnBucket(r.URL.Query().Get("bucket"), from, to, target)
 	out := StateStack{Bucket: name, From: from, To: to, EMCount: len(ids),
 		Buckets: []time.Time{}, Series: []StateSeries{}}
 	if len(ids) == 0 {
 		writeJSON(w, out)
 		return
 	}
-	if err := s.fillStateStack(r.Context(), ids, from, to, bucket, &out); err != nil {
-		httpErr(w, 500, err)
+	var err2 error
+	if split {
+		err2 = s.fillStateStackSplit(r.Context(), ids, byID, from, to, bucket, &out)
+	} else {
+		err2 = s.fillStateStack(r.Context(), ids, from, to, bucket, &out)
+	}
+	if err2 != nil {
+		httpErr(w, 500, err2)
 		return
 	}
 	writeJSON(w, out)
@@ -79,7 +123,7 @@ func (s *Server) handleStateStack(w http.ResponseWriter, r *http.Request) {
 
 // columnBucket resolves an explicit bucket name, or picks one aiming for
 // roughly columnTargetBuckets columns.
-func columnBucket(want string, from, to time.Time) (string, time.Duration) {
+func columnBucket(want string, from, to time.Time, targetBuckets int) (string, time.Duration) {
 	if d, ok := bucketDurations[want]; ok {
 		return want, d
 	}
@@ -87,7 +131,10 @@ func columnBucket(want string, from, to time.Time) (string, time.Duration) {
 	if span <= 0 {
 		return "1h", time.Hour
 	}
-	target := span / columnTargetBuckets
+	if targetBuckets < 1 {
+		targetBuckets = columnTargetBuckets
+	}
+	target := span / time.Duration(targetBuckets)
 	for _, b := range niceBuckets {
 		if b.d >= target {
 			return b.name, b.d
@@ -97,18 +144,28 @@ func columnBucket(want string, from, to time.Time) (string, time.Duration) {
 	return last.name, last.d
 }
 
-func (s *Server) fillStateStack(ctx context.Context, ids []int, from, to time.Time,
-	bucket time.Duration, out *StateStack) error {
+// stateByEM is the shared core: minutes per EM, per state, per bucket. Both
+// the combined and the split view are shaped from this, so the interval
+// splitting and the live-interval handling exist once.
+func (s *Server) stateByEM(ctx context.Context, ids []int, from, to time.Time,
+	bucket time.Duration, buckets []time.Time) (map[int]map[string][]float64, error) {
 
-	start, last := bucketRange(from, to, bucket)
-	for t := start; !t.After(last); t = t.Add(bucket) {
-		out.Buckets = append(out.Buckets, t)
-	}
 	index := map[time.Time]int{}
-	for i, t := range out.Buckets {
+	for i, t := range buckets {
 		index[t] = i
 	}
+	out := map[int]map[string][]float64{}
+	put := func(id int, state string, i int, mins float64) {
+		if out[id] == nil {
+			out[id] = map[string][]float64{}
+		}
+		if out[id][state] == nil {
+			out[id][state] = make([]float64, len(buckets))
+		}
+		out[id][state][i] += mins
+	}
 
+	start, last := buckets[0], buckets[len(buckets)-1]
 	// generate_series gives one row per bucket; the join clips each interval
 	// to the bucket it overlaps, so an interval spanning several is split
 	// between them rather than landing wholly in the first.
@@ -118,7 +175,7 @@ func (s *Server) fillStateStack(ctx context.Context, ids []int, from, to time.Ti
 	// between the two still joins, clips to a NEGATIVE duration, and quietly
 	// subtracts time from the column. Same at the far end.
 	rows, err := s.pool.Query(ctx, `
-	    SELECT b.bucket, si.state,
+	    SELECT b.bucket, si.em_id, si.state,
 	           SUM(EXTRACT(EPOCH FROM (
 	               LEAST(si.end_ts, b.bucket + $5, $4::timestamptz)
 	             - GREATEST(si.start_ts, b.bucket, $3::timestamptz))))/60.0
@@ -127,32 +184,26 @@ func (s *Server) fillStateStack(ctx context.Context, ids []int, from, to time.Ti
 	      ON si.end_ts > b.bucket AND si.start_ts < b.bucket + $5
 	    WHERE si.em_id = ANY($6)
 	      AND si.end_ts > $3::timestamptz AND si.start_ts < $4::timestamptz
-	    GROUP BY b.bucket, si.state`,
+	    GROUP BY b.bucket, si.em_id, si.state`,
 		start, last, from, to, bucket, ids)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
-
-	byState := map[string][]float64{}
 	for rows.Next() {
 		var t time.Time
+		var id int
 		var state string
 		var mins float64
-		if err := rows.Scan(&t, &state, &mins); err != nil {
-			return err
+		if err := rows.Scan(&t, &id, &state, &mins); err != nil {
+			return nil, err
 		}
-		i, ok := index[t.UTC()]
-		if !ok {
-			continue
+		if i, ok := index[t.UTC()]; ok {
+			put(id, state, i, round1(mins))
 		}
-		if byState[state] == nil {
-			byState[state] = make([]float64, len(out.Buckets))
-		}
-		byState[state][i] += round1(mins)
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
 	// The state an EM is in right now has no row in state_interval yet, so on
@@ -166,28 +217,84 @@ func (s *Server) fillStateStack(ctx context.Context, ids []int, from, to time.Ti
 		if !idSet[le.EMID] || le.State == "" || le.Since.IsZero() {
 			continue
 		}
-		for i, b := range out.Buckets {
+		for i, b := range buckets {
 			lo, hi := maxTime(b, le.Since, from), minTime(b.Add(bucket), now, to)
-			if !hi.After(lo) {
-				continue
+			if hi.After(lo) {
+				put(le.EMID, le.State, i, round1(hi.Sub(lo).Minutes()))
 			}
-			if byState[le.State] == nil {
-				byState[le.State] = make([]float64, len(out.Buckets))
-			}
-			byState[le.State][i] += round1(hi.Sub(lo).Minutes())
 		}
 	}
+	return out, nil
+}
 
-	// stateStackOrder keeps the stack in a stable, meaningful order rather
-	// than whatever the map iteration produced
+func bucketList(from, to time.Time, bucket time.Duration) []time.Time {
+	start, last := bucketRange(from, to, bucket)
+	var out []time.Time
+	for t := start; !t.After(last); t = t.Add(bucket) {
+		out = append(out, t)
+	}
+	return out
+}
+
+// orderedSeries turns a state->values map into the stable stacking order.
+func orderedSeries(byState map[string][]float64) []StateSeries {
+	out := []StateSeries{}
+	seen := map[string]bool{}
 	for _, st := range stateStackOrder {
 		if v, ok := byState[st]; ok {
-			out.Series = append(out.Series, StateSeries{State: st, Minutes: v})
-			delete(byState, st)
+			out = append(out, StateSeries{State: st, Minutes: v})
+			seen[st] = true
 		}
 	}
 	for st, v := range byState { // anything unexpected, still shown
-		out.Series = append(out.Series, StateSeries{State: st, Minutes: v})
+		if !seen[st] {
+			out = append(out, StateSeries{State: st, Minutes: v})
+		}
+	}
+	return out
+}
+
+func (s *Server) fillStateStack(ctx context.Context, ids []int, from, to time.Time,
+	bucket time.Duration, out *StateStack) error {
+
+	out.Buckets = bucketList(from, to, bucket)
+	byEM, err := s.stateByEM(ctx, ids, from, to, bucket, out.Buckets)
+	if err != nil {
+		return err
+	}
+	summed := map[string][]float64{}
+	for _, byState := range byEM {
+		for st, vals := range byState {
+			if summed[st] == nil {
+				summed[st] = make([]float64, len(out.Buckets))
+			}
+			for i, v := range vals {
+				summed[st][i] += v
+			}
+		}
+	}
+	out.Series = orderedSeries(summed)
+	return nil
+}
+
+// fillStateStackSplit keeps the EMs apart: one column per module within each
+// time slice, in the order the dashboard listed them.
+func (s *Server) fillStateStackSplit(ctx context.Context, ids []int,
+	byID map[int]EMCompareRow, from, to time.Time, bucket time.Duration,
+	out *StateStack) error {
+
+	out.Buckets = bucketList(from, to, bucket)
+	byEM, err := s.stateByEM(ctx, ids, from, to, bucket, out.Buckets)
+	if err != nil {
+		return err
+	}
+	out.Groups = []StateGroup{}
+	for _, id := range ids { // selection order, not map order
+		info := byID[id]
+		out.Groups = append(out.Groups, StateGroup{
+			Ref: info.Ref, Station: info.Station, EMLabel: info.EMLabel,
+			Display: info.Display, Series: orderedSeries(byEM[id]),
+		})
 	}
 	return nil
 }
