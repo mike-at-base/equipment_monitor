@@ -383,6 +383,21 @@ export type NodeCompareResp = {
   missing?: string[];
 };
 
+/** SEMI E10 utilization: productive time over total time. Availability asks
+ *  whether the equipment COULD run; this asks whether it DID. */
+export type Utilization = {
+  /** productive / production time — comparable with availability_pct */
+  pct?: number;
+  productive_min: number;
+  production_min: number;
+  /** false when the line has no shift schedule, so production time IS the window */
+  scheduled: boolean;
+  /** productive / the whole window (E10 total time) */
+  window_pct?: number;
+  window_productive_min: number;
+  window_min: number;
+};
+
 export type StateSeries = { state: string; minutes: number[] };
 
 export type StateStack = {
@@ -507,7 +522,8 @@ export const api = {
     get<{ from: string; to: string; episodes: EpisodeRow[]; raw_downs: DownRow[];
           top_reasons: ReasonAgg[]; flow_reasons: FlowReasonAgg[];
           flow_reasons_timeline: FlowReasonTimeline;
-          availability_pct?: number; state_min: Record<string, number> }>(
+          availability_pct?: number; state_min: Record<string, number>;
+          production_min: number; utilization: Utilization }>(
       `/api/v2/ems/${l}/${s}/${e}/downs?${winQuery(win)}`),
   debug: (l: string, s: string, e: string, win: string) =>
     get<DebugResp>(`/api/v2/ems/${l}/${s}/${e}/debug?${winQuery(win)}`),

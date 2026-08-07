@@ -700,16 +700,28 @@ func (s *Server) handleDowns(w http.ResponseWriter, r *http.Request) {
 		epMs = a.down
 	}
 
+	scheduled, err := s.lineIsScheduled(r.Context(), r.PathValue("line"))
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	util, err := s.utilization(r.Context(), em.ID, from, to, ranges, scheduled)
+	if err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+
 	out := map[string]any{
-		"from":                   from,
-		"to":                     to,
-		"episodes":               episodes,
-		"raw_downs":              raw,
-		"top_reasons":            topEpisodeReasons(episodes, 10),
-		"flow_reasons":           flowReasons,
-		"flow_reasons_timeline":  flowTimeline,
-		"state_min":              stateMin,
-		"production_min":         round1(float64(rangesMs(ranges)) / 60000.0),
+		"from":                  from,
+		"to":                    to,
+		"utilization":           util,
+		"episodes":              episodes,
+		"raw_downs":             raw,
+		"top_reasons":           topEpisodeReasons(episodes, 10),
+		"flow_reasons":          flowReasons,
+		"flow_reasons_timeline": flowTimeline,
+		"state_min":             stateMin,
+		"production_min":        round1(float64(rangesMs(ranges)) / 60000.0),
 	}
 	if pct, ok := episodeAvailability(a.avail, a.down, epMs); ok {
 		out["availability_pct"] = round1(pct)
@@ -844,7 +856,7 @@ type seqConfigDTO struct {
 	CycleStart    string   `json:"cycle_start_step"`
 	CycleComplete string   `json:"cycle_complete_step"`
 	StarvedSteps  []string `json:"starved_steps"`
-	NVASteps []string `json:"nva_steps"`
+	NVASteps      []string `json:"nva_steps"`
 	BlockedSteps  []string `json:"blocked_steps"`
 }
 
