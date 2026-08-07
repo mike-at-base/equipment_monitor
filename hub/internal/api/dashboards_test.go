@@ -22,8 +22,9 @@ func specServer() *Server {
 	}}}
 }
 
+// EM references are fully qualified, so a comparison can span lines.
 func emScope(refs ...string) *WidgetScope {
-	return &WidgetScope{Kind: scopeEMs, Line: "CELL1", EMs: refs}
+	return &WidgetScope{Kind: scopeEMs, EMs: refs}
 }
 
 func TestSpecValidAcceptsRealEntities(t *testing.T) {
@@ -33,7 +34,7 @@ func TestSpecValidAcceptsRealEntities(t *testing.T) {
 		Scope:   &WidgetScope{Kind: scopeLine, Line: "CELL1"},
 		Widgets: []Widget{
 			{ID: "w1", Type: "cycle_compare", Span: 2,
-				Scope: emScope("ST34000/main", "ST34000/rb01")},
+				Scope: emScope("CELL1/ST34000/main", "CELL1/ST34000/rb01")},
 			{ID: "w2", Type: "cycle_drift", Span: 2,
 				Scope: &WidgetScope{Kind: scopeEM, Line: "CELL1", Station: "ST34000", EM: "main"}},
 			{ID: "w3", Type: "note", Span: 4},
@@ -63,7 +64,7 @@ func TestSpecRejectsUnknownEntities(t *testing.T) {
 	// and inside an EM list
 	spec := &DashboardSpec{Version: 1, Widgets: []Widget{
 		{ID: "w1", Type: "cycle_compare", Span: 1,
-			Scope: emScope("ST34000/main", "ST34000/ghost")}}}
+			Scope: emScope("CELL1/ST34000/main", "CELL1/ST34000/ghost")}}}
 	err := s.validateSpec(spec)
 	if err == nil || !strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("unknown EM in list: %v", err)
@@ -74,7 +75,7 @@ func TestSpecRejectsWrongScopeKindForType(t *testing.T) {
 	s := specServer()
 	// cycle_drift is single-EM; pointing it at a set must fail
 	spec := &DashboardSpec{Version: 1, Widgets: []Widget{
-		{ID: "w1", Type: "cycle_drift", Span: 1, Scope: emScope("ST34000/main")}}}
+		{ID: "w1", Type: "cycle_drift", Span: 1, Scope: emScope("CELL1/ST34000/main")}}}
 	err := s.validateSpec(spec)
 	if err == nil || !strings.Contains(err.Error(), "cannot be scoped") {
 		t.Fatalf("wrong scope kind accepted: %v", err)
@@ -149,20 +150,27 @@ func TestSlugPattern(t *testing.T) {
 	}
 }
 
-// EMs deleted after the dashboard was saved are skipped at resolve time
-// rather than failing the whole widget.
-func TestEMIDsForScopeSkipsMissing(t *testing.T) {
+// A comparison must be able to span lines — that is the whole reason the
+// reference carries one.
+func TestSpecAcceptsCrossLineEMList(t *testing.T) {
 	s := specServer()
-	ids, labels, err := s.emIDsForScope(nil, "CELL1",
-		[]string{"ST34000/main", "ST34000/ghost", "ST10000/main"})
-	if err != nil {
-		t.Fatal(err)
+	s.lines = append(s.lines, LineInfo{Name: "CELL2", Stations: []StationInfo{
+		{Name: "ST34000", EMs: []EMInfo{{ID: 9, Station: "ST34000", Label: "main"}}}}})
+	spec := &DashboardSpec{Version: 1, Widgets: []Widget{
+		{ID: "w1", Type: "cycle_compare", Span: 4,
+			Scope: emScope("CELL1/ST34000/main", "CELL2/ST34000/main")}}}
+	if err := s.validateSpec(spec); err != nil {
+		t.Fatalf("cross-line comparison rejected: %v", err)
 	}
-	if len(ids) != 2 || len(labels) != 2 {
-		t.Fatalf("got ids=%v labels=%v, want the two that still exist", ids, labels)
+	// the same EM twice would draw two identical rows
+	spec.Widgets[0].Scope = emScope("CELL1/ST34000/main", "CELL1/ST34000/main")
+	if err := s.validateSpec(spec); err == nil {
+		t.Fatal("duplicate EM accepted")
 	}
-	if labels[0] != "ST34000/main" || labels[1] != "ST10000/main" {
-		t.Fatalf("order not preserved: %v", labels)
+	// a two-part ref is no longer meaningful: which line?
+	spec.Widgets[0].Scope = emScope("ST34000/main")
+	if err := s.validateSpec(spec); err == nil {
+		t.Fatal("unqualified reference accepted")
 	}
 }
 
@@ -173,7 +181,7 @@ func TestCompareWidgetsAcceptEMLists(t *testing.T) {
 	for _, typ := range []string{"cycle_compare", "availability_compare",
 		"state_timeline", "live_tiles"} {
 		spec := &DashboardSpec{Version: 1, Widgets: []Widget{
-			{ID: "w1", Type: typ, Span: 2, Scope: emScope("ST34000/main", "ST10000/main")}}}
+			{ID: "w1", Type: typ, Span: 2, Scope: emScope("CELL1/ST34000/main", "CELL1/ST10000/main")}}}
 		if err := s.validateSpec(spec); err != nil {
 			t.Errorf("%s rejected a valid EM list: %v", typ, err)
 		}

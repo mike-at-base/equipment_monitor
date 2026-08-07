@@ -311,7 +311,9 @@ export type WidgetScope = {
   line?: string;
   station?: string;
   em?: string;
-  ems?: string[]; // "STATION/label"
+  /** Fully qualified "LINE/STATION/label" — a comparison is not bound to
+   *  one line, so the line travels with each reference. */
+  ems?: string[];
 };
 
 export type DashWidget = {
@@ -331,7 +333,7 @@ export type DashboardSpec = {
 
 // ── multi-EM comparison ───────────────────────────────────────────────────
 export type EMCompareRow = {
-  ref: string; station: string; em_label: string; display_name: string;
+  ref: string; line: string; station: string; em_label: string; display_name: string;
   availability_pct?: number;
   state_min: Record<string, number>;
   cycles: CycleStats;
@@ -340,7 +342,7 @@ export type EMCompareRow = {
 };
 
 export type EMCompareResp = {
-  line: string; from: string; to: string;
+  from: string; to: string;
   ems: EMCompareRow[];
   /** refs that no longer resolve — the dashboard outlived the equipment */
   missing?: string[];
@@ -488,9 +490,9 @@ export const api = {
     put<{ ok: boolean }>(
       `/api/v2/lines/${encodeURIComponent(line)}/stations/${encodeURIComponent(station)}/availmodel`,
       { model }),
-  emCompare: (line: string, ems: string[], win: string, intervals = false) =>
-    get<EMCompareResp>(`/api/v2/lines/${encodeURIComponent(line)}/emcompare` +
-      `?${winQuery(win)}&ems=${encodeURIComponent(ems.join(","))}` +
+  emCompare: (ems: string[], win: string, intervals = false) =>
+    get<EMCompareResp>(`/api/v2/emcompare?${winQuery(win)}` +
+      `&ems=${encodeURIComponent(ems.join(","))}` +
       (intervals ? "&intervals=1" : "")),
   hierarchy: () => get<HierLine[]>("/api/v2/hierarchy"),
   dashboards: () => get<DashboardMeta[]>("/api/v2/dashboards"),

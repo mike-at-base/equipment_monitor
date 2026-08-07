@@ -25,7 +25,11 @@ import psycopg2
 
 # same default as emhub (cmd/emhub/main.go); override with --dsn
 DSN = "postgres://monitor:monitor@localhost:5432/emhub"
-LINE = "DEMO1"
+
+# Two lines, because comparing the same machine across lines is one of the
+# main things the comparison widgets are for. DEMO2 reuses DEMO1's station
+# and module names on purpose, so a like-for-like comparison is possible.
+LINES = ["DEMO1", "DEMO2"]
 
 # ── the fleet ─────────────────────────────────────────────────────────────
 # Shaped like a real cell: a main module that calls robots, robots that call
@@ -63,6 +67,23 @@ STATIONS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("pal01", "Palletiser"),
     ]),
 ]
+
+# the second line is a subset — same names, different behaviour
+STATIONS2: list[tuple[str, str, list[tuple[str, str]]]] = [
+    ("ST20000", "Press", [
+        ("main", "Press control"),
+        ("press01", "Press 1"),
+        ("press02", "Press 2"),
+    ]),
+    ("ST34000", "Cell", [
+        ("main", "Cell control"),
+        ("rb01", "Robot 1"),
+        ("mag01", "Magazine 1"),
+        ("mag02", "Magazine 2"),
+    ]),
+]
+
+LAYOUT = {"DEMO1": STATIONS, "DEMO2": STATIONS2}
 
 # Two shifts Mon–Sat with a lunch gap, as minutes from local midnight. The
 # gap matters: it is what makes production-aware availability differ from
@@ -160,11 +181,11 @@ def shift_windows(days: int, tz: dt.tzinfo) -> list[tuple[dt.datetime, dt.dateti
     return out
 
 
-def upsert_hierarchy(cur) -> dict[tuple[str, str], int]:
+def upsert_hierarchy(cur, line: str) -> dict[tuple[str, str, str], int]:
     cur.execute(
         "INSERT INTO line (name, display_name) VALUES (%s,%s) "
         "ON CONFLICT (name) DO UPDATE SET display_name=EXCLUDED.display_name "
-        "RETURNING id", (LINE, "Demo line"))
+        "RETURNING id", (line, f"Demo line {line[-1]}"))
     line_id = cur.fetchone()[0]
 
     cur.execute("DELETE FROM schedule_shift WHERE line_id=%s", (line_id,))
@@ -174,8 +195,8 @@ def upsert_hierarchy(cur) -> dict[tuple[str, str], int]:
                 "INSERT INTO schedule_shift (line_id,dow,start_min,end_min) "
                 "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING", (line_id, dow, s, e))
 
-    ids: dict[tuple[str, str], int] = {}
-    for station, st_display, ems in STATIONS:
+    ids: dict[tuple[str, str, str], int] = {}
+    for station, st_display, ems in LAYOUT[line]:
         cur.execute(
             "INSERT INTO station (line_id, name, display_name) VALUES (%s,%s,%s) "
             "ON CONFLICT (line_id, name) DO UPDATE SET display_name=EXCLUDED.display_name "
@@ -188,7 +209,7 @@ def upsert_hierarchy(cur) -> dict[tuple[str, str], int]:
                 "ON CONFLICT (station_id, em_label) DO UPDATE SET "
                 "  display_name=EXCLUDED.display_name, confirmed=TRUE "
                 "RETURNING id", (station_id, label, display))
-            ids[(station, label)] = cur.fetchone()[0]
+            ids[(line, station, label)] = cur.fetchone()[0]
     return ids
 
 
@@ -306,22 +327,23 @@ def copy_in(cur, table: str, cols: str, rows: list[tuple]) -> None:
 
 
 def delete_all(cur) -> None:
-    cur.execute("SELECT id FROM line WHERE name=%s", (LINE,))
-    row = cur.fetchone()
-    if not row:
-        print(f"{LINE} is not there")
+    cur.execute("SELECT id, name FROM line WHERE name = ANY(%s)", (LINES,))
+    rows = cur.fetchall()
+    if not rows:
+        print("nothing to delete")
         return
-    cur.execute("""
-        SELECT e.id FROM em e
-        JOIN station s ON s.id = e.station_id
-        WHERE s.line_id = %s""", (row[0],))
-    ids = [r[0] for r in cur.fetchall()]
-    for table in ("state_interval", "step_event", "cycle", "mode_interval",
-                  "down_episode", "operator_event"):
-        cur.execute(f"DELETE FROM {table} WHERE em_id = ANY(%s)", (ids,))
-    # line cascades to station -> em -> sequence
-    cur.execute("DELETE FROM line WHERE id=%s", (row[0],))
-    print(f"deleted {LINE}: {len(ids)} EMs and their history")
+    for line_id, name in rows:
+        cur.execute("""
+            SELECT e.id FROM em e
+            JOIN station s ON s.id = e.station_id
+            WHERE s.line_id = %s""", (line_id,))
+        ids = [r[0] for r in cur.fetchall()]
+        for table in ("state_interval", "step_event", "cycle", "mode_interval",
+                      "down_episode", "operator_event"):
+            cur.execute(f"DELETE FROM {table} WHERE em_id = ANY(%s)", (ids,))
+        # line cascades to station -> em -> sequence
+        cur.execute("DELETE FROM line WHERE id=%s", (line_id,))
+        print(f"deleted {name}: {len(ids)} EMs and their history")
 
 
 def main() -> int:
@@ -350,8 +372,11 @@ def main() -> int:
           f"{windows[0][0]:%Y-%m-%d %H:%M} .. {windows[-1][1]:%Y-%m-%d %H:%M}")
 
     delete_all(cur)  # idempotent: re-seeding replaces, never doubles up
-    ids = upsert_hierarchy(cur)
-    print(f"{len(ids)} EMs on {LINE}")
+    ids: dict[tuple[str, str, str], int] = {}
+    for line in LINES:
+        got = upsert_hierarchy(cur, line)
+        print(f"{len(got)} EMs on {line}")
+        ids.update(got)
 
     states: list[tuple] = []
     steps: list[tuple] = []
@@ -359,12 +384,12 @@ def main() -> int:
     episodes: list[tuple] = []
     ops: list[tuple] = []
 
-    for i, ((station, label), em_id) in enumerate(sorted(ids.items())):
+    for i, ((line, station, label), em_id) in enumerate(sorted(ids.items())):
         rng = random.Random(a.seed * 1000 + i)
         prof = Profile(rng, label, station)
         write_sequence(cur, em_id, prof.has_nva)
         generate(em_id, prof, windows, (states, steps, cycles, episodes, ops))
-        print(f"  {station}/{label:8s} base={prof.base:6.1f}s "
+        print(f"  {line}/{station}/{label:8s} base={prof.base:6.1f}s "
               f"{'bimodal ' if prof.bimodal else '        '}"
               f"{'BAD ' if prof.bad_actor else '    '}"
               f"drift={prof.drift:+.0%} fault={prof.p_fault:.1%}")

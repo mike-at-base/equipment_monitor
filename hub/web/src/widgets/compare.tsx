@@ -12,18 +12,22 @@ function refs(sc: WidgetScope): string[] {
   return sc.ems ?? [];
 }
 
-// A short row label: the station prefix is noise when every EM shares it.
+// Row labels drop whatever the selection has in common: comparing four
+// magazines on one station, "mag01" says everything; comparing the same press
+// across two lines, the line is the only part that matters.
 function labeller(rows: EMCompareRow[]): (r: EMCompareRow) => string {
-  const oneStation = new Set(rows.map((r) => r.station)).size <= 1;
-  return (r) => (oneStation ? r.em_label : r.ref);
+  const oneLine = new Set(rows.map((r) => r.line)).size <= 1;
+  const oneStation = oneLine && new Set(rows.map((r) => r.station)).size <= 1;
+  return (r) => (oneStation ? r.em_label
+    : oneLine ? `${r.station}/${r.em_label}`
+    : r.ref);
 }
 
 function useCompare(sc: WidgetScope, intervals = false) {
   const { win } = useWindow();
   const ems = refs(sc);
-  const line = sc.line ?? "";
-  return usePolledAsync(() => api.emCompare(line, ems, win, intervals),
-    [line, ems.join(","), win, intervals]);
+  return usePolledAsync(() => api.emCompare(ems, win, intervals),
+    [ems.join(","), win, intervals]);
 }
 
 const noEMs = "No EMs selected for this widget.";
@@ -132,7 +136,7 @@ export function StateTimeline({ scope }: WidgetProps) {
 /** Right-now state per EM. Polled faster than the aggregates — it is a
  *  glanceable tile, and a stale one is worse than useless. */
 export function LiveTiles({ scope }: WidgetProps) {
-  const wanted = new Set(refs(scope).map((r) => `${scope.line}/${r}`));
+  const wanted = new Set(refs(scope)); // already LINE/STATION/label
   const q = usePolledAsync(() => api.live(), [], 5000);
   const now = useNow();
   return (

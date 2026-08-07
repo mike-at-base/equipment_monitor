@@ -13,7 +13,6 @@ package api
 //     lives in the URL, so a shared dashboard link carries the range with it.
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -51,11 +50,15 @@ var widgetTypes = map[string][]string{
 }
 
 type WidgetScope struct {
-	Kind    string   `json:"kind"`
-	Line    string   `json:"line,omitempty"`
-	Station string   `json:"station,omitempty"`
-	EM      string   `json:"em,omitempty"`
-	EMs     []string `json:"ems,omitempty"` // "STATION/label"
+	Kind    string `json:"kind"`
+	Line    string `json:"line,omitempty"`
+	Station string `json:"station,omitempty"`
+	EM      string `json:"em,omitempty"`
+	// EMs are fully qualified "LINE/STATION/label". A comparison is not
+	// bound to one line — comparing the same machine across two lines is
+	// one of the more useful things to put on a dashboard — so the line
+	// travels with each reference rather than sitting on the scope.
+	EMs []string `json:"ems,omitempty"`
 }
 
 type Widget struct {
@@ -167,13 +170,18 @@ func (s *Server) validateScope(sc *WidgetScope) error {
 		if len(sc.EMs) > 40 {
 			return fmt.Errorf("%d EMs is too many (max 40)", len(sc.EMs))
 		}
+		seen := map[string]bool{}
 		for _, ref := range sc.EMs {
-			station, label, ok := splitEMRef(ref)
+			line, station, label, ok := splitEMRef(ref)
 			if !ok {
-				return fmt.Errorf("bad EM reference %q, want STATION/label", ref)
+				return fmt.Errorf("bad EM reference %q, want LINE/STATION/label", ref)
 			}
-			if _, em := s.findEM(sc.Line, station, label); em == nil {
-				return fmt.Errorf("unknown EM %s/%s", sc.Line, ref)
+			if seen[ref] {
+				return fmt.Errorf("EM %s listed twice", ref)
+			}
+			seen[ref] = true
+			if _, em := s.findEM(line, station, label); em == nil {
+				return fmt.Errorf("unknown EM %s", ref)
 			}
 		}
 	default:
@@ -182,13 +190,13 @@ func (s *Server) validateScope(sc *WidgetScope) error {
 	return nil
 }
 
-// splitEMRef parses "STATION/label" as used in a scope's EM list.
-func splitEMRef(ref string) (station, label string, ok bool) {
-	station, label, ok = strings.Cut(ref, "/")
-	if !ok || station == "" || label == "" {
-		return "", "", false
+// splitEMRef parses "LINE/STATION/label" as used in a scope's EM list.
+func splitEMRef(ref string) (line, station, label string, ok bool) {
+	parts := strings.Split(ref, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", false
 	}
-	return station, label, true
+	return parts[0], parts[1], parts[2], true
 }
 
 func contains(xs []string, v string) bool {
@@ -320,22 +328,3 @@ func (s *Server) handleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-// emIDsForScope resolves an "ems" scope to tracker EM ids, preserving the
-// order the user chose so comparison rows stay stable.
-func (s *Server) emIDsForScope(_ context.Context, line string, refs []string) ([]int, []string, error) {
-	ids := make([]int, 0, len(refs))
-	labels := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		station, label, ok := splitEMRef(ref)
-		if !ok {
-			return nil, nil, fmt.Errorf("bad EM reference %q", ref)
-		}
-		_, em := s.findEM(line, station, label)
-		if em == nil {
-			continue // deleted since the dashboard was saved — skip, do not fail
-		}
-		ids = append(ids, em.ID)
-		labels = append(labels, ref)
-	}
-	return ids, labels, nil
-}

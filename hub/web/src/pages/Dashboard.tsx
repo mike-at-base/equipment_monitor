@@ -201,8 +201,10 @@ function Editor({ dash, hier, onDone, onCancel }: {
             widgets use this unless they choose their own
           </span>
         </div>
-        <ScopePicker kinds={["em", "station", "line"]} value={spec.scope} hier={hier}
-                     allowInherit={false}
+        {/* "ems" must be offered here: a dashboard whose default scope is an
+            EM list would otherwise be shown — and saved — as a single EM. */}
+        <ScopePicker kinds={["ems", "em", "station", "line"]} value={spec.scope}
+                     hier={hier} allowInherit={false}
                      onChange={(sc) => mutate((s) => ({ ...s, scope: sc }))} />
         <p className="muted" style={{ marginBottom: 0, fontSize: 13 }}>
           Anyone with the link can edit or delete this dashboard; the last save wins.

@@ -129,7 +129,13 @@ export function scopeLabel(sc?: WidgetScope): string {
     case "line": return sc.line ?? "";
     case "station": return `${sc.line}/${sc.station}`;
     case "em": return `${sc.station}/${sc.em}`;
-    case "ems": return `${sc.ems?.length ?? 0} EMs on ${sc.line}`;
+    case "ems": {
+      const refs = sc.ems ?? [];
+      const lines = [...new Set(refs.map((r) => r.split("/")[0]))];
+      return lines.length === 1
+        ? `${refs.length} EMs on ${lines[0]}`
+        : `${refs.length} EMs across ${lines.length} lines`;
+    }
     default: return "";
   }
 }

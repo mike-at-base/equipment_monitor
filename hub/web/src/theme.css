@@ -604,3 +604,5 @@ table.data tr.sel td { background: var(--livewire); }
 .dash-livetiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .dash-livetiles .tile { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .dash-lt-name { font-weight: 600; font-size: 14px; }
+.dash-emadd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.dash-emlist .chip { display: inline-flex; align-items: center; gap: 4px; }

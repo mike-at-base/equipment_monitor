@@ -58,23 +58,29 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit }: {
           {usable.length > 1 && (
             <label>
               <span className="label">Kind</span>
-              <select value={kind} onChange={(e) => onChange({
-                kind: e.target.value as ScopeKind, line,
-                ...defaultsFor(e.target.value as ScopeKind, hier, line),
-              })}>
+              <select value={kind} onChange={(e) => {
+                const k = e.target.value as ScopeKind;
+                // an EM list carries its own lines; a stray scope-level
+                // `line` would just be dead weight in the saved spec
+                onChange(k === "ems"
+                  ? { kind: k, ems: [] }
+                  : { kind: k, line, ...defaultsFor(k, hier, line) });
+              }}>
                 {usable.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
               </select>
             </label>
           )}
-          <label>
-            <span className="label">Line</span>
-            <select value={line} onChange={(e) => onChange({
-              kind, line: e.target.value,
-              ...defaultsFor(kind, hier, e.target.value),
-            })}>
-              {hier.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
-            </select>
-          </label>
+          {kind !== "ems" && (
+            <label>
+              <span className="label">Line</span>
+              <select value={line} onChange={(e) => onChange({
+                kind, line: e.target.value,
+                ...defaultsFor(kind, hier, e.target.value),
+              })}>
+                {hier.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
+              </select>
+            </label>
+          )}
           {(kind === "station" || kind === "em") && (
             <label>
               <span className="label">Station</span>
@@ -99,8 +105,8 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit }: {
             </label>
           )}
           {kind === "ems" && (
-            <EMMultiPicker line={line} hier={hier} selected={value?.ems ?? []}
-                           onChange={(ems) => onChange({ kind: "ems", line, ems })} />
+            <EMMultiPicker hier={hier} selected={value?.ems ?? []}
+                           onChange={(ems) => onChange({ kind: "ems", ems })} />
           )}
         </>
       )}
@@ -125,20 +131,33 @@ function defaultsFor(kind: ScopeKind, hier: HierLine[], line: string): Partial<W
   }
 }
 
-/** Multi-select for "STATION/label" refs, ordered as the user picks them. */
-function EMMultiPicker({ line, hier, selected, onChange }: {
-  line: string; hier: HierLine[]; selected: string[];
+/**
+ * Multi-select over EVERY line's EMs, ordered as the user picks them.
+ *
+ * Comparing across lines is the point, so the picker deliberately does not
+ * filter to one line. It does offer a line filter for the add-list, because
+ * scrolling one <optgroup> of forty is worse than picking the line first —
+ * but that is a view filter, never part of what gets saved.
+ */
+function EMMultiPicker({ hier, selected, onChange }: {
+  hier: HierLine[]; selected: string[];
   onChange: (ems: string[]) => void;
 }) {
-  const all = (hier.find((l) => l.name === line)?.stations ?? [])
-    .flatMap((s) => s.ems.map((m) => ({
-      ref: `${s.name}/${m.em_label}`,
+  const [filter, setFilter] = useState("");
+  const lines = filter ? hier.filter((l) => l.name === filter) : hier;
+  const groups = lines.map((l) => ({
+    line: l.name,
+    options: l.stations.flatMap((s) => s.ems.map((m) => ({
+      ref: `${l.name}/${s.name}/${m.em_label}`,
       label: `${s.name}/${m.em_label}${m.display_name ? ` · ${m.display_name}` : ""}`,
-    })));
-  const free = all.filter((o) => !selected.includes(o.ref));
+    }))).filter((o) => !selected.includes(o.ref)),
+  })).filter((g) => g.options.length > 0);
+  const allRefs = hier.flatMap((l) =>
+    l.stations.flatMap((s) => s.ems.map((m) => `${l.name}/${s.name}/${m.em_label}`)));
+
   return (
     <div className="dash-emlist">
-      <span className="label">EMs (in display order)</span>
+      <span className="label">EMs to compare ({selected.length}, in display order)</span>
       <div className="chips">
         {selected.map((ref, i) => (
           <span key={ref} className="chip">
@@ -153,11 +172,41 @@ function EMMultiPicker({ line, hier, selected, onChange }: {
         ))}
         {selected.length === 0 && <span className="muted">none yet</span>}
       </div>
-      {free.length > 0 && (
-        <select value="" onChange={(e) => e.target.value && onChange([...selected, e.target.value])}>
+      <div className="dash-emadd">
+        {hier.length > 1 && (
+          <select value={filter} onChange={(e) => setFilter(e.target.value)}
+                  aria-label="limit the list below to one line">
+            <option value="">all lines</option>
+            {hier.map((l) => <option key={l.name} value={l.name}>{l.name}</option>)}
+          </select>
+        )}
+        <select value="" aria-label="add an EM"
+                onChange={(e) => e.target.value && onChange([...selected, e.target.value])}>
           <option value="">add an EM…</option>
-          {free.map((o) => <option key={o.ref} value={o.ref}>{o.label}</option>)}
+          {groups.map((g) => (
+            <optgroup key={g.line} label={g.line}>
+              {g.options.map((o) => <option key={o.ref} value={o.ref}>{o.label}</option>)}
+            </optgroup>
+          ))}
         </select>
+        {lines.length === 1 && (
+          <button type="button" className="linkbtn" onClick={() => onChange([
+            ...selected,
+            ...lines[0].stations.flatMap((s) => s.ems
+              .map((m) => `${lines[0].name}/${s.name}/${m.em_label}`)
+              .filter((r) => !selected.includes(r))),
+          ].slice(0, 40))}>
+            add all of {lines[0].name}
+          </button>
+        )}
+        {selected.length > 0 && (
+          <button type="button" className="linkbtn" onClick={() => onChange([])}>clear</button>
+        )}
+      </div>
+      {selected.length >= 40 && (
+        <span className="muted" style={{ fontSize: 12 }}>
+          40 is the maximum ({allRefs.length} EMs exist).
+        </span>
       )}
     </div>
   );

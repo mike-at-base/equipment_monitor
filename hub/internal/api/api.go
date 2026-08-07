@@ -111,6 +111,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/lines", s.handleLines)
 	mux.HandleFunc("GET /api/v2/lines/{line}/summary", s.handleLineSummary)
 	mux.HandleFunc("GET /api/v2/compare", s.handleCompare)
+	// cross-line: EMs are named LINE/STATION/label, so no {line} in the path
+	mux.HandleFunc("GET /api/v2/emcompare", s.handleEMCompare)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/intervals", s.handleIntervals)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/steps", s.handleSteps)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/stepstats", s.handleStepStats)
@@ -131,7 +133,6 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v2/lines/{line}/availmodel", s.handleSaveLineModel)
 	mux.HandleFunc("GET /api/v2/lines/{line}/stations/{station}/availmodel", s.handleGetStationModel)
 	mux.HandleFunc("PUT /api/v2/lines/{line}/stations/{station}/availmodel", s.handleSaveStationModel)
-	mux.HandleFunc("GET /api/v2/lines/{line}/emcompare", s.handleEMCompare)
 	mux.HandleFunc("GET /api/v2/lines/{line}/composed", s.handleLineComposed)
 	mux.HandleFunc("GET /api/v2/lines/{line}/stations/{station}/composed", s.handleStationComposed)
 	mux.HandleFunc("GET /api/v2/dashboards", s.handleListDashboards)
