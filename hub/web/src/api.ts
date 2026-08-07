@@ -626,6 +626,21 @@ export function stateColor(state: string): string {
 }
 
 /**
+ * Cycle durations: seconds, always, whatever the magnitude.
+ *
+ * Stricter than fmtMs on purpose. Comparing cycles against each other is the
+ * entire job, so a KPI row reading "133 ms · 2.14 s · 5.60 s" changes unit
+ * mid-row and a chart axis cannot change unit at all. Fixed unit, moving
+ * precision.
+ */
+export function fmtSec(ms?: number): string {
+  if (ms == null) return "–";
+  const s = ms / 1000;
+  const dp = Math.abs(s) < 10 ? 2 : Math.abs(s) < 100 ? 1 : 0;
+  return `${s.toFixed(dp)} s`;
+}
+
+/**
  * Durations: milliseconds below a second, seconds above it, never minutes.
  *
  * Minutes were the problem. Comparing one duration with another is the whole
@@ -642,11 +657,22 @@ export function fmtMs(ms?: number): string {
   return `${s.toFixed(dp)} s`;
 }
 
-export function fmtSince(iso: string, now: number): string {
-  const s = Math.max(0, Math.floor((now - Date.parse(iso)) / 1000));
+/**
+ * How long something has been going on, for reading rather than comparing.
+ *
+ * Minutes and hours are right here — nobody wants a stuck step reported as
+ * "7200 s". Use fmtMs or fmtSec for anything being measured or charted.
+ */
+export function fmtHuman(ms?: number): string {
+  if (ms == null) return "–";
+  const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m ${(s % 60).toString().padStart(2, "0")}s`;
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+export function fmtSince(iso: string, now: number): string {
+  return fmtHuman(now - Date.parse(iso));
 }
 
 export function fmtClock(iso: string): string {
