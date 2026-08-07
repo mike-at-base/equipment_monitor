@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { api, CycleRow, fmtClock, fmtMs, fmtSince, SeqConfig, stateColor, StepStat, STATE_LABEL, STATE_ORDER, Utilization, winLabel } from "../api";
-import { Bars, BoxPlot, ErrorBox, Gantt, Histogram, Loading, PercentileBand, SegmentBars, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
+import { Bars, BoxPlot, ErrorBox, Gantt, Histogram, Loading, PercentileBand, StackedBars, StateChip, Trend, useAsync, useNow, usePolledAsync, useWindow, VBars } from "../components/ui";
 
 // EM drill-down: Steps / Cycles / Availability / Alarms
 export default function EMPage() {
@@ -541,11 +541,21 @@ function Availability({ l, s, e }: P) {
 
   return (
     <>
-      <UtilizationCard util={util} stateMin={stateMin} noDataMin={noDataMin}
-                       availPct={downs.data.availability_pct} win={win} />
       <div className="tiles" style={{ marginTop: 16 }}>
         <T label={`Availability (${winLabel(win)})`}
            v={downs.data.availability_pct != null ? `${downs.data.availability_pct.toFixed(1)}%` : "–"} />
+        {/* availability asks whether it COULD run, utilization whether it
+            DID — same production-time denominator, so the gap between the
+            two tiles is the flow loss */}
+        <T label="Utilization"
+           v={util.pct != null ? `${util.pct.toFixed(1)}%` : "–"}
+           title={`${util.productive_min.toFixed(0)} productive of ` +
+             `${util.production_min.toFixed(0)} min ` +
+             (util.scheduled ? "production time" : "(no shift schedule, so the whole window)") +
+             (util.scheduled && util.window_pct != null
+               ? `
+${util.window_pct.toFixed(1)}% of the full ${util.window_min.toFixed(0)} min window`
+               : "")} />
         <T label="Down episodes" v={`${eps.length}`} />
         <T label="Down minutes" v={epMin.toFixed(1)} />
         <T label="Retries" v={`${eps.reduce((a, e) => a + e.retries, 0)}`} />
@@ -616,81 +626,6 @@ function Availability({ l, s, e }: P) {
         </div>
       )}
     </>
-  );
-}
-
-/**
- * Utilization: of the time this module had, how much was it making product?
- *
- * Sits above availability deliberately. Availability asks whether the module
- * COULD run; this asks whether it DID, and the gap between them is the flow
- * loss — a module starved half the shift is ~100% available and ~50%
- * utilized, which is the whole point of showing both.
- *
- * The headline is over the whole window, so it matches the composition bar
- * beneath it and the "Time by state" card further down. Production time is
- * the fairer denominator on a scheduled line, so it follows as a second line
- * rather than being silently substituted.
- */
-function UtilizationCard({ util, stateMin, noDataMin, availPct, win }: {
-  util: Utilization;
-  stateMin: Record<string, number>;
-  noDataMin: number;
-  availPct?: number;
-  win: string;
-}) {
-  const pct = util.window_pct;
-  const values: Record<string, number> = { ...stateMin };
-  if (noDataMin > 0.1) values.no_data = noDataMin;
-  const segments = [
-    ...STATE_ORDER.filter((st) => stateMin[st] > 0)
-      .map((st) => ({ key: st, label: STATE_LABEL[st] ?? st, color: stateColor(st) })),
-    ...(noDataMin > 0.1
-      ? [{ key: "no_data", label: "Not reporting", color: "var(--st-no_data)" }] : []),
-  ];
-  // productive is only "lost" against the rest; call out the flow share
-  // because that is the part an engineer can usually do something about
-  const flowMin = (stateMin.starved ?? 0) + (stateMin.blocked ?? 0) +
-    (stateMin.nva ?? 0) + (stateMin.process_wait ?? 0) + (stateMin.wait ?? 0);
-
-  return (
-    <div className="card util-card">
-      <div className="dash-cellhead">
-        <h2>Utilization ({winLabel(win)})</h2>
-        <span className="muted" style={{ fontSize: 13 }}>
-          productive time over total time
-        </span>
-      </div>
-      <div className="util-head">
-        <div className="util-big">
-          {pct != null ? pct.toFixed(1) : "–"}<small>%</small>
-        </div>
-        <div className="util-facts">
-          <div>
-            <b>{util.window_productive_min.toFixed(0)}</b> productive of{" "}
-            <b>{util.window_min.toFixed(0)}</b> min
-          </div>
-          {util.scheduled && util.pct != null && (
-            <div className="muted">
-              {util.pct.toFixed(1)}% of production time
-              {" "}({util.production_min.toFixed(0)} min scheduled)
-            </div>
-          )}
-          {availPct != null && (
-            <div className="muted">
-              Available {availPct.toFixed(1)}% — the difference is time it could
-              run but was not producing
-              {flowMin > 0.1 &&
-                `, ${flowMin.toFixed(0)} min of it waiting on flow`}.
-            </div>
-          )}
-        </div>
-      </div>
-      <SegmentBars
-        rows={[{ name: "Where the time went", values }]}
-        segments={segments}
-        fmt={(v) => `${v.toFixed(0)} min`} />
-    </div>
   );
 }
 
@@ -1202,7 +1137,7 @@ function T({ label, v, onClick, active, title }: {
 }) {
   if (!onClick) {
     return (
-      <div className="tile">
+      <div className="tile" title={title}>
         <div className="n">{v}</div>
         <div className="label">{label}</div>
       </div>

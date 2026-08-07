@@ -660,8 +660,3 @@ table.data tr.sel td { background: var(--livewire); }
 .segbars .row .seg { height: 100%; min-width: 1px; }
 .segbars .row .val { text-align: right; color: var(--secondary); font-variant-numeric: tabular-nums; }
 
-/* utilization headline on the EM availability tab */
-.util-head { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
-.util-big { font: 800 52px/1 "Inter", system-ui, sans-serif; color: var(--terminal); letter-spacing: -.02em; }
-.util-big small { font-size: 24px; font-weight: 700; color: var(--secondary); margin-left: 2px; }
-.util-facts { font-size: 13px; line-height: 1.6; min-width: 0; }
