@@ -11,7 +11,7 @@ import type { WidgetScope } from "../api";
 import type { WidgetProps } from "./frame";
 import {
   AvailabilityCompare, CycleCompare, FlowCompare, FlowReasons, LiveTiles,
-  StateTimeline,
+  StateStackWidget, StateTimeline,
 } from "./compare";
 import {
   CycleDistribution, CycleDrift, CycleKPIs, CycleSpread, Note, StepSpread,
@@ -79,6 +79,34 @@ export const WIDGETS: WidgetDef[] = [
     scopes: ["nodes"], defaultSpan: 2,
     opts: [{ key: "top", label: "Reasons shown", type: "number", def: 10, min: 3, max: 25 }],
     Render: FlowReasons,
+  },
+  {
+    type: "state_stack", title: "Time by state (stacked columns)",
+    group: "Availability",
+    blurb: "How the state mix changes through a shift, or how it differs between modules.",
+    scopes: ["ems"], defaultSpan: 4,
+    opts: [
+      {
+        key: "axis", label: "Columns are", type: "select", def: "time",
+        choices: [
+          { value: "time", label: "Time buckets" },
+          { value: "equipment", label: "Equipment" },
+        ],
+      },
+      {
+        key: "mode", label: "Scale", type: "select", def: "minutes",
+        choices: [
+          { value: "minutes", label: "Minutes" },
+          { value: "percent", label: "Percent of each column" },
+        ],
+      },
+      {
+        key: "bucket", label: "Bucket (time axis)", type: "select", def: "auto",
+        choices: ["auto", "15m", "30m", "1h", "4h", "12h", "1d"]
+          .map((v) => ({ value: v, label: v })),
+      },
+    ],
+    Render: StateStackWidget,
   },
   {
     type: "state_timeline", title: "State timeline", group: "Availability",

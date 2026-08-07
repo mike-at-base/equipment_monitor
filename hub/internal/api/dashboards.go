@@ -44,6 +44,7 @@ var widgetTypes = map[string][]string{
 	// whether the line could actually run
 	"availability_compare": {scopeEMs, scopeNodes},
 	"state_timeline":       {scopeEMs},
+	"state_stack":          {scopeEMs},
 	"live_tiles":           {scopeEMs},
 	// flow loss, to see where the line is waiting rather than broken
 	"flow_compare": {scopeNodes},

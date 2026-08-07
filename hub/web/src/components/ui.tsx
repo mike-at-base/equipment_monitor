@@ -539,30 +539,39 @@ export function VBars({ bars, unit }: { bars: { t: number; v: number; label: str
 
 // ── stacked vertical bars over time (flow reasons by bucket) ─────────────
 export function StackedBars({
-  labels, series, unit = " min",
+  labels, series, unit = " min", percent,
 }: {
   labels: string[];
   series: { name: string; color: string; values: number[] }[];
   unit?: string;
+  /** scale every column to 100% — reads the MIX rather than the amount */
+  percent?: boolean;
 }) {
   if (!labels.length || !series.length) return <div className="empty">No data in this window.</div>;
   const width = 1000, height = 220, padL = 40, padB = 28, padT = 8;
   const totals = labels.map((_, i) => series.reduce((a, s) => a + (s.values[i] ?? 0), 0));
-  const vmax = Math.max(...totals, 1) * 1.1;
+  // In percent mode each column is scaled by its own total, so the axis is
+  // fixed — but it still carries the same 1.1 headroom the gridline labels
+  // divide back out, or they read 23/45/68 instead of 25/50/75.
+  const vmax = percent ? 100 * 1.1 : Math.max(...totals, 1) * 1.1;
+  const scale = (v: number, i: number) =>
+    percent ? (totals[i] > 0 ? (100 * v) / totals[i] : 0) : v;
   const plotW = width - padL - 8, plotH = height - padB - padT;
   const bw = plotW / labels.length;
   const y = (v: number) => padT + plotH - (v / vmax) * plotH;
   const labelEvery = Math.ceil(labels.length / 8);
   return (
     <div>
-      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height }}>
+      {/* height: auto so a narrow dashboard cell scales the whole chart
+          instead of letterboxing a fixed 1000x220 box inside it */}
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: "auto" }}>
         {[0.25, 0.5, 0.75, 1].map((f) => (
           <g key={f}>
             <line x1={padL} x2={width - 8} y1={y(vmax * f / 1.1)} y2={y(vmax * f / 1.1)}
                   stroke="var(--conduit)" strokeWidth={1} />
             <text x={padL - 6} y={y(vmax * f / 1.1) + 4} textAnchor="end"
                   fontSize={10} fill="var(--secondary)">
-              {Math.round(vmax * f / 1.1)}{unit.trim()}
+              {Math.round(vmax * f / 1.1)}{percent ? "%" : unit.trim()}
             </text>
           </g>
         ))}
@@ -574,12 +583,17 @@ export function StackedBars({
               {series.map((s) => {
                 const v = s.values[i] ?? 0;
                 if (v <= 0) return null;
-                const h = (v / vmax) * plotH;
+                // scale(), not v: in percent mode the column is normalised
+                // by its own total, and using the raw value here would size
+                // every bar against a 0-110 axis it does not live on
+                const h = (scale(v, i) / vmax) * plotH;
                 top -= h;
                 return (
                   <rect key={s.name} x={x + bw * 0.12} y={top} width={bw * 0.76}
                         height={Math.max(h, 0)} fill={s.color}>
-                    <title>{`${label}\n${s.name}\n${v.toFixed(1)}${unit}`}</title>
+                    <title>{`${label}\n${s.name}\n${v.toFixed(1)}${unit}` +
+                      (percent && totals[i] > 0
+                        ? ` (${((100 * v) / totals[i]).toFixed(0)}%)` : "")}</title>
                   </rect>
                 );
               })}

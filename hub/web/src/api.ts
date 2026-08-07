@@ -383,6 +383,14 @@ export type NodeCompareResp = {
   missing?: string[];
 };
 
+export type StateStack = {
+  bucket: string; from: string; to: string;
+  buckets: string[];
+  series: { state: string; minutes: number[] }[];
+  /** several EMs are summed, so a column can exceed its own wall clock */
+  em_count: number;
+};
+
 // The full equipment tree, for scope pickers.
 export type HierLine = {
   name: string; display_name: string;
@@ -532,6 +540,9 @@ export const api = {
   nodeCompare: (nodes: string[], win: string) =>
     get<NodeCompareResp>(`/api/v2/nodecompare?${winQuery(win)}` +
       `&nodes=${encodeURIComponent(nodes.join(","))}`),
+  stateStack: (ems: string[], win: string, bucket = "auto") =>
+    get<StateStack>(`/api/v2/statestack?${winQuery(win)}` +
+      `&ems=${encodeURIComponent(ems.join(","))}&bucket=${bucket}`),
   hierarchy: () => get<HierLine[]>("/api/v2/hierarchy"),
   dashboards: () => get<DashboardMeta[]>("/api/v2/dashboards"),
   dashboard: (slug: string) =>

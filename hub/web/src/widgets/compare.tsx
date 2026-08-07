@@ -7,7 +7,8 @@ import {
   type EMCompareRow, type Interval, type NodeCompareRow, type WidgetScope,
 } from "../api";
 import {
-  Bars, BoxPlot, Gantt, SegmentBars, StateChip, usePolledAsync, useNow, useWindow,
+  Bars, BoxPlot, Gantt, SegmentBars, StackedBars, StateChip, usePolledAsync,
+  useNow, useWindow,
 } from "../components/ui";
 import { Body, type WidgetProps } from "./frame";
 
@@ -249,6 +250,105 @@ export function LiveTiles({ scope }: WidgetProps) {
     </Body>
   );
 }
+
+// ── time by state, stacked ────────────────────────────────────────────────
+
+const STATE_LABELS: Record<string, string> = {
+  productive: "Productive", nva: "Non-value-added", standby: "Standby",
+  process_wait: "Process wait", wait: "Waiting", starved: "Starved",
+  blocked: "Blocked", paused: "Paused", manual: "Manual",
+  offline: "Offline", down: "Down", no_data: "No data",
+};
+const stateName = (s: string) => STATE_LABELS[s] ?? s;
+
+function bucketLabel(iso: string, bucket: string): string {
+  const d = new Date(iso);
+  const coarse = /^(4h|12h|1d)$/.test(bucket);
+  return coarse
+    ? d.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit" })
+    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Time by state as stacked columns.
+ *
+ * Two readings of the same question, chosen by the `axis` option. Over time
+ * shows how a shift unfolded — the mix at 06:00 against the mix at 14:00. By
+ * equipment shows how the same window treated each module. Percent mode is
+ * the one to reach for when totals differ: it compares the MIX rather than
+ * the amount, so a module that ran fewer hours is still readable.
+ */
+export function StateStackWidget({ w, scope }: WidgetProps) {
+  const axis = String(w.opts?.axis ?? "time") === "equipment" ? "equipment" : "time";
+  const percent = String(w.opts?.mode ?? "minutes") === "percent";
+  return axis === "time"
+    ? <StateOverTime scope={scope} w={w} percent={percent} />
+    : <StateByEquipment scope={scope} w={w} percent={percent} />;
+}
+
+function StateOverTime({ scope, w, percent }: WidgetProps & { percent: boolean }) {
+  const { win } = useWindow();
+  const ems = refs(scope);
+  const bucket = String(w.opts?.bucket ?? "auto");
+  const q = usePolledAsync(() => api.stateStack(ems, win, bucket),
+    [ems.join(","), win, bucket]);
+  return (
+    <Body q={q} empty={(d) => (ems.length === 0 && noEMs) ||
+                              (d.series.length === 0 && "No state history in this window.")}>
+      {(d) => (
+        <>
+          <StackedBars
+            labels={d.buckets.map((b) => bucketLabel(b, d.bucket))}
+            series={d.series.map((s) => ({
+              name: stateName(s.state), color: stateColor(s.state), values: s.minutes,
+            }))}
+            percent={percent} />
+          <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
+            {d.bucket} buckets
+            {/* only worth saying when the axis is minutes — in percent mode
+                each column is normalised and the sum does not show */}
+            {!percent && d.em_count > 1 && ` · ${d.em_count} EMs summed, so a
+              column can exceed ${d.bucket} of clock time`}
+          </p>
+        </>
+      )}
+    </Body>
+  );
+}
+
+function StateByEquipment({ scope, percent }: WidgetProps & { percent: boolean }) {
+  // state_min per EM is already on the comparison response — no second endpoint
+  const q = useCompare(scope);
+  return (
+    <Body q={q} empty={(d) => (d.ems.length === 0 && noEMs) ||
+                              (d.ems.every((e) => Object.keys(e.state_min).length === 0) &&
+                               "No state history in this window.")}>
+      {(d) => {
+        const name = labeller(d.ems);
+        const states = STATE_STACK_ORDER.filter((st) =>
+          d.ems.some((e) => (e.state_min[st] ?? 0) > 0));
+        return (
+          <>
+            <Missing refs={d.missing} />
+            <StackedBars
+              labels={d.ems.map(name)}
+              series={states.map((st) => ({
+                name: stateName(st), color: stateColor(st),
+                values: d.ems.map((e) => e.state_min[st] ?? 0),
+              }))}
+              percent={percent} />
+          </>
+        );
+      }}
+    </Body>
+  );
+}
+
+// same order the API stacks in: good at the bottom, bad at the top
+const STATE_STACK_ORDER = [
+  "productive", "nva", "standby", "process_wait", "wait",
+  "starved", "blocked", "paused", "manual", "offline", "down",
+];
 
 // ── flow loss: where the line waits rather than breaks ────────────────────
 
