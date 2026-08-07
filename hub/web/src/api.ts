@@ -625,6 +625,23 @@ export function stateColor(state: string): string {
   return `var(--st-${state || "no_data"})`;
 }
 
+/**
+ * Cycle durations, always in seconds.
+ *
+ * fmtMs switches unit by magnitude, which is right for steps — they span
+ * milliseconds to minutes — but wrong for cycle time, where the whole job is
+ * comparing one cycle against another. A p50 of "2m 3s" next to a p10 of
+ * "58.2 s" cannot be read at a glance, and a box plot axis cannot change
+ * unit halfway along. So: one unit, with the precision following the
+ * magnitude rather than the unit doing so.
+ */
+export function fmtSec(ms?: number): string {
+  if (ms == null) return "–";
+  const s = ms / 1000;
+  const dp = Math.abs(s) < 10 ? 2 : Math.abs(s) < 100 ? 1 : 0;
+  return `${s.toFixed(dp)} s`;
+}
+
 export function fmtMs(ms?: number): string {
   if (ms == null) return "–";
   if (ms < 1000) return `${Math.round(ms)} ms`;
