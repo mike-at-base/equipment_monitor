@@ -20,10 +20,12 @@ import (
 const columnTargetBuckets = 32
 
 // In split mode every slice holds one column per EM, so the budget is on the
-// total number of bars rather than the number of slices.
+// total number of bars rather than the number of slices. Each bar also
+// carries a rotated label naming its module, which sets a floor on how
+// narrow a bar can usefully get — hence the modest budget.
 const (
-	splitTargetColumns = 96
-	minSplitBuckets    = 6
+	splitTargetColumns = 60
+	minSplitBuckets    = 5
 )
 
 type StateStack struct {

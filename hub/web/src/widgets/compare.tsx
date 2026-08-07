@@ -351,6 +351,10 @@ function StateOverTimeSplit({ scope, w, percent }: WidgetProps & { percent: bool
               percent={percent} />
             <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
               {d.bucket} slices · {groups.length} EMs
+              {/* the chart scales with its cell, so the per-bar names shrink
+                  with it — worth saying rather than letting them go fuzzy */}
+              {(w.span ?? 4) < 4 &&
+                " · set this widget to full width so the module names stay readable"}
             </p>
           </>
         );

@@ -617,11 +617,13 @@ export function StackedBars({
 /**
  * Stacked columns, grouped: one column per entity inside each time slice.
  *
- * Colour carries the state, exactly as in StackedBars — position carries the
- * entity. That leaves the entity unlabelled on the axis, which only works
- * because the caller prints the left-to-right order underneath and every
- * segment names its own entity on hover. Past a handful of entities this
- * becomes slivers; the server coarsens the bucket to keep the bar count sane.
+ * Colour carries the state, exactly as in StackedBars, so it cannot also
+ * carry the entity. The entity is named under its own bar instead, rotated
+ * to fit — position alone (with a legend to count along) meant counting bars
+ * to work out which module you were looking at.
+ *
+ * Rotated labels set the floor on bar width, which is why the server budgets
+ * the bar count rather than the slice count and coarsens the bucket to suit.
  */
 export function GroupedStackedBars({
   labels, groups, series, unit = " min", percent,
@@ -638,10 +640,21 @@ export function GroupedStackedBars({
   if (!labels.length || !groups.length) {
     return <div className="empty">No data in this window.</div>;
   }
-  const width = 1000, height = 240, padL = 40, padB = 34, padT = 8;
+  // room under the plot for a rotated entity label per bar, then the time
+  // label for the slice beneath that
+  const longest = Math.max(...groups.map((g) => g.name.length));
+  const nameH = Math.min(56, 12 + longest * 4.6);
+  const padB = nameH + 20;
+  const width = 1000, height = 200 + padB, padL = 40, padT = 8;
   const plotW = width - padL - 8, plotH = height - padB - padT;
   const groupW = plotW / labels.length;
   const barW = (groupW * 0.86) / groups.length;
+  // The rotated label's height is the bar's width, so the type has to fit
+  // between neighbours — but wide bars should get bigger type, since the
+  // whole SVG scales down with the cell and 9 units in a half-width cell is
+  // about five pixels.
+  const nameSize = barW >= 30 ? 13 : barW >= 22 ? 12 : barW >= 17 ? 11
+    : barW >= 13 ? 9 : barW >= 9 ? 8 : 7;
 
   const colTotal = (g: (typeof groups)[number], i: number) =>
     series.reduce((a, sr) => a + (g.values[sr.key]?.[i] ?? 0), 0);
@@ -675,29 +688,45 @@ export function GroupedStackedBars({
             {groups.map((g, gi) => {
               const total = colTotal(g, i);
               const x = padL + i * groupW + groupW * 0.07 + gi * barW;
+              const mid = x + barW * 0.43;
               let top = padT + plotH;
-              return series.map((sr) => {
-                const v = g.values[sr.key]?.[i] ?? 0;
-                if (v <= 0) return null;
-                const shown = percent ? (total > 0 ? (100 * v) / total : 0) : v;
-                const h = (shown / vmax) * plotH;
-                top -= h;
-                return (
-                  <rect key={`${gi}-${sr.key}`} x={x} y={top}
-                        width={Math.max(barW * 0.86, 0.8)} height={Math.max(h, 0)}
-                        fill={sr.color}>
-                    <title>{`${g.name}
+              return (
+                <g key={gi}>
+                  {series.map((sr) => {
+                    const v = g.values[sr.key]?.[i] ?? 0;
+                    if (v <= 0) return null;
+                    const shown = percent ? (total > 0 ? (100 * v) / total : 0) : v;
+                    const h = (shown / vmax) * plotH;
+                    top -= h;
+                    return (
+                      <rect key={sr.key} x={x} y={top}
+                            width={Math.max(barW * 0.86, 0.8)} height={Math.max(h, 0)}
+                            fill={sr.color}>
+                        <title>{`${g.name}
 ${label}
 ${sr.label}: ${v.toFixed(1)}${unit}` +
-                      (percent && total > 0
-                        ? ` (${((100 * v) / total).toFixed(0)}%)` : "")}</title>
-                  </rect>
-                );
-              });
+                          (percent && total > 0
+                            ? ` (${((100 * v) / total).toFixed(0)}%)` : "")}</title>
+                      </rect>
+                    );
+                  })}
+                  {/* which module this bar is, read bottom-to-top. Only
+                      where there IS a bar: a name under blank space (a slice
+                      outside the shift, say) is noise, not information. */}
+                  {total > 0 && (
+                    <text x={mid} y={padT + plotH + 4}
+                          transform={`rotate(-90 ${mid} ${padT + plotH + 4})`}
+                          textAnchor="end" fontSize={nameSize} fill="var(--secondary)">
+                      {g.name}
+                    </text>
+                  )}
+                </g>
+              );
             })}
             {i % labelEvery === 0 && (
-              <text x={padL + i * groupW + groupW / 2} y={height - 20}
-                    textAnchor="middle" fontSize={10} fill="var(--secondary)">
+              <text x={padL + i * groupW + groupW / 2} y={height - 6}
+                    textAnchor="middle" fontSize={10} fill="var(--secondary)"
+                    fontWeight={600}>
                 {label}
               </text>
             )}
@@ -709,9 +738,6 @@ ${sr.label}: ${v.toFixed(1)}${unit}` +
           <span key={sr.key}><i style={{ background: sr.color }} />{sr.label}</span>
         ))}
       </div>
-      <p className="muted" style={{ fontSize: 12, margin: "4px 0 0" }}>
-        Within each slice, left to right: {groups.map((g) => g.name).join(", ")}
-      </p>
     </div>
   );
 }
