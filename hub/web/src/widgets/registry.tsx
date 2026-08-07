@@ -10,7 +10,8 @@ import type { ComponentType } from "react";
 import type { WidgetScope } from "../api";
 import type { WidgetProps } from "./frame";
 import {
-  AvailabilityCompare, CycleCompare, LiveTiles, StateTimeline,
+  AvailabilityCompare, CycleCompare, FlowCompare, FlowReasons, LiveTiles,
+  StateTimeline,
 } from "./compare";
 import {
   CycleDistribution, CycleDrift, CycleKPIs, CycleSpread, Note, StepSpread,
@@ -56,8 +57,28 @@ export const WIDGETS: WidgetDef[] = [
   },
   {
     type: "availability_compare", title: "Availability compare", group: "Availability",
-    blurb: "Ranked worst first over production time.",
-    scopes: ["ems"], defaultSpan: 2, Render: AvailabilityCompare,
+    blurb: "Ranked worst first. Stations and lines give the composed k-of-n number; EMs give each module on its own.",
+    scopes: ["nodes", "ems"], defaultSpan: 2, Render: AvailabilityCompare,
+  },
+  {
+    type: "flow_compare", title: "Flow loss by station", group: "Availability",
+    blurb: "Starved, blocked and NVA time per station — where the line waits rather than breaks.",
+    scopes: ["nodes"], defaultSpan: 2,
+    opts: [{
+      key: "basis", label: "Measured as", type: "select", def: "wall",
+      choices: [
+        { value: "wall", label: "Clock time (concurrent waits counted once)" },
+        { value: "em", label: "Module-minutes (summed across modules)" },
+      ],
+    }],
+    Render: FlowCompare,
+  },
+  {
+    type: "flow_reasons", title: "Flow loss reasons", group: "Availability",
+    blurb: "Why the waiting happened, worst first.",
+    scopes: ["nodes"], defaultSpan: 2,
+    opts: [{ key: "top", label: "Reasons shown", type: "number", def: 10, min: 3, max: 25 }],
+    Render: FlowReasons,
   },
   {
     type: "state_timeline", title: "State timeline", group: "Availability",
@@ -110,6 +131,18 @@ export const WIDGETS: WidgetDef[] = [
   },
 ];
 
+/**
+ * Every scope kind some widget can be pointed at, in display order.
+ *
+ * The dashboard's default-scope picker MUST offer all of them: a default it
+ * cannot represent gets shown as some other kind and silently overwritten on
+ * save. Derived from the registry so adding a widget with a new scope kind
+ * cannot leave the picker behind.
+ */
+export const DEFAULT_SCOPE_KINDS: ScopeKind[] =
+  (["nodes", "ems", "em", "station", "line"] as ScopeKind[])
+    .filter((k) => WIDGETS.some((d) => d.scopes.includes(k)));
+
 export function widgetDef(type: string): WidgetDef | undefined {
   return WIDGETS.find((d) => d.type === type);
 }
@@ -124,7 +157,9 @@ export function defaultOpts(def: WidgetDef): Record<string, unknown> {
 /** True when a scope names no equipment, so a widget using it draws nothing. */
 export function scopeIsEmpty(sc?: WidgetScope): boolean {
   if (!sc) return true;
-  return sc.kind === "ems" && (sc.ems?.length ?? 0) === 0;
+  if (sc.kind === "ems") return (sc.ems?.length ?? 0) === 0;
+  if (sc.kind === "nodes") return (sc.nodes?.length ?? 0) === 0;
+  return false;
 }
 
 /** Human label for a scope, for widget headers and the editor. */
@@ -135,6 +170,13 @@ export function scopeLabel(sc?: WidgetScope): string {
     case "line": return sc.line ?? "";
     case "station": return `${sc.line}/${sc.station}`;
     case "em": return `${sc.station}/${sc.em}`;
+    case "nodes": {
+      const refs = sc.nodes ?? [];
+      if (refs.length === 0) return "no stations selected";
+      const n = refs.length === 1 ? refs[0]
+        : `${refs.length} stations/lines`;
+      return n;
+    }
     case "ems": {
       const refs = sc.ems ?? [];
       if (refs.length === 0) return "no EMs selected";

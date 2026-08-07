@@ -28,6 +28,9 @@ const (
 	scopeStation = "station"
 	scopeEM      = "em"
 	scopeEMs     = "ems"
+	// a list of composable entities: a whole line, or a station within one.
+	// Availability for these is the k-of-n composed number, not an average.
+	scopeNodes = "nodes"
 )
 
 // widgetTypes maps each known widget to the scope kinds it accepts. The
@@ -35,10 +38,16 @@ const (
 // server-side guard so a malformed spec cannot be persisted.
 var widgetTypes = map[string][]string{
 	// multi-EM comparisons
-	"cycle_compare":        {scopeEMs},
-	"availability_compare": {scopeEMs},
+	"cycle_compare": {scopeEMs},
+	// EMs give each module's own episode availability; stations and lines
+	// give the composed k-of-n number, which is the one that describes
+	// whether the line could actually run
+	"availability_compare": {scopeEMs, scopeNodes},
 	"state_timeline":       {scopeEMs},
 	"live_tiles":           {scopeEMs},
+	// flow loss, to see where the line is waiting rather than broken
+	"flow_compare": {scopeNodes},
+	"flow_reasons": {scopeNodes},
 	// single-EM
 	"cycle_distribution": {scopeEM},
 	"cycle_drift":        {scopeEM},
@@ -59,6 +68,8 @@ type WidgetScope struct {
 	// one of the more useful things to put on a dashboard — so the line
 	// travels with each reference rather than sitting on the scope.
 	EMs []string `json:"ems,omitempty"`
+	// Nodes are "LINE" (the whole line) or "LINE/STATION".
+	Nodes []string `json:"nodes,omitempty"`
 }
 
 type Widget struct {
@@ -184,10 +195,54 @@ func (s *Server) validateScope(sc *WidgetScope) error {
 				return fmt.Errorf("unknown EM %s", ref)
 			}
 		}
+	case scopeNodes:
+		if len(sc.Nodes) == 0 {
+			return fmt.Errorf("no stations or lines selected")
+		}
+		if len(sc.Nodes) > 40 {
+			return fmt.Errorf("%d nodes is too many (max 40)", len(sc.Nodes))
+		}
+		seen := map[string]bool{}
+		for _, ref := range sc.Nodes {
+			if seen[ref] {
+				return fmt.Errorf("%s listed twice", ref)
+			}
+			seen[ref] = true
+			line, station, ok := splitNodeRef(ref)
+			if !ok {
+				return fmt.Errorf("bad reference %q, want LINE or LINE/STATION", ref)
+			}
+			if station == "" {
+				if s.findLine(line) == nil {
+					return fmt.Errorf("unknown line %q", line)
+				}
+			} else if s.findStation(line, station) == nil {
+				return fmt.Errorf("unknown station %s", ref)
+			}
+		}
 	default:
 		return fmt.Errorf("unknown scope kind %q", sc.Kind)
 	}
 	return nil
+}
+
+// splitNodeRef parses "LINE" or "LINE/STATION". An empty station means the
+// reference is to the line as a whole.
+func splitNodeRef(ref string) (line, station string, ok bool) {
+	parts := strings.Split(ref, "/")
+	switch len(parts) {
+	case 1:
+		if parts[0] == "" {
+			return "", "", false
+		}
+		return parts[0], "", true
+	case 2:
+		if parts[0] == "" || parts[1] == "" {
+			return "", "", false
+		}
+		return parts[0], parts[1], true
+	}
+	return "", "", false
 }
 
 // splitEMRef parses "LINE/STATION/label" as used in a scope's EM list.
@@ -327,4 +382,3 @@ func (s *Server) handleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, map[string]any{"ok": true})
 }
-

@@ -25,6 +25,12 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit,
 }) {
   // a "none" widget (a note) has nothing to point at
   const usable = kinds.filter((k): k is Exclude<ScopeKind, "none"> => k !== "none");
+  // Never drop the kind the value already has. A picker that cannot represent
+  // its own value shows some other kind and overwrites the real one on save —
+  // this has bitten twice, so it is guarded here rather than at each caller.
+  if (value?.kind && value.kind !== "none" && !usable.includes(value.kind)) {
+    usable.unshift(value.kind);
+  }
   if (usable.length === 0) return null;
   const kind = value?.kind && (usable as ScopeKind[]).includes(value.kind)
     ? value.kind : usable[0];
@@ -67,8 +73,8 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit,
                 const k = e.target.value as ScopeKind;
                 // an EM list carries its own lines; a stray scope-level
                 // `line` would just be dead weight in the saved spec
-                onChange(k === "ems"
-                  ? { kind: k, ems: [] }
+                onChange(k === "ems" ? { kind: k, ems: [] }
+                  : k === "nodes" ? { kind: k, nodes: [] }
                   : { kind: k, line, ...defaultsFor(k, hier, line) });
               }}>
                 {usable.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
@@ -113,6 +119,10 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit,
             <EMMultiPicker hier={hier} selected={value?.ems ?? []}
                            onChange={(ems) => onChange({ kind: "ems", ems })} />
           )}
+          {kind === "nodes" && (
+            <NodeMultiPicker hier={hier} selected={value?.nodes ?? []}
+                             onChange={(nodes) => onChange({ kind: "nodes", nodes })} />
+          )}
         </>
       )}
     </div>
@@ -121,6 +131,7 @@ export function ScopePicker({ kinds, value, hier, onChange, allowInherit,
 
 const KIND_LABEL: Record<string, string> = {
   line: "Line", station: "Station", em: "One EM", ems: "Several EMs",
+  nodes: "Several stations / lines",
 };
 
 // The first valid selection for a kind, so switching kind or line never
@@ -132,6 +143,7 @@ function defaultsFor(kind: ScopeKind, hier: HierLine[], line: string): Partial<W
     case "station": return { station: st?.name };
     case "em": return { station: st?.name, em: st?.ems[0]?.em_label };
     case "ems": return { ems: [] };
+    case "nodes": return { nodes: [] };
     default: return {};
   }
 }
@@ -255,6 +267,104 @@ function EMMultiPicker({ hier, selected, onChange }: {
           <span className="muted" style={{ fontSize: 12 }}>
             {MAX_COMPARE_EMS} is the maximum.
           </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Multi-select over stations and whole lines — the entities that have a
+ * composed availability. Shares the selected-list markup with the EM picker;
+ * only the catalogue of things to add differs.
+ */
+function NodeMultiPicker({ hier, selected, onChange }: {
+  hier: HierLine[]; selected: string[];
+  onChange: (nodes: string[]) => void;
+}) {
+  const all: { ref: string; label: string; group: string }[] = [];
+  for (const l of hier) {
+    all.push({ ref: l.name, label: `${l.name} — whole line`, group: l.name });
+    for (const st of l.stations) {
+      all.push({
+        ref: `${l.name}/${st.name}`,
+        label: `${st.name}${st.display_name ? ` · ${st.display_name}` : ""}` +
+               ` (${st.ems.length} EM${st.ems.length === 1 ? "" : "s"})`,
+        group: l.name,
+      });
+    }
+  }
+  const byRef = new Map(all.map((o) => [o.ref, o]));
+  const available = all.filter((o) => !selected.includes(o.ref));
+  const groups = [...new Set(available.map((o) => o.group))]
+    .map((g) => ({ group: g, options: available.filter((o) => o.group === g) }));
+  const full = selected.length >= MAX_COMPARE_EMS;
+
+  return (
+    <div className="dash-emlist">
+      <div className="dash-emhead">
+        <span className="label">
+          Selected stations &amp; lines · {selected.length}
+          {selected.length > 0 && " · drawn top to bottom in this order"}
+        </span>
+        {selected.length > 0 && (
+          <button type="button" className="linkbtn"
+                  onClick={() => onChange([])}>remove all</button>
+        )}
+      </div>
+      {selected.length === 0 ? (
+        <div className="dash-emempty">
+          Nothing selected yet — this widget has nothing to draw.
+          Pick stations or a whole line with <b>add</b> below.
+        </div>
+      ) : (
+        <ol className="dash-emrows">
+          {selected.map((ref, i) => {
+            const o = byRef.get(ref);
+            const isLine = !ref.includes("/");
+            return (
+              <li key={ref} className={o ? "" : "gone"}>
+                <span className="n">{i + 1}</span>
+                <span className="ln">{isLine ? "LINE" : ref.split("/")[0]}</span>
+                <span className="who">
+                  {isLine ? ref : ref.split("/")[1]}
+                  {o && <em>{o.label.replace(/^[^·(]*/, "").trim()}</em>}
+                </span>
+                {!o && <span className="warn">no longer configured</span>}
+                <span className="sp" />
+                <button type="button" className="iconbtn" title="move up"
+                        disabled={i === 0}
+                        onClick={() => onChange(swap(selected, i, i - 1))}>↑</button>
+                <button type="button" className="iconbtn" title="move down"
+                        disabled={i === selected.length - 1}
+                        onClick={() => onChange(swap(selected, i, i + 1))}>↓</button>
+                <button type="button" className="iconbtn danger" title="remove"
+                        onClick={() => onChange(selected.filter((r) => r !== ref))}>×</button>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+      <div className="dash-emadd">
+        <select value="" aria-label="add a station or line" disabled={full}
+                onChange={(e) => e.target.value &&
+                  onChange([...selected, e.target.value].slice(0, MAX_COMPARE_EMS))}>
+          <option value="">add a station or line…</option>
+          {groups.map((g) => (
+            <optgroup key={g.group} label={g.group}>
+              {g.options.map((o) => (
+                <option key={o.ref} value={o.ref}>{o.label}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        {available.some((o) => o.ref.includes("/")) && !full && (
+          <button type="button" className="linkbtn" onClick={() => onChange([
+            ...selected,
+            ...available.filter((o) => o.ref.includes("/")).map((o) => o.ref),
+          ].slice(0, MAX_COMPARE_EMS))}>
+            add all stations
+          </button>
         )}
       </div>
     </div>

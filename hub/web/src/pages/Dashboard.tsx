@@ -13,7 +13,7 @@ import {
 import { AddWidget, OptsForm, ScopePicker } from "../components/dashedit";
 import { ErrorBox, Loading, useAsync, useWindow } from "../components/ui";
 import {
-  defaultOpts, scopeIsEmpty, scopeLabel, widgetDef, WIDGETS,
+  DEFAULT_SCOPE_KINDS, defaultOpts, scopeIsEmpty, scopeLabel, widgetDef, WIDGETS,
 } from "../widgets/registry";
 
 export default function DashboardPage() {
@@ -203,9 +203,9 @@ function Editor({ dash, hier, onDone, onCancel }: {
             widgets use this unless they choose their own
           </span>
         </div>
-        {/* "ems" must be offered here: a dashboard whose default scope is an
-            EM list would otherwise be shown — and saved — as a single EM. */}
-        <ScopePicker kinds={["ems", "em", "station", "line"]} value={spec.scope}
+        {/* every kind any widget accepts — a default this picker cannot
+            represent would be shown as another kind and overwritten on save */}
+        <ScopePicker kinds={DEFAULT_SCOPE_KINDS} value={spec.scope}
                      hier={hier} allowInherit={false}
                      onChange={(sc) => mutate((s) => ({ ...s, scope: sc }))} />
         <p className="muted" style={{ marginBottom: 0, fontSize: 13 }}>

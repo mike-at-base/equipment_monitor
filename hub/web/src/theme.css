@@ -651,3 +651,11 @@ table.data tr.sel td { background: var(--livewire); }
 .dash-emadd { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .dash-effective { font-size: 12px; color: var(--secondary); }
 .dash-effective .warn { color: var(--st-down); }
+
+/* segmented horizontal bars (flow loss by state) */
+.segbars { display: grid; gap: 6px; }
+.segbars .row { display: grid; grid-template-columns: 150px 1fr 92px; gap: 10px; align-items: center; font-size: 13px; }
+.segbars .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.segbars .row .track { display: flex; background: var(--conduit); border-radius: 4px; height: 16px; overflow: hidden; }
+.segbars .row .seg { height: 100%; min-width: 1px; }
+.segbars .row .val { text-align: right; color: var(--secondary); font-variant-numeric: tabular-nums; }

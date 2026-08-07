@@ -348,6 +348,57 @@ export function Bars({ rows, wrap, stacked, valueFmt }: {
   );
 }
 
+/**
+ * Horizontal bars split into coloured segments — one row per entity, one
+ * segment per category, all rows sharing a scale so lengths compare directly.
+ *
+ * HTML rather than SVG (like Bars, unlike StackedBars) so it fills whatever
+ * width the dashboard cell gives it instead of letterboxing a fixed viewBox.
+ */
+export function SegmentBars({ rows, segments, fmt, footnote }: {
+  rows: { name: string; detail?: string; values: Record<string, number> }[];
+  segments: { key: string; label: string; color: string }[];
+  fmt?: (v: number) => string;
+  footnote?: string;
+}) {
+  const total = (r: { values: Record<string, number> }) =>
+    segments.reduce((a, sg) => a + (r.values[sg.key] ?? 0), 0);
+  const max = Math.max(...rows.map(total), 0.001);
+  const f = fmt ?? ((v: number) => `${v.toFixed(1)} min`);
+  return (
+    <div>
+      <div className="segbars">
+        {rows.map((r) => (
+          <div className="row" key={r.name}>
+            <span className="name" title={r.detail ?? r.name}>{r.name}</span>
+            <div className="track">
+              {segments.map((sg) => {
+                const v = r.values[sg.key] ?? 0;
+                if (v <= 0) return null;
+                return (
+                  <div key={sg.key} className="seg"
+                       style={{ width: `${(100 * v) / max}%`, background: sg.color }}
+                       title={`${r.name}
+${sg.label}: ${f(v)}`} />
+                );
+              })}
+            </div>
+            <span className="val">{f(total(r))}</span>
+          </div>
+        ))}
+      </div>
+      <div className="gantt-legend">
+        {segments.map((sg) => (
+          <span key={sg.key}><i style={{ background: sg.color }} />{sg.label}</span>
+        ))}
+      </div>
+      {footnote && (
+        <p className="muted" style={{ fontSize: 12, margin: "6px 0 0" }}>{footnote}</p>
+      )}
+    </div>
+  );
+}
+
 // axis tick label: time for short windows, date+time when spanning >~a day
 function fmtTick(ms: number, spanMs: number): string {
   const d = new Date(ms);

@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import io
+import json
 import random
 
 import psycopg2
@@ -213,6 +214,34 @@ def upsert_hierarchy(cur, line: str) -> dict[tuple[str, str, str], int]:
     return ids
 
 
+# Redundancy models, so composed availability is more than "everything in
+# series". A dead magazine must not take the cell down — that is the whole
+# reason the k-of-n model exists, and the demo should show it.
+AVAIL_MODELS = {
+    ("DEMO1", "ST34000"): {"k": "all", "children": [
+        {"em": "main"},
+        {"k": "all", "children": [{"em": "rb01"}, {"em": "rb02"}]},
+        {"k": 2, "children": [{"em": "mag01"}, {"em": "mag02"},
+                              {"em": "mag03"}, {"em": "mag04"}]}]},
+    ("DEMO2", "ST34000"): {"k": "all", "children": [
+        {"em": "main"}, {"em": "rb01"},
+        {"k": 1, "children": [{"em": "mag01"}, {"em": "mag02"}]}]},
+    ("DEMO1", "ST20000"): {"k": "all", "children": [
+        {"em": "main"},
+        {"k": 2, "children": [{"em": "press01"}, {"em": "press02"}]}]},
+}
+
+
+def write_avail_models(cur) -> None:
+    for (line, station), model in AVAIL_MODELS.items():
+        cur.execute("""
+            UPDATE station SET avail_model = %s
+            WHERE name = %s AND line_id = (SELECT id FROM line WHERE name = %s)""",
+            (json.dumps(model), station, line))
+        if cur.rowcount:
+            print(f"  k-of-n model on {line}/{station}")
+
+
 def write_sequence(cur, em_id: int, has_nva: bool) -> None:
     cur.execute(
         "INSERT INTO sequence (em_id, seq_index, name, is_production, "
@@ -394,6 +423,7 @@ def main() -> int:
               f"{'BAD ' if prof.bad_actor else '    '}"
               f"drift={prof.drift:+.0%} fault={prof.p_fault:.1%}")
 
+    write_avail_models(cur)
     print(f"writing {len(cycles)} cycles, {len(steps)} step events, "
           f"{len(states)} state intervals, {len(episodes)} down episodes")
     copy_in(cur, "state_interval",

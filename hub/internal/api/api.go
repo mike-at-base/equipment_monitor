@@ -113,6 +113,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v2/compare", s.handleCompare)
 	// cross-line: EMs are named LINE/STATION/label, so no {line} in the path
 	mux.HandleFunc("GET /api/v2/emcompare", s.handleEMCompare)
+	mux.HandleFunc("GET /api/v2/nodecompare", s.handleNodeCompare)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/intervals", s.handleIntervals)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/steps", s.handleSteps)
 	mux.HandleFunc("GET /api/v2/ems/{line}/{station}/{label}/stepstats", s.handleStepStats)

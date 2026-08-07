@@ -307,13 +307,15 @@ export type DebugResp = {
 // part of the spec — it comes from the global picker (already in the URL), so
 // a shared dashboard link carries the range with it.
 export type WidgetScope = {
-  kind: "none" | "line" | "station" | "em" | "ems";
+  kind: "none" | "line" | "station" | "em" | "ems" | "nodes";
   line?: string;
   station?: string;
   em?: string;
   /** Fully qualified "LINE/STATION/label" — a comparison is not bound to
    *  one line, so the line travels with each reference. */
   ems?: string[];
+  /** "LINE" or "LINE/STATION" — entities with a composed availability. */
+  nodes?: string[];
 };
 
 export type DashWidget = {
@@ -345,6 +347,39 @@ export type EMCompareResp = {
   from: string; to: string;
   ems: EMCompareRow[];
   /** refs that no longer resolve — the dashboard outlived the equipment */
+  missing?: string[];
+};
+
+// ── station / line comparison ─────────────────────────────────────────────
+// Flow loss carries two numbers per state on purpose. em_min sums across the
+// node's modules (loss accounting); wall_min is the clock time with at least
+// one module in that state. On a seven-module cell a line-wide starve makes
+// the first seven times the second, so neither alone is honest.
+export type FlowState = {
+  state: string; em_min: number; wall_min: number; count: number;
+};
+
+export type FlowReason = {
+  reason: string; state: string; minutes: number; count: number;
+};
+
+export type NodeCompareRow = {
+  ref: string; kind: "line" | "station";
+  line: string; station?: string; display_name: string;
+  /** composed k-of-n availability over production time */
+  availability_pct?: number;
+  default_model: boolean;
+  production_min: number;
+  down_min: number;
+  causes: { name: string; minutes: number }[];
+  flow: FlowState[];
+  flow_reasons: FlowReason[];
+  em_count: number;
+};
+
+export type NodeCompareResp = {
+  from: string; to: string;
+  nodes: NodeCompareRow[];
   missing?: string[];
 };
 
@@ -494,6 +529,9 @@ export const api = {
     get<EMCompareResp>(`/api/v2/emcompare?${winQuery(win)}` +
       `&ems=${encodeURIComponent(ems.join(","))}` +
       (intervals ? "&intervals=1" : "")),
+  nodeCompare: (nodes: string[], win: string) =>
+    get<NodeCompareResp>(`/api/v2/nodecompare?${winQuery(win)}` +
+      `&nodes=${encodeURIComponent(nodes.join(","))}`),
   hierarchy: () => get<HierLine[]>("/api/v2/hierarchy"),
   dashboards: () => get<DashboardMeta[]>("/api/v2/dashboards"),
   dashboard: (slug: string) =>
