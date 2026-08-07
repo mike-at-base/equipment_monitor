@@ -16,6 +16,7 @@ import {
 import {
   CycleDistribution, CycleDrift, CycleKPIs, CycleSpread, Note, StepSpread,
 } from "./single";
+import { StepDistribution, StepDrift } from "./steps";
 
 export type ScopeKind = WidgetScope["kind"];
 
@@ -24,7 +25,11 @@ export type OptSpec =
   | { key: string; label: string; type: "select"; def: string;
       choices: { value: string; label: string }[] }
   | { key: string; label: string; type: "number"; def: number; min: number; max: number }
-  | { key: string; label: string; type: "textarea"; def: string };
+  | { key: string; label: string; type: "textarea"; def: string }
+  // Choices come from the equipment the widget points at, not from here, so
+  // the editor has to fetch them. Writes both `step` and `seq`: a step name
+  // is only unique within a sequence.
+  | { key: string; label: string; type: "step" };
 
 export type WidgetDef = {
   type: string;
@@ -144,6 +149,26 @@ export const WIDGETS: WidgetDef[] = [
     scopes: ["em"], defaultSpan: 2, Render: CycleSpread,
   },
   {
+    type: "step_distribution", title: "One step · distribution", group: "Steps",
+    blurb: "Histogram for a single step — one tight mode, or two?",
+    scopes: ["em"], defaultSpan: 2,
+    opts: [{ key: "step", label: "Step", type: "step" }],
+    Render: StepDistribution,
+  },
+  {
+    type: "step_drift", title: "One step · drift over time", group: "Steps",
+    blurb: "p25–p95 band for a single step — is it getting slower?",
+    scopes: ["em"], defaultSpan: 2,
+    opts: [
+      { key: "step", label: "Step", type: "step" },
+      {
+        key: "bucket", label: "Bucket", type: "select", def: "auto",
+        choices: ["auto", "1m", "5m", "15m", "1h"].map((v) => ({ value: v, label: v })),
+      },
+    ],
+    Render: StepDrift,
+  },
+  {
     type: "step_spread", title: "Step duration spread", group: "Steps",
     blurb: "Box plot per step, slowest median first.",
     scopes: ["em"], defaultSpan: 4,
@@ -166,7 +191,12 @@ export function widgetDef(type: string): WidgetDef | undefined {
 /** Default opts for a freshly added widget, so the editor never saves nulls. */
 export function defaultOpts(def: WidgetDef): Record<string, unknown> {
   const o: Record<string, unknown> = {};
-  for (const s of def.opts ?? []) o[s.key] = s.def;
+  for (const s of def.opts ?? []) {
+    // a step has no sensible default here — the choices depend on the EM the
+    // widget ends up pointing at, and the widget falls back to the slowest
+    if (s.type === "step") continue;
+    o[s.key] = s.def;
+  }
   return o;
 }
 

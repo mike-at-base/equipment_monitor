@@ -54,6 +54,8 @@ var widgetTypes = map[string][]string{
 	"cycle_drift":        {scopeEM},
 	"cycle_spread":       {scopeEM},
 	"step_spread":        {scopeEM},
+	"step_distribution":  {scopeEM},
+	"step_drift":         {scopeEM},
 	"cycle_kpis":         {scopeEM},
 	// no entity
 	"note": {scopeNone},

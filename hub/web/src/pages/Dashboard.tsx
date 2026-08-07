@@ -257,7 +257,8 @@ function WidgetEditor({ w, hier, first, last, onMove, onChange, onRemove }: {
                 ? <span className="warn">No equipment selected — nothing will be drawn.</span>
                 : <>Drawing <b>{scopeLabel(w.scope!)}</b></>}
           </div>
-          <OptsForm def={def} opts={w.opts ?? {}} onChange={(o) => onChange({ opts: o })} />
+          <OptsForm def={def} opts={w.opts ?? {}} scope={w.scope}
+                    onChange={(o) => onChange({ opts: o })} />
         </>
       )}
     </div>

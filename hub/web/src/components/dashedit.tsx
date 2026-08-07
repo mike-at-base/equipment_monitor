@@ -3,7 +3,8 @@
 // stays short and obvious.
 
 import { useState } from "react";
-import type { HierLine, WidgetScope } from "../api";
+import { api, fmtMs, type HierLine, type WidgetScope } from "../api";
+import { useAsync, useWindow } from "./ui";
 import type { OptSpec, ScopeKind, WidgetDef } from "../widgets/registry";
 
 // ── scope picker ──────────────────────────────────────────────────────────
@@ -357,9 +358,11 @@ function swap<T>(xs: T[], i: number, j: number): T[] {
 // ── options form ──────────────────────────────────────────────────────────
 
 /** Renders a widget's options from its OptSpec list alone — no per-widget UI. */
-export function OptsForm({ def, opts, onChange }: {
+export function OptsForm({ def, opts, scope, onChange }: {
   def: WidgetDef;
   opts: Record<string, unknown>;
+  /** the widget's scope — a step picker needs to know whose steps to list */
+  scope?: WidgetScope;
   onChange: (o: Record<string, unknown>) => void;
 }) {
   if (!def.opts?.length) return null;
@@ -384,9 +387,58 @@ export function OptsForm({ def, opts, onChange }: {
             <textarea rows={3} value={String(opts[o.key] ?? o.def)}
                       onChange={(e) => set(o.key, e.target.value)} />
           )}
+          {o.type === "step" && (
+            <StepOption scope={scope} step={opts.step as string | undefined}
+                        seq={opts.seq as number | undefined}
+                        onChange={(step, seq) => onChange({ ...opts, step, seq })} />
+          )}
         </label>
       ))}
     </div>
+  );
+}
+
+/**
+ * Lists the steps the chosen EM actually ran in the current window, slowest
+ * median first — the same order and labels as the step spread chart, so a
+ * step spotted there is easy to find here.
+ */
+function StepOption({ scope, step, seq, onChange }: {
+  scope?: WidgetScope;
+  step?: string; seq?: number;
+  onChange: (step: string, seq: number) => void;
+}) {
+  const { win } = useWindow();
+  const ok = scope?.kind === "em" && scope.line && scope.station && scope.em;
+  const q = useAsync(
+    () => (ok ? api.stepStats(scope!.line!, scope!.station!, scope!.em!, win)
+              : Promise.resolve({ from: "", to: "", steps: [] })),
+    [ok, scope?.line, scope?.station, scope?.em, win]);
+
+  if (!ok) return <span className="muted">pick an EM first</span>;
+  if (q.err) return <span className="muted">could not load steps</span>;
+  if (!q.data) return <span className="muted">loading steps…</span>;
+  if (q.data.steps.length === 0) {
+    return <span className="muted">no steps ran in this window</span>;
+  }
+  // "seq:step" — a step name is only unique within its sequence
+  const value = step ? `${seq ?? 1}:${step}` : "";
+  return (
+    <select value={value} onChange={(e) => {
+      // first colon only: the sequence index cannot contain one, a step
+      // name might
+      const v = e.target.value;
+      const at = v.indexOf(":");
+      onChange(v.slice(at + 1), Number(v.slice(0, at)));
+    }}>
+      <option value="">slowest step in the window</option>
+      {q.data.steps.map((r) => (
+        <option key={`${r.seq_index}-${r.step}`} value={`${r.seq_index}:${r.step}`}>
+          {r.step}{r.description ? ` · ${r.description}` : ""}
+          {` — ${fmtMs(r.p50_ms)} median, ${r.count}x`}
+        </option>
+      ))}
+    </select>
   );
 }
 
